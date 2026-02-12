@@ -1,4 +1,5 @@
 import { TrendingUp, TrendingDown, Activity, Layers } from 'lucide-react';
+import { InfoTooltip } from './InfoTooltip';
 import { IndicatorData } from '@/lib/api';
 
 interface SentimentPanelProps {
@@ -36,7 +37,7 @@ export default function SentimentPanel({ indicators }: SentimentPanelProps) {
                 {/* L/S Z-Score Card */}
                 <div className="bg-zinc-950/50 rounded-lg p-3 border border-zinc-800 flex flex-col justify-between">
                     <div>
-                        <div className="text-xs text-zinc-500 mb-1">LSUR Z-Score</div>
+                        <div className="text-xs text-zinc-500 mb-1 flex items-center">LSUR Z-Score<InfoTooltip text="多空比率 Z 分數：衡量市場多空倉位是否過度擁擠。Z > 2 表示多頭擁擠（看跌），Z < -2 表示空頭擁擠（看漲）" /></div>
                         <div className={`text-2xl font-mono font-bold ${scoreColor}`}>
                             {lsur_z_score.toFixed(2)}
                         </div>
@@ -49,7 +50,7 @@ export default function SentimentPanel({ indicators }: SentimentPanelProps) {
                 {/* Liquidity Walls Summary */}
                 <div className="bg-zinc-950/50 rounded-lg p-3 border border-zinc-800 flex flex-col">
                     <div className="text-xs text-zinc-500 mb-2 flex items-center gap-1">
-                        <Layers className="w-3 h-3" /> Liquidity Walls
+                        <Layers className="w-3 h-3" /> Liquidity Walls<InfoTooltip text="流動性牆：顯示訂單簿中最密集的掛單價位。Resist = 上方賣壓集中區（阻力），Support = 下方買盤集中區（支撐）" />
                     </div>
                     <div className="space-y-1 text-xs font-mono">
                         {/* Show nearest Bid/Ask wall */}

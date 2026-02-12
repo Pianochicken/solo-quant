@@ -1,6 +1,7 @@
 
 import React, { useEffect, useRef } from 'react';
 import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickSeries, HistogramSeries, LineSeries, Time, CrosshairMode, createSeriesMarkers } from 'lightweight-charts';
+import { InfoTooltip } from './InfoTooltip';
 
 interface AdvancedChartProps {
     symbol: string;
@@ -287,7 +288,7 @@ export default function AdvancedChart({ symbol, data, indicators, gridLines = []
         <div className="w-full flex flex-col gap-1 bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden shadow-lg p-1">
             {/* 1. Main Chart */}
             <div className="relative w-full h-[400px]">
-                <div className="absolute top-2 left-2 z-10 bg-black/50 px-2 py-1 rounded text-xs text-zinc-400">Price</div>
+                <div className="absolute top-2 left-2 z-10 bg-black/50 px-2 py-1 rounded text-xs text-zinc-400 flex items-center">Price<InfoTooltip text="K線圖：顯示價格走勢。綠色為上漲，紅色為下跌。箭頭標記為多指標匯合信號" /></div>
                 <div ref={chartContainerRef} className="w-full h-full" />
                 <div className="absolute top-2 right-2 z-10 flex gap-2">
                     <div className="bg-black/50 px-2 py-1 rounded text-xs text-zinc-500">
@@ -299,7 +300,7 @@ export default function AdvancedChart({ symbol, data, indicators, gridLines = []
             {/* 2. CVD Chart */}
             <div className="relative w-full h-[100px] border-t border-zinc-800">
                 <div className="absolute top-1 left-2 z-10 bg-black/50 px-2 py-0.5 rounded text-[10px] text-zinc-400 flex gap-2">
-                    <span className="font-bold text-yellow-500">CVD (Volume Delta)</span>
+                    <span className="font-bold text-yellow-500">CVD (Volume Delta)</span><InfoTooltip text="累積成交量差值：追蹤主動買入與賣出的淨差額。上升 = 買方主導，下降 = 賣方主導。反映真實資金流向" />
                     {cvdLegendValue !== null && (
                         <span className="text-zinc-200">{cvdLegendValue.toLocaleString()}</span>
                     )}
@@ -310,7 +311,7 @@ export default function AdvancedChart({ symbol, data, indicators, gridLines = []
             {/* 3. OI Chart */}
             <div className="relative w-full h-[100px] border-t border-zinc-800">
                 <div className="absolute top-1 left-2 z-10 bg-black/50 px-2 py-0.5 rounded text-[10px] text-zinc-400 flex gap-2">
-                    <span className="font-bold text-blue-400">Open Interest</span>
+                    <span className="font-bold text-blue-400">Open Interest</span><InfoTooltip text="未平倉合約量：市場中所有未結算的合約總值。綠色 = OI 增加（新倉位開設），紅色 = OI 減少（倉位平倉/清算）。注意：OI 本身無法區分多空方向，需搭配 LSUR/CVD 判斷實際偏向" />
                     {oiLegendValue !== null && (
                         <span className="text-zinc-200">{oiLegendValue.toLocaleString()}</span>
                     )}
@@ -321,7 +322,7 @@ export default function AdvancedChart({ symbol, data, indicators, gridLines = []
             {/* 4. Funding Chart */}
             <div className="relative w-full h-[100px] border-t border-zinc-800">
                 <div className="absolute top-1 left-2 z-10 bg-black/50 px-2 py-0.5 rounded text-[10px] text-zinc-400 flex gap-2">
-                    <span className="font-bold text-emerald-400">Funding Rate</span>
+                    <span className="font-bold text-emerald-400">Funding Rate</span><InfoTooltip text="資金費率：多頭和空頭之間定期支付的費用。正值 = 多頭付費給空頭（看漲情緒高），負值 = 空頭付費給多頭（看跌情緒高）" />
                     {fundingLegendValue !== null && (
                         <span className={`${fundingLegendValue >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                             {fundingLegendValue.toFixed(4)}%
