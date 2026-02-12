@@ -4,9 +4,13 @@ from typing import List, Dict
 from api.quant.grid_bot import GridBot
 
 class Backtester:
-    def __init__(self, bot: GridBot, data: List[Dict]):
+    def __init__(self, bot: GridBot, data: List[Dict], sentiment_data: List[Dict] = None):
         self.bot = bot
         self.data = data # List of {'time', 'open', 'high', 'low', 'close'}
+        # sentiment_data: List of {'time', 'value'} (LSUR Z-Score)
+        # Convert to dict for fast lookup: {time_ms: z_score}
+        self.sentiment_map = {d['time']: d['value'] for d in sentiment_data} if sentiment_data else {}
+        
         self.trades = []
         self.equity_curve = []
         
@@ -34,7 +38,13 @@ class Backtester:
         # 2. Loop
         for candle in self.data:
             self._process_candle(candle)
-            self._record_equity(candle['time'], candle['close'])
+            
+            # Record Equity DO NOT record every candle for performance if list is huge?
+            # 1h candles are fine.
+            # Equity = Cash + Asset Value
+            asset_value = self.inventory * candle['close']
+            total_equity = self.balance + asset_value
+            self.equity_curve.append({"time": candle['time'], "value": total_equity})
             
         return {
             "trades": self.trades,
@@ -53,16 +63,24 @@ class Backtester:
         # Actually, in a pure geometric grid, you HOLD the asset for the levels above you.
         # So for every grid level > current_price, you need 1 unit of base asset (conceptually).
         
-        amount_per_grid = (self.bot.investment / self.bot.grid_count) / current_price
-        
         sell_grids = [g for g in grids if g > current_price]
         buy_grids = [g for g in grids if g < current_price]
         
-        # Buy initial inventory
+        # Calculate amount per grid roughly
+        # If we have 1000 USDT and 10 grids, and price is 100.
+        # We need to buy inventory for 5 sell grids. 5 * (1000/10/100) = 5 units. Cost 500.
+        # We keep 500 USDT for 5 buy grids.
+        
+        # Correct calculation:
+        total_grids = self.bot.grid_count
+        amount_per_grid = (self.bot.investment / total_grids) / current_price
+        
         initial_buy_cost = len(sell_grids) * amount_per_grid * current_price
+        
         if initial_buy_cost > self.balance:
             # Adjust amount if not enough funds (simplified)
-            amount_per_grid = self.balance / (len(sell_grids) * current_price)
+            factor = self.balance / initial_buy_cost
+            amount_per_grid *= factor
             initial_buy_cost = self.balance
             
         self.balance -= initial_buy_cost
@@ -70,6 +88,7 @@ class Backtester:
         self.amount_per_grid = amount_per_grid
         
         # Setup Open Orders
+        self.open_orders = []
         # Sells at Sell Grids
         for p in sell_grids:
             self.open_orders.append({'price': p, 'side': 'sell', 'amount': amount_per_grid})
@@ -80,10 +99,12 @@ class Backtester:
     def _process_candle(self, candle):
         low = candle['low']
         high = candle['high']
+        time = candle['time']
         
-        # Check Execution
-        # We need to handle multiple fills in one candle?
-        # For MVP, check if any open order price is within [low, high]
+        # Get Sentiment for this candle (approximate to nearest or exact)
+        # For simplicity, look for exact match or nearest previous?
+        # Assuming data is aligned 1h candles.
+        sentiment_score = self.sentiment_map.get(time, 0.0) # Default 0 if missing
         
         # Filter out executed orders
         remaining_orders = []
@@ -94,14 +115,27 @@ class Backtester:
             
             # HIT?
             if low <= price <= high:
+                
+                # --- SENTIMENT GUARD ---
+                # Before executing, check if we should SKIP
+                if order['side'] == 'buy' and sentiment_score > 2.0:
+                     # Crowd Euphoric -> Don't Buy High -> Skip execution, keep order open?
+                     # OR Temporary Pause? If we skip, the price might bounce back up and we never bought.
+                     # "Wait for dip" implies we just don't execute NOW.
+                     # If we keep it in remaining_orders, it might execute next candle if price is still there.
+                     remaining_orders.append(order)
+                     continue
+                     
+                if order['side'] == 'sell' and sentiment_score < -2.0:
+                     # Crowd Panic -> Don't Sell Low -> Skip
+                     remaining_orders.append(order)
+                     continue
+                # -----------------------
+
                 # EXECUTE
-                self._execute_trade(order, candle['time'])
+                self._execute_trade(order, time)
                 
                 # RE-GRID logic:
-                # If we Sold at X, we place a Buy at the grid below X.
-                # If we Bought at Y, we place a Sell at the grid above Y.
-                # Since our grids are fixed arithmetic levels, we just find the neighbor index.
-                
                 grid_index = self._find_nearest_grid_index(price)
                 
                 if order['side'] == 'sell':
@@ -136,12 +170,6 @@ class Backtester:
             "price": price,
             "amount": order['amount']
         })
-
-    def _record_equity(self, time, current_price):
-        # Equity = Cash + Asset Value
-        asset_value = self.inventory * current_price
-        total_equity = self.balance + asset_value
-        self.equity_curve.append({"time": time, "value": total_equity})
 
     def _find_nearest_grid_index(self, price):
         # Find index in self.bot.grids closest to price

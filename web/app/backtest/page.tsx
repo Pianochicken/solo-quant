@@ -1,8 +1,8 @@
 "use client"
 
 import { useState, useEffect, useRef } from 'react';
-import { BacktestParams, runBacktest, BacktestResult } from '@/lib/api';
-import { ArrowLeft, Play, Calculator, Activity, TrendingUp, DollarSign } from 'lucide-react';
+import { BacktestParams, runBacktest, BacktestResult, getSmartGridParams } from '@/lib/api';
+import { ArrowLeft, Play, Calculator, Activity, TrendingUp, DollarSign, Brain, RefreshCw } from 'lucide-react';
 import { createChart, ColorType, AreaSeries } from 'lightweight-charts';
 import Link from 'next/link';
 
@@ -16,6 +16,10 @@ export default function BacktestPage() {
 
     const [loading, setLoading] = useState(false);
     const [result, setResult] = useState<BacktestResult | null>(null);
+
+    // AI Mode
+    const [isAiMode, setIsAiMode] = useState(false);
+    const [aiLoading, setAiLoading] = useState(false);
 
     const chartContainerRef = useRef<HTMLDivElement>(null);
 
@@ -38,7 +42,9 @@ export default function BacktestPage() {
             lineColor: '#10b981', topColor: '#10b981', bottomColor: 'rgba(16, 185, 129, 0.1)',
         });
 
-        areaSeries.setData(result.equity_curve);
+        // Ensure data is sorted by time
+        const sortedEquity = [...result.equity_curve].sort((a, b) => a.time - b.time);
+        areaSeries.setData(sortedEquity);
         chart.timeScale().fitContent();
 
         const handleResize = () => chart.applyOptions({ width: chartContainerRef.current?.clientWidth || 0 });
@@ -49,6 +55,29 @@ export default function BacktestPage() {
             chart.remove();
         };
     }, [result]);
+
+    const fetchSmartParams = async () => {
+        setAiLoading(true);
+        try {
+            const params = await getSmartGridParams(symbol);
+            setLowerPrice(params.lower_price.toFixed(1));
+            setUpperPrice(params.upper_price.toFixed(1));
+            setGridCount(params.grid_count.toString());
+        } catch (e: any) {
+            console.error(e);
+            alert("AI Params Failed: " + e.message);
+        } finally {
+            setAiLoading(false);
+        }
+    };
+
+    const toggleAiMode = () => {
+        const newState = !isAiMode;
+        setIsAiMode(newState);
+        if (newState) {
+            fetchSmartParams();
+        }
+    };
 
     const handleRun = async () => {
         setLoading(true);
@@ -91,10 +120,23 @@ export default function BacktestPage() {
             <div className="grid grid-cols-12 gap-8">
                 {/* Configuration Panel */}
                 <div className="col-span-12 lg:col-span-4 bg-zinc-900/50 p-6 rounded-xl border border-zinc-800 h-fit">
-                    <h2 className="text-lg font-bold text-white mb-6 flex items-center gap-2">
-                        <Calculator className="w-5 h-5 text-purple-400" />
-                        Parameters
-                    </h2>
+                    <div className="flex justify-between items-center mb-6">
+                        <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                            <Calculator className="w-5 h-5 text-purple-400" />
+                            Parameters
+                        </h2>
+
+                        <button
+                            onClick={toggleAiMode}
+                            className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold transition-all border ${isAiMode
+                                ? "bg-purple-900/50 border-purple-500 text-purple-300 shadow-[0_0_15px_rgba(168,85,247,0.3)]"
+                                : "bg-zinc-800 border-zinc-700 text-zinc-500 hover:text-zinc-300"
+                                }`}
+                        >
+                            {aiLoading ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Brain className="w-3 h-3" />}
+                            AI {isAiMode ? "ON" : "OFF"}
+                        </button>
+                    </div>
 
                     <div className="space-y-4">
                         <div>
@@ -112,12 +154,18 @@ export default function BacktestPage() {
 
                         <div className="grid grid-cols-2 gap-4">
                             <div>
-                                <label className="block text-xs text-zinc-500 mb-1">Lower Price</label>
-                                <input value={lowerPrice} onChange={e => setLowerPrice(e.target.value)} type="number" className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 outline-none" />
+                                <label className="flex justify-between text-xs text-zinc-500 mb-1">
+                                    Lower Price
+                                    {isAiMode && <span className="text-purple-400">Auto</span>}
+                                </label>
+                                <input disabled={isAiMode} value={lowerPrice} onChange={e => setLowerPrice(e.target.value)} type="number" className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 outline-none disabled:opacity-50" />
                             </div>
                             <div>
-                                <label className="block text-xs text-zinc-500 mb-1">Upper Price</label>
-                                <input value={upperPrice} onChange={e => setUpperPrice(e.target.value)} type="number" className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 outline-none" />
+                                <label className="flex justify-between text-xs text-zinc-500 mb-1">
+                                    Upper Price
+                                    {isAiMode && <span className="text-purple-400">Auto</span>}
+                                </label>
+                                <input disabled={isAiMode} value={upperPrice} onChange={e => setUpperPrice(e.target.value)} type="number" className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 outline-none disabled:opacity-50" />
                             </div>
                         </div>
 

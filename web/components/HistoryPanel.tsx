@@ -16,11 +16,11 @@ interface HistoryPanelProps {
     onCancel?: (orderId: string) => void;
 }
 
-export const HistoryPanel = ({ orders, onCancel }: HistoryPanelProps) => {
-    const [activeTab, setActiveTab] = useState<'orders' | 'history' | 'logs'>('orders');
+export const HistoryPanel = ({ orders = [], onCancel }: HistoryPanelProps) => {
+    const [activeTab, setActiveTab] = useState<'orders' | 'history'>('orders');
 
     return (
-        <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4 flex flex-col h-[300px]">
+        <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4 flex flex-col h-full min-h-[250px]">
             {/* Tabs */}
             <div className="flex gap-6 border-b border-zinc-800 pb-2 mb-4">
                 <button
@@ -34,12 +34,6 @@ export const HistoryPanel = ({ orders, onCancel }: HistoryPanelProps) => {
                     className={`text-sm font-medium transition-colors ${activeTab === 'history' ? 'text-emerald-400' : 'text-zinc-500 hover:text-zinc-300'}`}
                 >
                     Trade History
-                </button>
-                <button
-                    onClick={() => setActiveTab('logs')}
-                    className={`text-sm font-medium transition-colors ${activeTab === 'logs' ? 'text-emerald-400' : 'text-zinc-500 hover:text-zinc-300'}`}
-                >
-                    System Logs
                 </button>
             </div>
 
@@ -97,13 +91,6 @@ export const HistoryPanel = ({ orders, onCancel }: HistoryPanelProps) => {
                         ))}
                     </tbody>
                 </table>
-                {activeTab === 'logs' && (
-                    <div className="text-zinc-500 text-xs p-2">
-                        [12:30:00] System Initialized.<br />
-                        [12:30:01] Connected to OKX Spot API.<br />
-                        [12:30:45] Order #1 Filled.<br />
-                    </div>
-                )}
             </div>
         </div>
     );

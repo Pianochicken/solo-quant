@@ -28,20 +28,27 @@ class GridBot(BaseStrategy):
         # Let's assume grid_count is number of ORDERS (lines).
         return np.linspace(self.lower_price, self.upper_price, self.grid_count).tolist()
 
-    def get_orders_for_price(self, current_price: float) -> List[Dict]:
+    def get_orders_for_price(self, current_price: float, sentiment_score: float = 0.0) -> List[Dict]:
         """
-        Given the current price, determine which orders should be Buy (below) and Sell (above).
-        Returns a list of order dicts.
+        Given the current price and sentiment, determine which orders should be placed.
+        Sentiment Score: LSUR Z-Score.
+        > 2.0: Crowd Euphoria (Bearish) -> Skip BUY
+        < -2.0: Crowd Panic (Bullish) -> Skip SELL
         """
         orders = []
-        amount_per_grid = self.investment / self.grid_count / current_price # Rough approximation
+        amount_per_grid = self.investment / self.grid_count / current_price 
         
         for price in self.grids:
-            # Avoid placing order too close to current price (spread safety)
-            if abs(price - current_price) / current_price < 0.001: 
+            # Safer spread check
+            if abs(price - current_price) / current_price < 0.002: 
                 continue 
                 
             if price < current_price:
+                # BUY LOGIC
+                # Sentiment Guard: If Crowd is Euphoric (Z > 2), Don't Buy (Wait for dump)
+                if sentiment_score > 2.0:
+                    continue
+                    
                 orders.append({
                     "symbol": self.symbol,
                     "side": "buy",
@@ -50,7 +57,12 @@ class GridBot(BaseStrategy):
                     "amount": amount_per_grid
                 })
             else:
-                 orders.append({
+                # SELL LOGIC
+                # Sentiment Guard: If Crowd is Panic (Z < -2), Don't Sell (Wait for pump)
+                if sentiment_score < -2.0:
+                    continue
+                    
+                orders.append({
                     "symbol": self.symbol,
                     "side": "sell",
                     "type": "limit",

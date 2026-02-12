@@ -1,3 +1,14 @@
+export interface IndicatorData {
+    liquidity_walls: {
+        bid_walls: { price: number; volume: number }[];
+        ask_walls: { price: number; volume: number }[];
+    };
+    lsur_z_score: number;
+    lsur_history: { time: number; value: number } | null;
+    cvd_history: { time: number; value: number }[];
+    open_interest: { time: number; value: number }[];
+}
+
 export interface MarketData {
     symbol: string;
     data: {
@@ -14,10 +25,7 @@ export interface MarketData {
             value: number;
         }[];
     };
-    open_interest: {
-        time: number;
-        value: number;
-    }[];
+    indicators: IndicatorData;
 }
 
 const API_BASE = 'http://127.0.0.1:8000';
@@ -104,5 +112,20 @@ export async function runBacktest(params: BacktestParams): Promise<BacktestResul
         body: JSON.stringify(params)
     });
     if (!res.ok) throw new Error('Backtest Failed');
+    return res.json();
+}
+export interface SmartGridParams {
+    symbol: string;
+    current_price: number;
+    lower_price: number;
+    upper_price: number;
+    grid_count: number;
+    sentiment_score: number;
+    signal: string;
+}
+
+export async function getSmartGridParams(symbol: string): Promise<SmartGridParams> {
+    const res = await fetch(`${API_BASE}/quant/smart-params/${symbol.replace('/', '-')}`);
+    if (!res.ok) throw new Error('Smart Params Failed');
     return res.json();
 }

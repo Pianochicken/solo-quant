@@ -1,289 +1,197 @@
 "use client"
 
-import { useEffect, useState } from 'react';
-import { getMarketData, MarketData } from '@/lib/api';
-import { SyncedChart } from '@/components/SyncedChart';
-import { TradePanel } from '@/components/TradePanel';
+import { useState, useEffect } from 'react';
+import { getMarketData } from '@/lib/api';
+import AdvancedChart from '@/components/AdvancedChart';
 import { GridPanel } from '@/components/GridPanel';
+import SentimentPanel from '@/components/SentimentPanel';
 import { HistoryPanel, Order } from '@/components/HistoryPanel';
-import { InfoTooltip } from '@/components/InfoTooltip';
-import { Activity, ArrowUpRight, Signal, Clock, Calculator } from 'lucide-react';
+import { RefreshCw, Zap, BarChart3, Clock, AlertTriangle } from 'lucide-react';
 import Link from 'next/link';
-import { cn } from '@/lib/utils';
 
-const SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'];
 const TIMEFRAMES = [
-  { label: '1分', value: '1m' },
   { label: '15分', value: '15m' },
   { label: '1小時', value: '1h' },
   { label: '4小時', value: '4h' },
   { label: '日線', value: '1d' },
-  { label: '週線', value: '1w' },
 ];
 
-export default function Home() {
-  const [data, setData] = useState<MarketData | null>(null);
-  const [loading, setLoading] = useState(true);
+export default function Dashboard() {
   const [symbol, setSymbol] = useState('BTC/USDT');
   const [timeframe, setTimeframe] = useState('1h');
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+
+  // State for Grid & Orders
   const [gridLines, setGridLines] = useState<number[]>([]);
-  const [historyOrders, setHistoryOrders] = useState<Order[]>([]); // [NEW] Order History State
+  const [historyOrders, setHistoryOrders] = useState<Order[]>([]);
 
-  // Clear grid lines when symbol changes
+  // Fetch Data Loop
   useEffect(() => {
-    setGridLines([]);
-  }, [symbol]);
+    const fetchData = async () => {
+      try {
+        setError(null);
+        // Pass timeframe to API
+        const market = await getMarketData(symbol, timeframe, 1000);
+        setData(market);
+        setLastUpdated(new Date());
+        setLoading(false);
+      } catch (e: any) {
+        console.error(e);
+        setError(e.message || "Failed to fetch data");
+        setLoading(false);
+      }
+    };
 
-  async function fetchData() {
-    try {
-      const res = await getMarketData(symbol, timeframe, 1000); // Fetch 1000 candles for better scrolling
-      setData(res);
-      setLastUpdated(new Date());
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  // Initial Load & Symbol/Timeframe Change
-  useEffect(() => {
     setLoading(true);
-    fetchData();
-  }, [symbol, timeframe]);
-
-  // Auto-Refresh (Real-time update) - Every 5 seconds
-  useEffect(() => {
-    const interval = setInterval(() => {
-      fetchData(); // Silent update (no loading spinner)
-    }, 5000);
+    fetchData(); // Initial
+    const interval = setInterval(fetchData, 15000); // Poll every 15s to avoid rate limits
     return () => clearInterval(interval);
   }, [symbol, timeframe]);
 
-  // Derived State (Safe Access)
+  // Derived State
   const currentPrice = data?.data?.price?.length ? data.data.price[data.data.price.length - 1].close : 0;
-  const currentFunding = data?.data?.funding?.length ? data.data.funding[data.data.funding.length - 1].value : 0;
 
-  // [NEW] Simulated Matching Engine for Dry Run
+  // Simulated Matching Engine (Simple)
   useEffect(() => {
     if (historyOrders.length === 0 || !currentPrice) return;
-
     let hasUpdates = false;
     const updatedOrders = historyOrders.map(order => {
-      // Only check open orders
       if (order.status !== 'open') return order;
-
-      // Check for fill
+      // Check fills
       const isBuyFill = order.side === 'buy' && currentPrice <= order.price;
       const isSellFill = order.side === 'sell' && currentPrice >= order.price;
-
       if (isBuyFill || isSellFill) {
         hasUpdates = true;
         return { ...order, status: 'filled', time: new Date().toLocaleTimeString() };
       }
       return order;
     });
-
-    if (hasUpdates) {
-      setHistoryOrders(updatedOrders as Order[]);
-    }
+    if (hasUpdates) setHistoryOrders(updatedOrders as Order[]);
   }, [currentPrice, historyOrders]);
 
-  // Signal Logic
-  let signalText = "中性 (Neutral)";
-  let signalColor = "text-zinc-400";
-  if (currentFunding > 0.03) {
-    signalText = "賣出 (過熱)";
-    signalColor = "text-red-500";
-  } else if (currentFunding < -0.01) {
-    signalText = "買入 (軋空)";
-    signalColor = "text-emerald-500";
-  }
-
-  // Loading Skeleton
-  if (!data && loading) return (
-    <div className="min-h-screen bg-black text-white flex items-center justify-center">
-      <div className="animate-pulse flex flex-col items-center">
-        <Activity className="h-10 w-10 text-emerald-500 mb-4" />
-        <p className="text-zinc-500">正在初始化 {symbol}...</p>
-      </div>
-    </div>
-  );
-
-  if (!data) return <div className="min-h-screen bg-black text-white p-8">無法載入數據，請確認後端伺服器是否運行。</div>;
-
-
-
   return (
-    <main className="min-h-screen bg-black text-zinc-100 p-6 font-sans flex flex-col relative">
-      {/* Loading Overlay for Switching */}
-      {loading && (
-        <div className="absolute inset-0 z-50 bg-black/60 backdrop-blur-[2px] flex items-center justify-center transition-opacity duration-300">
-          <div className="flex flex-col items-center p-6 bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl skew-x-[-2deg]">
-            <div className="flex items-center gap-3">
-              <div className="w-3 h-3 bg-emerald-500 rounded-full animate-bounce" style={{ animationDelay: '0s' }} />
-              <div className="w-3 h-3 bg-cyan-500 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }} />
-              <div className="w-3 h-3 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }} />
-            </div>
-            <span className="mt-4 text-xs font-mono text-zinc-400 tracking-widest">SWITCHING :: {symbol}</span>
+    <main className="min-h-screen bg-black text-zinc-100 p-6 font-sans">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-8 border-b border-zinc-900 pb-4">
+        <div className="flex items-center gap-4">
+          <div className="w-10 h-10 bg-purple-600 rounded-xl flex items-center justify-center shadow-lg shadow-purple-900/50">
+            <Zap className="text-white w-6 h-6 fill-white" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold bg-gradient-to-r from-purple-400 to-pink-500 bg-clip-text text-transparent">
+              SOLO-QUANT
+            </h1>
+            <div className="text-xs text-zinc-500 font-mono tracking-widest">AI GRID TRADING SYSTEM</div>
           </div>
         </div>
-      )}
 
-      {/* --- Top Bar: Header & Controls --- */}
-      <header className="flex justify-between items-center mb-6 pb-4 border-b border-zinc-900">
         <div className="flex items-center gap-6">
-          <h1 className="text-xl font-bold bg-gradient-to-r from-emerald-400 to-cyan-500 bg-clip-text text-transparent mr-4">
-            SoloQuant
-          </h1>
-
-          {/* Symbol Selector */}
-          <div className="flex bg-zinc-900 rounded-lg p-1 border border-zinc-800">
-            {SYMBOLS.map(sym => (
-              <button
-                key={sym}
-                onClick={() => setSymbol(sym)}
-                className={cn(
-                  "px-3 py-1 text-sm font-medium rounded transition-colors",
-                  symbol === sym ? "bg-zinc-800 text-white shadow" : "text-zinc-500 hover:text-zinc-300"
-                )}
-              >
-                {sym.split('/')[0]}
-              </button>
-            ))}
-          </div>
-
           {/* Timeframe Selector */}
           <div className="flex bg-zinc-900 rounded-lg p-1 border border-zinc-800">
             {TIMEFRAMES.map(tf => (
               <button
                 key={tf.value}
                 onClick={() => setTimeframe(tf.value)}
-                className={cn(
-                  "px-3 py-1 text-xs font-medium rounded transition-colors",
-                  timeframe === tf.value ? "bg-emerald-900/30 text-emerald-400" : "text-zinc-500 hover:text-zinc-300"
-                )}
+                className={`px-3 py-1 text-xs font-medium rounded transition-colors ${timeframe === tf.value ? "bg-purple-900/30 text-purple-400" : "text-zinc-500 hover:text-zinc-300"
+                  }`}
               >
                 {tf.label}
               </button>
             ))}
           </div>
-        </div>
 
-        <div className="flex items-center gap-4">
+          <Link href="/backtest" className="flex items-center gap-2 px-4 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 transition-colors text-sm font-medium text-zinc-400 hover:text-white border border-zinc-800">
+            <BarChart3 className="w-4 h-4" />
+            Backtester
+          </Link>
+
+          <div className="flex items-center gap-2 bg-zinc-900 rounded-lg p-1 border border-zinc-800">
+            {['BTC/USDT', 'ETH/USDT', 'SOL/USDT'].map(s => (
+              <button
+                key={s}
+                onClick={() => { setSymbol(s); }}
+                className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${symbol === s
+                  ? 'bg-zinc-800 text-white shadow-sm'
+                  : 'text-zinc-500 hover:text-zinc-300'
+                  }`}
+              >
+                {s.split('/')[0]}
+              </button>
+            ))}
+          </div>
+
           {lastUpdated && (
             <span className="text-xs text-zinc-600 flex items-center gap-1">
               <Clock className="w-3 h-3" />
-              最後更新: {lastUpdated.toLocaleTimeString()}
+              {lastUpdated.toLocaleTimeString()}
             </span>
           )}
-          <div className="flex items-center gap-3">
-            <Link href="/backtest" className="px-3 py-1 bg-purple-900/30 border border-purple-800 rounded text-xs text-purple-400 hover:bg-purple-900/50 transition-colors flex items-center gap-2">
-              <Calculator className="w-3 h-3" />
-              Backtest
-            </Link>
-            <div className="px-3 py-1 bg-zinc-900 rounded border border-zinc-800 text-xs text-zinc-400 flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              已連線 (Connected)
-            </div>
-          </div>
         </div>
-      </header>
+      </div>
 
-      {/* --- Main Content Area --- */}
-      <div className="flex flex-col gap-6 flex-1">
-
-        {/* Top Section: Charts & Operations */}
-        <div className="grid grid-cols-12 gap-6 min-h-[500px]">
-
-          {/* Left Column: Charts & Metrics (Width: 9) */}
-          <div className="col-span-12 lg:col-span-9 flex flex-col gap-6">
-            {/* Metrics Row */}
-            <div className="grid grid-cols-3 gap-4">
-              <div className="p-4 bg-zinc-900/30 border border-zinc-800 rounded-xl flex justify-between items-start">
-                <div>
-                  <span className="text-zinc-500 text-xs uppercase tracking-wider flex items-center">
-                    當前價格 (Price)
-                    <InfoTooltip text="Spot Spot Spot." />
-                  </span>
-                  <div className="text-2xl font-mono font-medium mt-1">${currentPrice.toLocaleString()}</div>
-                </div>
-                <ArrowUpRight className="h-4 w-4 text-emerald-500" />
+      <div className="flex flex-col gap-6 flex-1 min-h-0">
+        {/* Top Section: Chart & Analysis (Flex-1 to fill space) */}
+        <div className="grid grid-cols-12 gap-6 flex-1 min-h-[500px]">
+          {/* Left Column: Main Chart (Price) */}
+          <div className="col-span-12 lg:col-span-8 flex flex-col h-full bg-zinc-950/50 rounded-2xl border border-zinc-900 p-1 relative overflow-hidden">
+            {loading && (
+              <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm rounded-2xl">
+                <RefreshCw className="w-8 h-8 text-purple-500 animate-spin" />
               </div>
-
-              <div className="p-4 bg-zinc-900/30 border border-zinc-800 rounded-xl flex justify-between items-start">
-                <div>
-                  <span className="text-zinc-500 text-xs uppercase tracking-wider flex items-center">
-                    資金費率 (Funding Rate)
-                    <InfoTooltip text="Perp Funding Rate." />
-                  </span>
-                  <div className={`text-2xl font-mono font-medium mt-1 ${currentFunding > 0.01 ? 'text-red-400' : 'text-emerald-400'}`}>
-                    {currentFunding.toFixed(4)}%
-                  </div>
-                </div>
-                <Activity className="h-4 w-4 text-zinc-600" />
+            )}
+            {error && (
+              <div className="absolute inset-0 z-50 flex flex-col items-center justify-center text-red-400">
+                <AlertTriangle className="w-10 h-10 mb-2" />
+                <div>Connection Error: {error}</div>
               </div>
+            )}
 
-              <div className="p-4 bg-zinc-900/30 border border-zinc-800 rounded-xl flex justify-between items-start">
-                <div>
-                  <span className="text-zinc-500 text-xs uppercase tracking-wider flex items-center">
-                    策略訊號 (Signal)
-                    <InfoTooltip text="System Signal." />
-                  </span>
-                  <div className={`text-xl font-bold mt-1 flex items-center gap-2 ${signalColor}`}>
-                    {signalText}
-                  </div>
-                </div>
-                <Signal className="h-4 w-4 text-zinc-600" />
-              </div>
-            </div>
-
-            {/* Main Charts */}
-            <div className="flex-1 min-h-[400px]">
-              <SyncedChart
-                priceData={data.data.price}
-                fundingData={data.data.funding}
-                gridLines={historyOrders.filter(o => o.status === 'open').length > 0
-                  ? historyOrders.filter(o => o.status === 'open').map(o => o.price)
-                  : gridLines}
-              />
-            </div>
+            {/* ADVANCED CHART (Price + Embedded OI) */}
+            <AdvancedChart
+              symbol={symbol}
+              data={data?.data || null}
+              indicators={data?.indicators || null}
+              gridLines={gridLines}
+            />
           </div>
 
-          {/* Right Column: Grid Panel (Width: 3) */}
-          <div className="col-span-12 lg:col-span-3 flex flex-col gap-4">
+          {/* Right Column: Analysis & Grid Controls */}
+          <div className="col-span-12 lg:col-span-4 flex flex-col gap-4 h-full overflow-y-auto pr-2 custom-scrollbar">
+            {/* 1. Sentinel (CoinKarma) */}
+            <SentimentPanel indicators={data?.indicators || null} />
+
+            {/* 2. Grid Strategy Controls */}
             <GridPanel
               symbol={symbol}
               currentPrice={currentPrice}
               onPreview={(lines) => setGridLines(lines)}
               onOrders={(newOrders) => {
-                // Format new orders from backend to UI structure
                 const formatted = newOrders.map((o: any) => ({
                   id: o.id || Math.random().toString(),
                   symbol: o.symbol,
                   side: o.side,
                   price: o.price,
                   amount: o.amount,
-                  status: o.status === 'closed' ? 'filled' : o.status, // Dry run 'closed' -> 'filled' visually
+                  status: o.status === 'closed' ? 'filled' : o.status,
                   time: new Date().toLocaleTimeString()
                 }));
                 setHistoryOrders(prev => [...formatted, ...prev]);
+                setGridLines(formatted.map((o: any) => o.price));
               }}
             />
           </div>
         </div>
 
-        {/* Bottom Section: History & Logs */}
-        <div className="w-full">
+        {/* Bottom Section: History / Orders (Fixed Height) */}
+        <div className="h-[300px] flex-none">
           <HistoryPanel
             orders={historyOrders}
-            onCancel={(id) => {
-              setHistoryOrders(prev => prev.map(o => o.id === id ? { ...o, status: 'canceled' } : o));
-            }}
+            onCancel={(id) => setHistoryOrders(prev => prev.map(o => o.id === id ? { ...o, status: 'canceled' } : o))}
           />
         </div>
-
       </div>
     </main>
   );
