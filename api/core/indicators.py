@@ -154,37 +154,156 @@ class IndicatorEngine:
         return round(percentile, 1)
 
     @staticmethod
+    def calculate_ema_trend(price_data: List[Dict], fast_period: int = 50, slow_period: int = 200) -> Dict:
+        """
+        Calculate dual EMA trend filter from price close data.
+        
+        Returns:
+            {
+                'trend_state': 'uptrend' | 'downtrend' | 'neutral',
+                'ema_fast': [{'time': ..., 'value': ...}, ...],  # EMA50
+                'ema_slow': [{'time': ..., 'value': ...}, ...],  # EMA200
+            }
+        
+        Trend logic:
+            price > EMA_fast > EMA_slow → uptrend (block bearish signals)
+            price < EMA_fast < EMA_slow → downtrend (block bullish signals)  
+            otherwise → neutral (allow all signals)
+        """
+        if not price_data or len(price_data) < slow_period:
+            return {'trend_state': 'neutral', 'ema_fast': [], 'ema_slow': []}
+        
+        df = pd.DataFrame(price_data)
+        df['time'] = df['time'].astype(int)
+        df.sort_values('time', inplace=True)
+        
+        # Calculate EMAs using pandas ewm
+        df['ema_fast'] = df['close'].ewm(span=fast_period, adjust=False).mean()
+        df['ema_slow'] = df['close'].ewm(span=slow_period, adjust=False).mean()
+        
+        # Determine current trend state from latest values
+        latest = df.iloc[-1]
+        price_now = latest['close']
+        ema_fast_now = latest['ema_fast']
+        ema_slow_now = latest['ema_slow']
+        
+        if price_now > ema_fast_now > ema_slow_now:
+            trend_state = 'uptrend'
+        elif price_now < ema_fast_now < ema_slow_now:
+            trend_state = 'downtrend'
+        else:
+            trend_state = 'neutral'
+        
+        # Build output series (only where slow EMA is valid — after slow_period bars)
+        valid_df = df.iloc[slow_period - 1:]
+        ema_fast_series = [{'time': int(r['time']), 'value': round(r['ema_fast'], 2)} for _, r in valid_df.iterrows()]
+        ema_slow_series = [{'time': int(r['time']), 'value': round(r['ema_slow'], 2)} for _, r in valid_df.iterrows()]
+        
+        return {
+            'trend_state': trend_state,
+            'ema_fast': ema_fast_series,
+            'ema_slow': ema_slow_series,
+        }
+
+    @staticmethod
+    def calculate_rsi(price_data: List[Dict], period: int = 14) -> List[Dict]:
+        """
+        Calculate RSI (Relative Strength Index) using Wilder's smoothing.
+        
+        RSI < 30 = oversold (potential buy)
+        RSI > 70 = overbought (potential sell)
+        
+        Returns: [{'time': ..., 'value': ...}, ...]
+        """
+        if not price_data or len(price_data) < period + 1:
+            return []
+        
+        df = pd.DataFrame(price_data)
+        df['time'] = df['time'].astype(int)
+        df.sort_values('time', inplace=True)
+        
+        # Calculate price changes
+        delta = df['close'].diff()
+        
+        # Separate gains and losses
+        gains = delta.where(delta > 0, 0.0)
+        losses = (-delta).where(delta < 0, 0.0)
+        
+        # Wilder's smoothing (EMA with alpha=1/period)
+        avg_gain = gains.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+        avg_loss = losses.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+        
+        # Calculate RS and RSI
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        rsi = 100 - (100 / (1 + rs))
+        rsi = rsi.fillna(50)  # Default to neutral if undefined
+        
+        df['rsi'] = rsi
+        
+        # Return only valid RSI values (after period warmup)
+        valid = df.iloc[period:]
+        return [{'time': int(r['time']), 'value': round(r['rsi'], 1)} for _, r in valid.iterrows()]
+
+    @staticmethod
+    def calculate_bollinger_bands(price_data: List[Dict], period: int = 20, std_multiplier: float = 2.0) -> Dict:
+        """
+        Calculate Bollinger Bands.
+        Returns %B (where price sits relative to bands):
+          %B > 1.0 = above upper band (overbought)
+          %B < 0.0 = below lower band (oversold)
+          %B = 0.5 = at middle band
+        """
+        if not price_data or len(price_data) < period:
+            return {'bb_pctb': []}
+        
+        df = pd.DataFrame(price_data)
+        df['time'] = df['time'].astype(int)
+        df.sort_values('time', inplace=True)
+        
+        df['sma'] = df['close'].rolling(window=period).mean()
+        df['std'] = df['close'].rolling(window=period).std()
+        df['upper'] = df['sma'] + std_multiplier * df['std']
+        df['lower'] = df['sma'] - std_multiplier * df['std']
+        
+        # %B = (price - lower) / (upper - lower)
+        band_width = df['upper'] - df['lower']
+        df['pctb'] = (df['close'] - df['lower']) / band_width.replace(0, np.nan)
+        df['pctb'] = df['pctb'].fillna(0.5)
+        
+        valid = df.iloc[period - 1:]
+        return {
+            'bb_pctb': [{'time': int(r['time']), 'value': round(r['pctb'], 3)} for _, r in valid.iterrows()]
+        }
+
+    @staticmethod
     def calculate_confluence_signals(
         price_data: List[Dict],
         lsur_z_aligned: List[Dict],
         cvd_aligned: List[Dict],
         oi_percentile: float,
         funding_aligned: List[Dict],
+        trend_state: str = 'neutral',
+        rsi_aligned: List[Dict] = None,
+        ema_fast_aligned: List[Dict] = None,
+        bb_pctb_aligned: List[Dict] = None,
         lookback: int = 3
     ) -> List[Dict]:
         """
-        Multi-Indicator Confluence Signal System.
+        Multi-Indicator Confluence Signal System v3: Swing Trading.
         
-        Combines 4 indicators at each price bar to generate high-confidence signals.
-        Only emits markers when multiple indicators agree (score ≥ 3).
+        7 indicators, uniform threshold = 3. Cooldown prevents signal clustering.
         
-        For BULLISH confluence (potential bottom / short squeeze):
-          1. LSUR Z-Score ≤ -1.5 (overcrowded shorts)
-          2. CVD momentum turning UP (3-bar slope positive)
-          3. OI at high percentile > 75% (lots of leverage fuel for squeeze)
-          4. Funding Rate deeply negative (< -0.005%)
-          
-        For BEARISH confluence (potential top / long squeeze):
-          1. LSUR Z-Score ≥ 1.5 (overcrowded longs)
-          2. CVD momentum turning DOWN (3-bar slope negative)
-          3. OI at high percentile > 75% (lots of leverage fuel for liquidation)
-          4. Funding Rate elevated (> 0.015%)
+        INDICATORS (each = 1 point):
+          1. LSUR Z-Score — crowded positioning (±1.0)
+          2. CVD Momentum — buying/selling pressure direction
+          3. OI Percentile — leverage fuel (>70%)
+          4. Funding Rate — sentiment extreme
+          5. RSI — overbought/oversold (35/65)
+          6. EMA Zone — price stretched from EMA50 (>2%)
+          7. Bollinger %B — volatility-based extreme
         
-        Args:
-          oi_percentile: Current OI's percentile rank (0-100) from daily OI history.
-                         High value = more leverage = more fuel for squeeze.
-        
-        Returns markers with confluence score for rendering on price chart.
+        COOLDOWN: Minimum 5 bars between same-direction signals.
+        THRESHOLD: Always 3/7.
         """
         if not price_data or len(price_data) < lookback + 1:
             return []
@@ -193,99 +312,131 @@ class IndicatorEngine:
         z_by_time = {item['time']: item['value'] for item in lsur_z_aligned}
         cvd_by_time = {item['time']: item['value'] for item in cvd_aligned}
         funding_by_time = {item['time']: item['value'] for item in funding_aligned}
+        rsi_by_time = {item['time']: item['value'] for item in (rsi_aligned or [])}
+        ema_fast_by_time = {item['time']: item['value'] for item in (ema_fast_aligned or [])}
+        bb_by_time = {item['time']: item['value'] for item in (bb_pctb_aligned or [])}
         
-        # OI check: is leverage high enough to fuel a squeeze?
-        oi_is_high = oi_percentile >= 75.0  # Top quartile = lots of fuel
+        # OI check
+        oi_is_high = oi_percentile >= 70.0
         
+        # Price lookup
+        price_by_time = {p['time']: p for p in price_data}
         times = [p['time'] for p in price_data]
+        
         markers = []
+        last_bull_idx = -10
+        last_bear_idx = -10
+        COOLDOWN = 5
         
         for i in range(lookback, len(times)):
             t = times[i]
             
-            # --- Gather indicator values ---
             z_val = z_by_time.get(t)
             cvd_now = cvd_by_time.get(t)
             funding_now = funding_by_time.get(t)
+            rsi_now = rsi_by_time.get(t)
+            ema_fast_now = ema_fast_by_time.get(t)
+            bb_now = bb_by_time.get(t)
+            price_bar = price_by_time.get(t)
             
-            # CVD lookback values for momentum
             cvd_prev = cvd_by_time.get(times[i - lookback])
             
             if z_val is None:
                 continue
             
-            # --- Score BULLISH confluence ---
+            price_close = price_bar['close'] if price_bar else None
+            
+            # ===== BULLISH confluence =====
             bull_score = 0
             bull_reasons = []
             
-            # 1. LSUR Z-Score: overcrowded shorts
-            if z_val <= -1.5:
+            if z_val <= -1.0:
                 bull_score += 1
                 bull_reasons.append('Z')
             
-            # 2. CVD momentum: buying pressure picking up
-            if cvd_now is not None and cvd_prev is not None:
-                cvd_delta = cvd_now - cvd_prev
-                if cvd_delta > 0:
-                    bull_score += 1
-                    bull_reasons.append('CVD↑')
+            if cvd_now is not None and cvd_prev is not None and (cvd_now - cvd_prev) > 0:
+                bull_score += 1
+                bull_reasons.append('CVD↑')
             
-            # 3. OI high percentile: lots of leverage fuel for short squeeze
             if oi_is_high:
                 bull_score += 1
                 bull_reasons.append(f'OI{int(oi_percentile)}%')
             
-            # 4. Funding deep negative: capitulation
-            if funding_now is not None and funding_now < -0.005:
+            if funding_now is not None and funding_now < -0.001:
                 bull_score += 1
                 bull_reasons.append('FR-')
             
-            # --- Score BEARISH confluence ---
+            if rsi_now is not None and rsi_now < 35:
+                bull_score += 1
+                bull_reasons.append(f'RSI{int(rsi_now)}')
+            
+            if ema_fast_now is not None and price_close is not None:
+                ema_dist = (price_close - ema_fast_now) / ema_fast_now * 100
+                if ema_dist < -2.0:
+                    bull_score += 1
+                    bull_reasons.append('EMA↑')
+            
+            if bb_now is not None and bb_now < 0.05:
+                bull_score += 1
+                bull_reasons.append('BB↑')
+            
+            # ===== BEARISH confluence =====
             bear_score = 0
             bear_reasons = []
             
-            # 1. LSUR Z-Score: overcrowded longs
-            if z_val >= 1.5:
+            if z_val >= 1.0:
                 bear_score += 1
                 bear_reasons.append('Z')
             
-            # 2. CVD momentum: selling pressure increasing
-            if cvd_now is not None and cvd_prev is not None:
-                cvd_delta = cvd_now - cvd_prev
-                if cvd_delta < 0:
-                    bear_score += 1
-                    bear_reasons.append('CVD↓')
+            if cvd_now is not None and cvd_prev is not None and (cvd_now - cvd_prev) < 0:
+                bear_score += 1
+                bear_reasons.append('CVD↓')
             
-            # 3. OI high percentile: lots of leverage fuel for long liquidation
             if oi_is_high:
                 bear_score += 1
                 bear_reasons.append(f'OI{int(oi_percentile)}%')
             
-            # 4. Funding elevated: greed / overleveraged
-            if funding_now is not None and funding_now > 0.015:
+            if funding_now is not None and funding_now > 0.005:
                 bear_score += 1
                 bear_reasons.append('FR+')
             
-            # --- Emit marker if confluence is strong enough ---
-            if bull_score >= 3:
+            if rsi_now is not None and rsi_now > 65:
+                bear_score += 1
+                bear_reasons.append(f'RSI{int(rsi_now)}')
+            
+            if ema_fast_now is not None and price_close is not None:
+                ema_dist = (price_close - ema_fast_now) / ema_fast_now * 100
+                if ema_dist > 2.0:
+                    bear_score += 1
+                    bear_reasons.append('EMA↓')
+            
+            if bb_now is not None and bb_now > 0.95:
+                bear_score += 1
+                bear_reasons.append('BB↓')
+            
+            # --- Emit signal if score >= 3, respecting cooldown ---
+            if bull_score >= 3 and (i - last_bull_idx) >= COOLDOWN:
                 markers.append({
                     "time": t,
                     "position": "belowBar",
-                    "color": "#22c55e",       # Green
+                    "color": "#22c55e",
                     "shape": "arrowUp",
-                    "text": f"⚡{bull_score}/4 {'+'.join(bull_reasons)}",
+                    "text": f"⚡{bull_score}/7 {'+'.join(bull_reasons)}",
                     "score": bull_score,
                     "direction": "bullish"
                 })
-            elif bear_score >= 3:
+                last_bull_idx = i
+            elif bear_score >= 3 and (i - last_bear_idx) >= COOLDOWN:
                 markers.append({
                     "time": t,
                     "position": "aboveBar",
-                    "color": "#ef4444",       # Red
+                    "color": "#ef4444",
                     "shape": "arrowDown",
-                    "text": f"⚡{bear_score}/4 {'+'.join(bear_reasons)}",
+                    "text": f"⚡{bear_score}/7 {'+'.join(bear_reasons)}",
                     "score": bear_score,
                     "direction": "bearish"
                 })
+                last_bear_idx = i
         
         return markers
+

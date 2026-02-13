@@ -178,14 +178,29 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
         # 5. OI Percentile (from daily data — always has months of history)
         oi_percentile = IndicatorEngine.calculate_oi_percentile(daily_oi_for_percentile)
         
-        # 6. Multi-Indicator Confluence Signals
-        # Combine LSUR Z-Score + CVD momentum + OI percentile + Funding Rate
+        # 5.5. EMA Trend Filter (50/200 from price data)
+        ema_trend = IndicatorEngine.calculate_ema_trend(data['price'])
+        trend_state = ema_trend['trend_state']
+        
+        # 5.6. RSI (14-period)
+        rsi_history = IndicatorEngine.calculate_rsi(data['price'])
+        
+        # 5.7. Bollinger Bands %B (20-period, 2 std)
+        bb_data = IndicatorEngine.calculate_bollinger_bands(data['price'])
+        bb_pctb = bb_data['bb_pctb']
+        
+        # 6. Multi-Indicator Confluence Signals v3
+        # 7 indicators (incl RSI, EMA zone, BB %B), uniform threshold 3/7, 5-bar cooldown
         confluence_markers = IndicatorEngine.calculate_confluence_signals(
             price_data=data['price'],
             lsur_z_aligned=lsur_z_aligned,
             cvd_aligned=cvd_aligned,
             oi_percentile=oi_percentile,
-            funding_aligned=funding_aligned
+            funding_aligned=funding_aligned,
+            trend_state=trend_state,
+            rsi_aligned=rsi_history,
+            ema_fast_aligned=ema_trend['ema_fast'],
+            bb_pctb_aligned=bb_pctb
         )
         
         return {
@@ -198,10 +213,14 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
                 "lsur_z_score": lsur_z_score,
                 "lsur_history": ls_ratio_history,
                 "lsur_z_history": lsur_z_aligned,
-                "lsur_markers": confluence_markers,    # Confluence signals (replaces old Z-only markers)
+                "lsur_markers": confluence_markers,
                 "cvd_history": cvd_aligned,
                 "open_interest": open_interest,
-                "oi_percentile": oi_percentile
+                "oi_percentile": oi_percentile,
+                "ema_fast": ema_trend['ema_fast'],
+                "ema_slow": ema_trend['ema_slow'],
+                "trend_state": trend_state,
+                "rsi_history": rsi_history
             }
         }
     except Exception as e:

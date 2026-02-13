@@ -7,6 +7,10 @@ export interface IndicatorData {
     lsur_history: { time: number; value: number } | null;
     cvd_history: { time: number; value: number }[];
     open_interest: { time: number; value: number }[];
+    ema_fast?: { time: number; value: number }[];
+    ema_slow?: { time: number; value: number }[];
+    trend_state?: 'uptrend' | 'downtrend' | 'neutral';
+    rsi_history?: { time: number; value: number }[];
 }
 
 export interface MarketData {
