@@ -58,6 +58,9 @@ export default function AdvancedChart({ symbol, data, indicators, gridLines = []
     const [oiLegendValue, setOiLegendValue] = React.useState<number | null>(null);
     const [fundingLegendValue, setFundingLegendValue] = React.useState<number | null>(null);
 
+    // Marker Tooltip State
+    const [hoveredMarker, setHoveredMarker] = React.useState<{ x: number; y: number; text: string; color: string } | null>(null);
+
     // 1. INITIALIZATION
     useEffect(() => {
         if (!chartContainerRef.current || !rsiContainerRef.current || !cvdContainerRef.current || !oiContainerRef.current || !fundingContainerRef.current) return;
@@ -225,7 +228,7 @@ export default function AdvancedChart({ symbol, data, indicators, gridLines = []
                     position: m.position as 'aboveBar' | 'belowBar',
                     color: m.color,
                     shape: m.shape as 'arrowDown' | 'arrowUp',
-                    text: m.text,
+                    text: '', // Empty text so it doesn't clutter the chart; we'll show it on hover.
                 }))
                 .sort((a, b) => (a.time as number) - (b.time as number));
 
@@ -303,6 +306,23 @@ export default function AdvancedChart({ symbol, data, indicators, gridLines = []
         // SYNC LEGENDS (Listen to Main Chart)
         if (chartRef.current) {
             chartRef.current.subscribeCrosshairMove((param) => {
+                // Handle Marker Tooltip (show when hovering over a marker time)
+                if (param.time && param.point && indicators?.lsur_markers) {
+                    const marker = indicators.lsur_markers.find(m => m.time === param.time);
+                    if (marker && marker.text) {
+                        setHoveredMarker({
+                            x: param.point.x,
+                            y: param.point.y,
+                            text: marker.text,
+                            color: marker.color
+                        });
+                    } else {
+                        setHoveredMarker(null);
+                    }
+                } else {
+                    setHoveredMarker(null);
+                }
+
                 if (param.time) {
                     // Find matching points in other datasets
                     const rsiPoint = rsiData.find(p => p.time === param.time);
@@ -355,6 +375,20 @@ export default function AdvancedChart({ symbol, data, indicators, gridLines = []
         <div className="w-full flex flex-col gap-1 bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden shadow-lg p-1">
             {/* 1. Main Chart */}
             <div className="relative w-full h-[400px]">
+                {/* Marker Hover Tooltip */}
+                {hoveredMarker && (
+                    <div
+                        className="absolute z-50 px-2 py-1 bg-zinc-800/90 backdrop-blur-sm border border-zinc-700 rounded text-xs pointer-events-none whitespace-nowrap shadow-xl font-mono"
+                        style={{
+                            left: hoveredMarker.x + 10,
+                            top: Math.max(10, hoveredMarker.y - 30),
+                            color: hoveredMarker.color
+                        }}
+                    >
+                        {hoveredMarker.text}
+                    </div>
+                )}
+
                 <div className="absolute top-2 left-2 z-10 bg-black/50 px-2 py-1 rounded text-xs text-zinc-400 flex items-center gap-3">
                     <span className="flex items-center">Price<InfoTooltip text="K線圖：顯示價格走勢。綠色為上漲，紅色為下跌。箭頭標記為多指標匯合信號。橙色線 = EMA50，紫色線 = EMA200" /></span>
                     <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-orange-500 inline-block"></span><span className="text-[10px]">EMA50</span></span>
