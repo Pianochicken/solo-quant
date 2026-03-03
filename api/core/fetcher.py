@@ -9,7 +9,21 @@ class DataFetcher:
     """
     def __init__(self):
         self.exchange = ccxt.okx()
-        
+        self.cache = {}  # In-memory cache for historical data
+
+    def _merge_history(self, cached: list, new_data: list, time_key: str = 'time') -> list:
+        """
+        Merges new fetched data into the cached data, overwriting overlapping timestamps 
+        and appending new ones, keeping the array sorted by time.
+        """
+        # Convert cache to dict for O(1) updates
+        merged_dict = {item[time_key]: item for item in cached}
+        for item in new_data:
+            merged_dict[item[time_key]] = item
+            
+        # Sort back to list
+        return sorted(merged_dict.values(), key=lambda x: x[time_key])
+
     def fetch_market_data(self, symbol: str, timeframe: str = '1d', limit: int = 90) -> Dict:
         """
         Fetches OHLCV (Spot) and Funding Rate (Perp) History.
@@ -48,7 +62,7 @@ class DataFetcher:
                         
                     collected = batch + collected
                     
-                    if len(batch) < 2: 
+                    if len(batch) < 2 or len(collected) >= target_limit: 
                         break
                         
                     time.sleep(0.1)
@@ -59,39 +73,67 @@ class DataFetcher:
                     
             return collected[-limit:]
 
+        cache_key_ohlcv = f"ohlcv_{ohlcv_symbol}_{timeframe}"
+        cache_key_funding = f"funding_{funding_symbol}"
+
         try:
             # 1. Fetch OHLCV (Spot Price)
-            # We use the paginated helper adapted for our specific inputs
-            # Actually, let's just inline the loops for clarity as before or use the helper with symbol arg.
-            # The helper above takes `target_symbol`.
+            t0 = time.time()
+            if cache_key_ohlcv in self.cache:
+                # Fast update: only fetch the last 5 candles
+                recent_ohlcv = fetch_paginated(self.exchange.fetch_ohlcv, ohlcv_symbol, 5, is_ohlcv=True)
+                recent_price_data = [
+                    {
+                        "time": int(x[0] / 1000), 
+                        "open": x[1], "high": x[2], "low": x[3], "close": x[4], "volume": x[5]
+                    }
+                    for x in recent_ohlcv
+                ]
+                self.cache[cache_key_ohlcv] = self._merge_history(self.cache[cache_key_ohlcv], recent_price_data)
+            else:
+                # Full fetch: build cache
+                ohlcv = fetch_paginated(self.exchange.fetch_ohlcv, ohlcv_symbol, limit, is_ohlcv=True)
+                self.cache[cache_key_ohlcv] = [
+                    {
+                        "time": int(x[0] / 1000), 
+                        "open": x[1], "high": x[2], "low": x[3], "close": x[4], "volume": x[5]
+                    }
+                    for x in ohlcv
+                ]
             
-            ohlcv = fetch_paginated(self.exchange.fetch_ohlcv, ohlcv_symbol, limit, is_ohlcv=True)
+            price_data = self.cache[cache_key_ohlcv][-limit:]
+            print(f"fetch_market_data OHLCV step: {time.time() - t0:.2f}s")
             
-            # Format Price Data
-            price_data = [
-                {
-                    "time": int(x[0] / 1000), 
-                    "open": x[1], "high": x[2], "low": x[3], "close": x[4], "volume": x[5]
-                }
-                for x in ohlcv
-            ]
-            
+            # 1.5 Prepare raw OHLCV for alignment (needed for funding alignment later)
+            # Reconstruct the raw list of lists format for the alignment logic below
+            raw_ohlcv_for_alignment = [[x['time']*1000, x['open'], x['high'], x['low'], x['close'], x['volume']] for x in price_data]
+
+
             # 2. Fetch Funding Rate (Perp)
-            # Funding rate is every 8h. To cover the same timespan as `limit` candles:
-            # - 1D candles: need limit*3 funding entries
-            # - 1H candles: need limit/8 but fetch more for safety
-            funding_limit = max(limit * 3, 300)  # At least 300 to cover most ranges
-            funding = fetch_paginated(self.exchange.fetch_funding_rate_history, funding_symbol, funding_limit, is_ohlcv=False)
+            t1 = time.time()
+            funding_limit = max(limit * 3, 300)
+            
+            if cache_key_funding in self.cache:
+                # Fast update: fetch last 10 funding rates
+                recent_funding = fetch_paginated(self.exchange.fetch_funding_rate_history, funding_symbol, 10, is_ohlcv=False)
+                self.cache[cache_key_funding] = self._merge_history(self.cache[cache_key_funding], recent_funding, time_key='timestamp')
+            else:
+                funding = fetch_paginated(self.exchange.fetch_funding_rate_history, funding_symbol, funding_limit, is_ohlcv=False)
+                self.cache[cache_key_funding] = funding
+
+            funding_to_align = self.cache[cache_key_funding]
+            print(f"fetch_market_data Funding step: {time.time() - t1:.2f}s")
 
             # --- Data Alignment Logic (Upsampling) ---
-            df_price_times = pd.DataFrame([x[0] for x in ohlcv], columns=['timestamp'])
+            t2 = time.time()
+            df_price_times = pd.DataFrame([x[0] for x in raw_ohlcv_for_alignment], columns=['timestamp'])
             # Ensure sorting
             df_price_times.sort_values('timestamp', inplace=True)
             
-            if not funding:
+            if not funding_to_align:
                 df_funding = pd.DataFrame(columns=['timestamp', 'fundingRate'])
             else:
-                df_funding = pd.DataFrame(funding)
+                df_funding = pd.DataFrame(funding_to_align)
                 if 'timestamp' in df_funding.columns:
                     df_funding.sort_values('timestamp', inplace=True)
             
@@ -114,6 +156,7 @@ class DataFetcher:
             else:
                  funding_data = []
             
+            print(f"fetch_market_data Alignment step: {time.time() - t2:.2f}s")
             return {
                 "price": price_data,
                 "funding": funding_data
@@ -176,8 +219,16 @@ class DataFetcher:
             if not hasattr(self.exchange, 'publicGetRubikStatTakerVolume'):
                 return []
             
+            cache_key = f"taker_vol_{ccy}_{period}"
+            
+            if cache_key in self.cache:
+                # Incremental Update: Just fetch 1 page (100 items)
+                max_pages = 1
+            else:
+                # Full Fetch
+                max_pages = min((limit + 99) // 100, 5)  # Cap at 5 pages to avoid rate limiting
+                
             all_results = []
-            max_pages = min((limit + 99) // 100, 5)  # Cap at 5 pages to avoid rate limiting
             end_ts = None  # Start from latest
             
             for page in range(max_pages):
@@ -189,7 +240,9 @@ class DataFetcher:
                 if end_ts is not None:
                     params['end'] = str(end_ts)
                 
+                t0 = time.time()
                 response = self.exchange.publicGetRubikStatTakerVolume(params)
+                print(f"fetch_taker_volume API call {page}: {time.time() - t0:.2f}s")
                 
                 if response.get('code') != '0':
                     print(f"OKX Taker Volume Error for {symbol} (ccy={ccy}, period={period}): {response}")
@@ -216,7 +269,8 @@ class DataFetcher:
                 if len(data) < 100:
                     break  # Last page
                 
-                time.sleep(0.5)  # Rate limit: avoid OKX 50011 Too Many Requests
+                if page < max_pages - 1:
+                    time.sleep(0.5)  # Rate limit: avoid OKX 50011 Too Many Requests
             
             # Deduplicate and sort chronologically
             seen = set()
@@ -226,7 +280,13 @@ class DataFetcher:
                     seen.add(item['time'])
                     unique.append(item)
             unique.sort(key=lambda x: x['time'])
-            return unique
+            
+            if cache_key in self.cache:
+                self.cache[cache_key] = self._merge_history(self.cache[cache_key], unique)
+            else:
+                self.cache[cache_key] = unique
+                
+            return self.cache[cache_key][-limit:]
             
         except Exception as e:
             print(f"Failed to fetch Taker Volume: {e}")
@@ -243,13 +303,20 @@ class DataFetcher:
             symbol = f"{symbol}:USDT"
 
         try:
-            all_data = []
-            # Calculate how many pages we need
-            per_page = 100  # OKX typical max per request
-            total_needed = limit
-            pages_needed = (total_needed + per_page - 1) // per_page
-            max_pages = min(pages_needed, 3)  # Cap at 3 pages to avoid rate limiting
+            cache_key = f"oi_{symbol}_{timeframe}"
             
+            if cache_key in self.cache:
+                # Incremental Update
+                max_pages = 1
+            else:
+                # Full Fetch
+                per_page = 100  # OKX typical max per request
+                total_needed = limit
+                pages_needed = (total_needed + per_page - 1) // per_page
+                max_pages = min(pages_needed, 3)  # Cap at 3 pages to avoid rate limiting
+            
+            all_data = []
+            per_page = 100
             since = None  # Start from latest, paginate backward
             
             for page in range(max_pages):
@@ -257,9 +324,11 @@ class DataFetcher:
                 if since is not None:
                     params['until'] = since  # Fetch data before this timestamp
                 
+                t0 = time.time()
                 oi_data = self.exchange.fetch_open_interest_history(
                     symbol, timeframe, limit=per_page, since=since, params=params
                 )
+                print(f"fetch_open_interest API call {page}: {time.time() - t0:.2f}s")
                 
                 if not oi_data:
                     break
@@ -287,7 +356,8 @@ class DataFetcher:
                 if len(oi_data) < per_page:
                     break
                 
-                time.sleep(0.5)  # Rate limit: avoid OKX 50011 Too Many Requests
+                if page < max_pages - 1:
+                    time.sleep(0.5)  # Rate limit: avoid OKX 50011 Too Many Requests
             
             # Deduplicate by time and sort chronologically
             seen_times = set()
@@ -298,7 +368,13 @@ class DataFetcher:
                     unique_data.append(item)
             
             unique_data.sort(key=lambda x: x['time'])
-            return unique_data
+            
+            if cache_key in self.cache:
+                self.cache[cache_key] = self._merge_history(self.cache[cache_key], unique_data)
+            else:
+                self.cache[cache_key] = unique_data
+                
+            return self.cache[cache_key][-limit:]
             
         except Exception as e:
              print(f"Failed to fetch OI history: {e}")
@@ -331,6 +407,13 @@ class DataFetcher:
             # 1. Parse Currency (e.g., BTC/USDT -> BTC)
             ccy = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[0]
             
+            cache_key = f"lsr_{ccy}_{period}"
+            
+            fetch_limit = limit
+            if cache_key in self.cache:
+                 # Fast update
+                 fetch_limit = min(50, limit)
+                 
             # 2. Call OKX Implicit API
             # Endpoint: GET /api/v5/rubik/stat/contracts/long-short-account-ratio
             # Params: ccy=BTC, period=5m
@@ -339,7 +422,7 @@ class DataFetcher:
                 response = self.exchange.publicGetRubikStatContractsLongShortAccountRatio({
                     'ccy': ccy,
                     'period': period,
-                    'limit': limit
+                    'limit': fetch_limit
                 })
                 
                 # Response format: {'code': '0', 'data': [{'ts': '...', 'ratio': '...'}, ...]}
@@ -365,7 +448,14 @@ class DataFetcher:
                             "value": float(ratio)
                         })
                         
-                    return results[::-1] # Reverse to chronological order
+                    results = results[::-1] # Reverse to chronological order
+                    
+                    if cache_key in self.cache:
+                        self.cache[cache_key] = self._merge_history(self.cache[cache_key], results)
+                    else:
+                        self.cache[cache_key] = results
+                        
+                    return self.cache[cache_key][-limit:]
                 
             return []
         except Exception as e:

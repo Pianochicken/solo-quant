@@ -13,7 +13,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-fetcher = DataFetcher()
+# Global DataFetcher instance to maintain the in-memory cache
+_fetcher_instance = None
+
+def get_fetcher() -> DataFetcher:
+    global _fetcher_instance
+    if _fetcher_instance is None:
+        _fetcher_instance = DataFetcher()
+    return _fetcher_instance
 
 @app.get("/")
 def read_root():
@@ -30,8 +37,7 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
     formatted_symbol = symbol.replace('-', '/')
     
     try:
-        # 1. Fetch Basic Data
-        data = fetcher.fetch_market_data(formatted_symbol, timeframe, limit)
+        fetcher = get_fetcher()
         
         # Helper: Map CCXT timeframe to OKX Rubik/OI period
         # OKX Rubik API supports: '5m', '1H', '1D'
@@ -52,22 +58,23 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
         }
         indicator_period = tf_map.get(timeframe, '1H')
         
-        # 3. Fetch CoinKarma Data (Micro-structure)
-        # Order Book for Liquidity Walls
-        orderbook = fetcher.fetch_order_book_depth(formatted_symbol, limit=400)
-        
-        # Long/Short Ratio for Z-Score
-        ls_ratio_history = fetcher.fetch_long_short_ratio(formatted_symbol, period=indicator_period, limit=200)
-        
-        # Taker Volume for CVD (uses indicator_period)
-        taker_volume = fetcher.fetch_taker_volume(formatted_symbol, period=indicator_period, limit=1000)
-        
-        # Open Interest (uses indicator_period to match Price chart timeframe)
-        open_interest_raw = fetcher.fetch_open_interest(formatted_symbol, timeframe=indicator_period, limit=500)
-        
-        # Always fetch DAILY OI for long-term percentile (100 days ≈ 3 months, 1 page only)
-        daily_oi_for_percentile = fetcher.fetch_open_interest(formatted_symbol, timeframe='1D', limit=100)
-        
+        # 1. Fetch Basic Data and CoinKarma Data Concurrently
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+            future_data = pool.submit(fetcher.fetch_market_data, formatted_symbol, timeframe, limit)
+            future_ob = pool.submit(fetcher.fetch_order_book_depth, formatted_symbol, limit=400)
+            future_ls = pool.submit(fetcher.fetch_long_short_ratio, formatted_symbol, period=indicator_period, limit=200)
+            future_taker = pool.submit(fetcher.fetch_taker_volume, formatted_symbol, period=indicator_period, limit=1000)
+            future_oi_raw = pool.submit(fetcher.fetch_open_interest, formatted_symbol, timeframe=indicator_period, limit=500)
+            future_oi_daily = pool.submit(fetcher.fetch_open_interest, formatted_symbol, timeframe='1D', limit=100)
+            
+            data = future_data.result()
+            orderbook = future_ob.result()
+            ls_ratio_history = future_ls.result()
+            taker_volume = future_taker.result()
+            open_interest_raw = future_oi_raw.result()
+            daily_oi_for_percentile = future_oi_daily.result()
+            
         # --- Data Alignment: Sync OI & Funding to Price Timestamps ---
         import pandas as pd
         
@@ -138,7 +145,7 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
                 else:
                     cvd_aligned = []
             else:
-                cvd_aligned = []
+                cvd_aligned = [] # Fallback
 
         else:
             open_interest = open_interest_raw
@@ -234,7 +241,7 @@ from api.quant.grid_bot import GridBot
 from api.core.execution import ExecutionHandler
 
 # Initialize Execution Handler (Dry Run = True)
-executor = ExecutionHandler(fetcher.exchange, dry_run=True)
+executor = ExecutionHandler(get_fetcher().exchange, dry_run=True)
 
 @app.get("/quant/smart-params/{symbol}")
 def get_smart_grid_params(symbol: str):
@@ -243,6 +250,7 @@ def get_smart_grid_params(symbol: str):
     """
     formatted_symbol = symbol.replace('-', '/')
     try:
+        fetcher = get_fetcher()
         # 1. Fetch needed data
         price_data = fetcher.fetch_market_data(formatted_symbol, limit=1)
         current_price = price_data['price'][-1]['close']
@@ -383,6 +391,7 @@ class BacktestParams(BaseModel):
 def run_backtest(params: BacktestParams):
     try:
         formatted_symbol = params.symbol.replace('-', '/')
+        fetcher = get_fetcher()
         
         # 1. Fetch Price History
         end_time = int(time.time() * 1000)
