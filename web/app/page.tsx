@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { getMarketData } from '@/lib/api';
 import AdvancedChart from '@/components/AdvancedChart';
 import { GridPanel } from '@/components/GridPanel';
@@ -28,27 +28,49 @@ export default function Dashboard() {
   const [gridLines, setGridLines] = useState<number[]>([]);
   const [historyOrders, setHistoryOrders] = useState<Order[]>([]);
 
+  // Frontend Cache to eliminate loading spinners on timeframe switch
+  const dataCache = useRef<Record<string, any>>({});
+
   // Fetch Data Loop
   useEffect(() => {
+    let isMounted = true;
+    const cacheKey = `${symbol}_${timeframe}`;
+
+    // 1. Instant UI update if we have cached data for this timeframe
+    if (dataCache.current[cacheKey]) {
+      setData(dataCache.current[cacheKey]);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
+
     const fetchData = async () => {
       try {
         setError(null);
         // Pass timeframe to API
         const market = await getMarketData(symbol, timeframe, 1000);
+
+        if (!isMounted) return; // Prevent race conditions if user clicked rapidly
+
+        // Safely update cache and state quietly in background
+        dataCache.current[cacheKey] = market;
         setData(market);
         setLastUpdated(new Date());
         setLoading(false);
       } catch (e: any) {
+        if (!isMounted) return;
         console.error(e);
         setError(e.message || "Failed to fetch data");
         setLoading(false);
       }
     };
 
-    setLoading(true);
     fetchData(); // Initial
     const interval = setInterval(fetchData, 15000); // Poll every 15s to avoid rate limits
-    return () => clearInterval(interval);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
   }, [symbol, timeframe]);
 
   // Derived State

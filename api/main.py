@@ -60,22 +60,32 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
         
         # 1. Fetch Basic Data and CoinKarma Data Concurrently
         import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             future_data = pool.submit(fetcher.fetch_market_data, formatted_symbol, timeframe, limit)
             future_ob = pool.submit(fetcher.fetch_order_book_depth, formatted_symbol, limit=400)
+            
             future_ls = pool.submit(fetcher.fetch_long_short_ratio, formatted_symbol, period=indicator_period, limit=200)
+            future_ls_daily = pool.submit(fetcher.fetch_long_short_ratio, formatted_symbol, period='1D', limit=100)
+            
             future_taker = pool.submit(fetcher.fetch_taker_volume, formatted_symbol, period=indicator_period, limit=1000)
+            future_taker_daily = pool.submit(fetcher.fetch_taker_volume, formatted_symbol, period='1D', limit=100)
+            
             future_oi_raw = pool.submit(fetcher.fetch_open_interest, formatted_symbol, timeframe=indicator_period, limit=500)
             future_oi_daily = pool.submit(fetcher.fetch_open_interest, formatted_symbol, timeframe='1D', limit=100)
             
             data = future_data.result()
             orderbook = future_ob.result()
-            ls_ratio_history = future_ls.result()
-            taker_volume = future_taker.result()
+            
+            ls_ratio_history_raw = future_ls.result()
+            ls_ratio_daily = future_ls_daily.result()
+            
+            taker_volume_raw = future_taker.result()
+            taker_volume_daily = future_taker_daily.result()
+            
             open_interest_raw = future_oi_raw.result()
             daily_oi_for_percentile = future_oi_daily.result()
             
-        # --- Data Alignment: Sync OI & Funding to Price Timestamps ---
+        # --- Data Alignment: Merge High-Res and Daily for extended history ---
         import pandas as pd
         
         # 1. Prepare Price DataFrame
@@ -84,12 +94,24 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
             df_price['time'] = df_price['time'].astype(int)
             df_price.sort_values('time', inplace=True)
             
+            # --- Extended History Merging ---
+            def merge_history(high_res, daily):
+                combined = (high_res or []) + (daily or [])
+                if not combined: return []
+                df = pd.DataFrame(combined)
+                df['time'] = df['time'].astype(int)
+                # Drop duplicates keeping high-res (which is appended first)
+                df.drop_duplicates(subset=['time'], keep='first', inplace=True)
+                df.sort_values('time', inplace=True)
+                return df.to_dict('records')
+
+            ls_ratio_history = merge_history(ls_ratio_history_raw, ls_ratio_daily)
+            taker_volume = merge_history(taker_volume_raw, taker_volume_daily)
+            
             # 2. Align Open Interest
-            if open_interest_raw:
-                df_oi = pd.DataFrame(open_interest_raw)
-                df_oi['time'] = df_oi['time'].astype(int)
-                df_oi.sort_values('time', inplace=True)
-                
+            combined_oi = merge_history(open_interest_raw, daily_oi_for_percentile)
+            if combined_oi:
+                df_oi = pd.DataFrame(combined_oi)
                 merged_oi = pd.merge_asof(
                     df_price[['time']], 
                     df_oi[['time', 'value']], 
@@ -117,6 +139,23 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
                 funding_aligned = merged_funding[['time', 'value']].to_dict('records')
             else:
                 funding_aligned = []
+                
+        # 3.5 Align LS Ratio
+            if ls_ratio_history:
+                df_ls = pd.DataFrame(ls_ratio_history)
+                df_ls['time'] = df_ls['time'].astype(int)
+                df_ls.sort_values('time', inplace=True)
+                
+                merged_ls = pd.merge_asof(
+                    df_price[['time']], 
+                    df_ls[['time', 'value']], 
+                    on='time', 
+                    direction='backward'
+                )
+                merged_ls['value'] = merged_ls['value'].ffill().fillna(0)
+                ls_aligned_history_val = merged_ls[['time', 'value']].to_dict('records')
+            else:
+                ls_aligned_history_val = []
 
             # 4. Compute & Align CVD
             # Filter taker volume to price chart's time range FIRST,
@@ -150,6 +189,7 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
         else:
             open_interest = open_interest_raw
             funding_aligned = data['funding']
+            ls_aligned_history_val = ls_ratio_history
             cvd_aligned = [] # Fallback
 
         # 3. Calculate Indicators
@@ -157,30 +197,10 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
         current_price = data['price'][-1]['close'] if data['price'] else 0
         
         # removed: liquidity_walls = IndicatorEngine.calculate_liquidity_density(orderbook, current_price)
-        lsur_z_score = IndicatorEngine.calculate_lsur_z_score(ls_ratio_history)
+        lsur_z_score = IndicatorEngine.calculate_lsur_z_score(ls_aligned_history_val)
         
-        # 4. LSUR Z-Score History → Align to price timestamps
-        lsur_z_history = IndicatorEngine.calculate_lsur_z_score_history(ls_ratio_history)
-        
-        lsur_z_aligned = []
-        
-        if lsur_z_history and data['price']:
-            df_z = pd.DataFrame(lsur_z_history)
-            df_z['time'] = df_z['time'].astype(int)
-            df_z.sort_values('time', inplace=True)
-            
-            merged_z = pd.merge_asof(
-                df_price[['time']],
-                df_z[['time', 'value', 'signal']],
-                on='time',
-                direction='backward'
-            )
-            
-            for _, row in merged_z.iterrows():
-                t = int(row['time'])
-                z_val = float(row['value']) if pd.notna(row['value']) else None
-                if z_val is not None:
-                    lsur_z_aligned.append({"time": t, "value": z_val})
+        # 4. LSUR Z-Score History (Already aligned to price)
+        lsur_z_aligned = IndicatorEngine.calculate_lsur_z_score_history(ls_aligned_history_val)
         
         # 5. OI Percentile (from daily data — always has months of history)
         oi_percentile = IndicatorEngine.calculate_oi_percentile(daily_oi_for_percentile)
