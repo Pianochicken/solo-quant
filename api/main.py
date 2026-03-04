@@ -304,7 +304,6 @@ def get_smart_grid_params(symbol: str):
             "signal": "wait" if abs(z_score) > 2 else "neutral" # Simple signal hint
         }
     except Exception as e:
-        print(f"Smart Params Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 class GridParams(BaseModel):
@@ -414,7 +413,6 @@ def run_backtest(params: BacktestParams):
         fetcher = get_fetcher()
         
         # 1. Fetch Price History
-        end_time = int(time.time() * 1000)
         start_time = end_time - (params.duration_days * 24 * 60 * 60 * 1000)
         
         history = fetcher.fetch_history(formatted_symbol, start_time, end_time, '1h')

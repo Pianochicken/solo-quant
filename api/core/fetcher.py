@@ -102,7 +102,6 @@ class DataFetcher:
                 ]
             
             price_data = self.cache[cache_key_ohlcv][-limit:]
-            print(f"fetch_market_data OHLCV step: {time.time() - t0:.2f}s")
             
             # 1.5 Prepare raw OHLCV for alignment (needed for funding alignment later)
             # Reconstruct the raw list of lists format for the alignment logic below
@@ -122,7 +121,6 @@ class DataFetcher:
                 self.cache[cache_key_funding] = funding
 
             funding_to_align = self.cache[cache_key_funding]
-            print(f"fetch_market_data Funding step: {time.time() - t1:.2f}s")
 
             # --- Data Alignment Logic (Upsampling) ---
             t2 = time.time()
@@ -156,7 +154,6 @@ class DataFetcher:
             else:
                  funding_data = []
             
-            print(f"fetch_market_data Alignment step: {time.time() - t2:.2f}s")
             return {
                 "price": price_data,
                 "funding": funding_data
@@ -242,7 +239,6 @@ class DataFetcher:
                 
                 t0 = time.time()
                 response = self.exchange.publicGetRubikStatTakerVolume(params)
-                print(f"fetch_taker_volume API call {page}: {time.time() - t0:.2f}s")
                 
                 if response.get('code') != '0':
                     print(f"OKX Taker Volume Error for {symbol} (ccy={ccy}, period={period}): {response}")
@@ -328,7 +324,6 @@ class DataFetcher:
                 oi_data = self.exchange.fetch_open_interest_history(
                     symbol, timeframe, limit=per_page, since=since, params=params
                 )
-                print(f"fetch_open_interest API call {page}: {time.time() - t0:.2f}s")
                 
                 if not oi_data:
                     break
