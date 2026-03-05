@@ -9,7 +9,7 @@ interface SentimentPanelProps {
 export default function SentimentPanel({ indicators }: SentimentPanelProps) {
     if (!indicators) return null;
 
-    const { lsur_z_score, liquidity_walls } = indicators;
+    const { lsur_z_score } = indicators;
 
     // Z-Score Interpretation
     // > 2: Crowded Long (Bearish Signal) -> Red
@@ -98,25 +98,26 @@ export default function SentimentPanel({ indicators }: SentimentPanelProps) {
                     </div>
                 </div>
 
-                {/* Liquidity Walls Summary */}
+                {/* OI Percentile Card */}
                 <div className="bg-zinc-950/50 rounded-lg p-3 border border-zinc-800 flex flex-col col-span-2">
                     <div className="text-xs text-zinc-500 mb-2 flex items-center gap-1">
-                        <Layers className="w-3 h-3" /> Liquidity Walls<InfoTooltip text="流動性牆：顯示訂單簿中最密集的掛單價位。Resist = 上方賣壓集中區（阻力），Support = 下方買盤集中區（支撐）" />
+                        <Layers className="w-3 h-3" /> OI Percentile<InfoTooltip text="未平倉量百分位：當前 OI 在過去 90 天中的排名。> 70% 表示槓桿處於高位，市場波動加劇。< 30% 表示槓桿偏低，波動可能較小" />
                     </div>
-                    <div className="space-y-1 text-xs font-mono">
-                        {/* Show nearest Bid/Ask wall */}
-                        <div className="flex justify-between items-center text-red-300">
-                            <span>Resist</span>
-                            <span>{liquidity_walls?.ask_walls?.[0]?.price.toFixed(0) || '-'}</span>
-                        </div>
-                        <div className="flex justify-between items-center text-emerald-300">
-                            <span>Support</span>
-                            <span>{liquidity_walls?.bid_walls?.[0]?.price.toFixed(0) || '-'}</span>
-                        </div>
-                    </div>
-                    <div className="mt-auto text-[10px] text-zinc-600 pt-2">
-                        Top 5 levels aggregated
-                    </div>
+                    {(() => {
+                        const oiPct = indicators.oi_percentile;
+                        const oiColor = oiPct != null ? (oiPct >= 70 ? 'text-orange-400' : oiPct <= 30 ? 'text-blue-400' : 'text-zinc-400') : 'text-zinc-600';
+                        const oiStatus = oiPct != null ? (oiPct >= 70 ? 'High Leverage' : oiPct <= 30 ? 'Low Leverage' : 'Normal') : '—';
+                        return (
+                            <>
+                                <div className={`text-2xl font-mono font-bold ${oiColor}`}>
+                                    {oiPct != null ? `${oiPct.toFixed(0)}%` : '—'}
+                                </div>
+                                <div className={`text-xs mt-1 ${oiColor} font-medium`}>
+                                    {oiStatus}
+                                </div>
+                            </>
+                        );
+                    })()}
                 </div>
             </div>
         </div>

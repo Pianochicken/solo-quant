@@ -276,6 +276,37 @@ class IndicatorEngine:
         }
 
     @staticmethod
+    def calculate_oi_percentile_series(oi_aligned: List[Dict], window: int = 90) -> List[Dict]:
+        """
+        Calculate rolling OI percentile for each bar.
+        Returns: [{'time': ..., 'value': percentile}, ...]
+        """
+        if not oi_aligned or len(oi_aligned) < 10:
+            return []
+        
+        df = pd.DataFrame(oi_aligned)
+        df['time'] = df['time'].astype(int)
+        df.sort_values('time', inplace=True)
+        
+        # Rolling percentile: for each bar, what % of the last `window` bars have OI <= current
+        results = []
+        values = df['value'].values
+        times = df['time'].values
+        
+        for i in range(len(values)):
+            start = max(0, i - window + 1)
+            window_vals = values[start:i+1]
+            if len(window_vals) < 10:
+                results.append({'time': int(times[i]), 'value': 50.0})
+                continue
+            current = values[i]
+            below = np.sum(window_vals <= current)
+            pct = (below / len(window_vals)) * 100
+            results.append({'time': int(times[i]), 'value': round(float(pct), 1)})
+        
+        return results
+
+    @staticmethod
     def calculate_confluence_signals(
         price_data: List[Dict],
         lsur_z_aligned: List[Dict],
@@ -286,27 +317,80 @@ class IndicatorEngine:
         rsi_aligned: List[Dict] = None,
         ema_fast_aligned: List[Dict] = None,
         bb_pctb_aligned: List[Dict] = None,
-        lookback: int = 3
+        lookback: int = 3,
+        timeframe: str = '1h',
+        oi_aligned: List[Dict] = None,
     ) -> List[Dict]:
         """
-        Multi-Indicator Confluence Signal System v3: Swing Trading.
+        Multi-Indicator Confluence Signal System v4: Timeframe-Adaptive.
         
-        7 indicators, uniform threshold = 3. Cooldown prevents signal clustering.
+        7 indicators with timeframe-specific thresholds.
+        EMA Trend Filter adjusts bull/bear thresholds dynamically.
+        Per-bar rolling OI percentile replaces global OI check.
         
         INDICATORS (each = 1 point):
-          1. LSUR Z-Score — crowded positioning (±1.0)
+          1. LSUR Z-Score — crowded positioning
           2. CVD Momentum — buying/selling pressure direction
-          3. OI Percentile — leverage fuel (>70%)
+          3. OI Percentile — leverage fuel (rolling per-bar)
           4. Funding Rate — sentiment extreme
-          5. RSI — overbought/oversold (35/65)
-          6. EMA Zone — price stretched from EMA50 (>2%)
+          5. RSI — overbought/oversold
+          6. EMA Zone — price stretched from EMA50
           7. Bollinger %B — volatility-based extreme
-        
-        COOLDOWN: Minimum 5 bars between same-direction signals.
-        THRESHOLD: Always 3/7.
         """
         if not price_data or len(price_data) < lookback + 1:
             return []
+        
+        # === Timeframe-Adaptive Parameter Profiles ===
+        PROFILES = {
+            '15m': {
+                'rsi_bull': 25, 'rsi_bear': 75,
+                'ema_pct': 0.5,
+                'fr_bull': -0.005, 'fr_bear': 0.01,
+                'bb_bull': 0.10, 'bb_bear': 0.90,
+                'z_bull': -1.5, 'z_bear': 1.5,
+                'cooldown': 8,
+                'oi_lookback': 4,    # 4 bars = 1 hour
+                'price_thresh': 0.3, # % price change threshold
+            },
+            '1h': {
+                'rsi_bull': 30, 'rsi_bear': 70,
+                'ema_pct': 1.0,
+                'fr_bull': -0.003, 'fr_bear': 0.008,
+                'bb_bull': 0.08, 'bb_bear': 0.92,
+                'z_bull': -1.2, 'z_bear': 1.2,
+                'cooldown': 5,
+                'oi_lookback': 3,    # 3 bars = 3 hours
+                'price_thresh': 0.5,
+            },
+            '4h': {
+                'rsi_bull': 35, 'rsi_bear': 65,
+                'ema_pct': 2.0,
+                'fr_bull': -0.002, 'fr_bear': 0.006,
+                'bb_bull': 0.05, 'bb_bear': 0.95,
+                'z_bull': -1.0, 'z_bear': 1.0,
+                'cooldown': 3,
+                'oi_lookback': 3,    # 3 bars = 12 hours
+                'price_thresh': 1.0,
+            },
+            '1d': {
+                'rsi_bull': 40, 'rsi_bear': 60,
+                'ema_pct': 3.0,
+                'fr_bull': -0.001, 'fr_bear': 0.005,
+                'bb_bull': 0.05, 'bb_bear': 0.95,
+                'z_bull': -0.8, 'z_bear': 0.8,
+                'cooldown': 2,
+                'oi_lookback': 3,    # 3 bars = 3 days
+                'price_thresh': 1.5,
+            },
+        }
+        P = PROFILES.get(timeframe, PROFILES['1h'])
+        COOLDOWN = P['cooldown']
+        
+        # === Signal Threshold ===
+        # Fixed at 3/7 regardless of trend state.
+        # Trend state is still displayed as context but does NOT alter thresholds.
+        bull_threshold = 3
+        bear_threshold = 3
         
         # Build lookup dicts by time for O(1) access
         z_by_time = {item['time']: item['value'] for item in lsur_z_aligned}
@@ -316,17 +400,16 @@ class IndicatorEngine:
         ema_fast_by_time = {item['time']: item['value'] for item in (ema_fast_aligned or [])}
         bb_by_time = {item['time']: item['value'] for item in (bb_pctb_aligned or [])}
         
-        # OI check
-        oi_is_high = oi_percentile >= 70.0
+        # OI lookup by time (for OI change rate calculation)
+        oi_by_time = {item['time']: item['value'] for item in (oi_aligned or [])}
         
         # Price lookup
         price_by_time = {p['time']: p for p in price_data}
         times = [p['time'] for p in price_data]
         
         markers = []
-        last_bull_idx = -10
-        last_bear_idx = -10
-        COOLDOWN = 5
+        last_bull_idx = -100
+        last_bear_idx = -100
         
         for i in range(lookback, len(times)):
             t = times[i]
@@ -341,6 +424,22 @@ class IndicatorEngine:
             
             cvd_prev = cvd_by_time.get(times[i - lookback])
             
+            # OI × Price divergence (method 2: N-bar change rate)
+            oi_lookback = P['oi_lookback']
+            price_thresh = P['price_thresh']
+            oi_now = oi_by_time.get(t)
+            oi_prev_t = times[i - oi_lookback] if i >= oi_lookback else times[0]
+            oi_prev = oi_by_time.get(oi_prev_t)
+            price_prev_bar = price_by_time.get(oi_prev_t)
+            
+            # Calculate changes
+            price_chg_pct = None
+            oi_chg_pct = None
+            if price_bar and price_prev_bar and price_prev_bar['close'] > 0:
+                price_chg_pct = (price_bar['close'] - price_prev_bar['close']) / price_prev_bar['close'] * 100
+            if oi_now and oi_prev and oi_prev > 0:
+                oi_chg_pct = (oi_now - oi_prev) / oi_prev * 100
+            
             if z_val is None:
                 continue
             
@@ -350,7 +449,7 @@ class IndicatorEngine:
             bull_score = 0
             bull_reasons = []
             
-            if z_val <= -1.0:
+            if z_val <= P['z_bull']:
                 bull_score += 1
                 bull_reasons.append('Z')
             
@@ -358,25 +457,30 @@ class IndicatorEngine:
                 bull_score += 1
                 bull_reasons.append('CVD↑')
             
-            if oi_is_high:
-                bull_score += 1
-                bull_reasons.append(f'OI{int(oi_percentile)}%')
+            # OI × Price: bullish when price↑+OI↑ (new longs) or price↓+OI急降 (deleverage bottom)
+            if price_chg_pct is not None and oi_chg_pct is not None:
+                if price_chg_pct > price_thresh and oi_chg_pct > 0:
+                    bull_score += 1
+                    bull_reasons.append('OI↑P↑')
+                elif price_chg_pct < -price_thresh and oi_chg_pct < -5.0:
+                    bull_score += 1
+                    bull_reasons.append('OI去槓')
             
-            if funding_now is not None and funding_now < -0.001:
+            if funding_now is not None and funding_now < P['fr_bull']:
                 bull_score += 1
                 bull_reasons.append('FR-')
             
-            if rsi_now is not None and rsi_now < 35:
+            if rsi_now is not None and rsi_now < P['rsi_bull']:
                 bull_score += 1
                 bull_reasons.append(f'RSI{int(rsi_now)}')
             
             if ema_fast_now is not None and price_close is not None:
                 ema_dist = (price_close - ema_fast_now) / ema_fast_now * 100
-                if ema_dist < -2.0:
+                if ema_dist < -P['ema_pct']:
                     bull_score += 1
                     bull_reasons.append('EMA↑')
             
-            if bb_now is not None and bb_now < 0.05:
+            if bb_now is not None and bb_now < P['bb_bull']:
                 bull_score += 1
                 bull_reasons.append('BB↑')
             
@@ -384,7 +488,7 @@ class IndicatorEngine:
             bear_score = 0
             bear_reasons = []
             
-            if z_val >= 1.0:
+            if z_val >= P['z_bear']:
                 bear_score += 1
                 bear_reasons.append('Z')
             
@@ -392,30 +496,35 @@ class IndicatorEngine:
                 bear_score += 1
                 bear_reasons.append('CVD↓')
             
-            if oi_is_high:
-                bear_score += 1
-                bear_reasons.append(f'OI{int(oi_percentile)}%')
+            # OI × Price: bearish when price↓+OI↑ (new shorts) or price↑+OI急降 (just short squeeze)
+            if price_chg_pct is not None and oi_chg_pct is not None:
+                if price_chg_pct < -price_thresh and oi_chg_pct > 0:
+                    bear_score += 1
+                    bear_reasons.append('OI↑P↓')
+                elif price_chg_pct > price_thresh and oi_chg_pct < -5.0:
+                    bear_score += 1
+                    bear_reasons.append('OI去槓')
             
-            if funding_now is not None and funding_now > 0.005:
+            if funding_now is not None and funding_now > P['fr_bear']:
                 bear_score += 1
                 bear_reasons.append('FR+')
             
-            if rsi_now is not None and rsi_now > 65:
+            if rsi_now is not None and rsi_now > P['rsi_bear']:
                 bear_score += 1
                 bear_reasons.append(f'RSI{int(rsi_now)}')
             
             if ema_fast_now is not None and price_close is not None:
                 ema_dist = (price_close - ema_fast_now) / ema_fast_now * 100
-                if ema_dist > 2.0:
+                if ema_dist > P['ema_pct']:
                     bear_score += 1
                     bear_reasons.append('EMA↓')
             
-            if bb_now is not None and bb_now > 0.95:
+            if bb_now is not None and bb_now > P['bb_bear']:
                 bear_score += 1
                 bear_reasons.append('BB↓')
             
-            # --- Emit signal if score >= 3, respecting cooldown ---
-            if bull_score >= 3 and (i - last_bull_idx) >= COOLDOWN:
+            # --- Emit signal if score >= threshold, respecting cooldown ---
+            if bull_score >= bull_threshold and (i - last_bull_idx) >= COOLDOWN:
                 markers.append({
                     "time": t,
                     "position": "belowBar",
@@ -426,7 +535,7 @@ class IndicatorEngine:
                     "direction": "bullish"
                 })
                 last_bull_idx = i
-            elif bear_score >= 3 and (i - last_bear_idx) >= COOLDOWN:
+            elif bear_score >= bear_threshold and (i - last_bear_idx) >= COOLDOWN:
                 markers.append({
                     "time": t,
                     "position": "aboveBar",

@@ -216,8 +216,8 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
         bb_data = IndicatorEngine.calculate_bollinger_bands(data['price'])
         bb_pctb = bb_data['bb_pctb']
         
-        # 6. Multi-Indicator Confluence Signals v3
-        # 7 indicators (incl RSI, EMA zone, BB %B), uniform threshold 3/7, 5-bar cooldown
+        # 6. Multi-Indicator Confluence Signals v4
+        # Timeframe-adaptive thresholds, trend filter, per-bar rolling OI percentile
         confluence_markers = IndicatorEngine.calculate_confluence_signals(
             price_data=data['price'],
             lsur_z_aligned=lsur_z_aligned,
@@ -227,7 +227,9 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
             trend_state=trend_state,
             rsi_aligned=rsi_history,
             ema_fast_aligned=ema_trend['ema_fast'],
-            bb_pctb_aligned=bb_pctb
+            bb_pctb_aligned=bb_pctb,
+            timeframe=timeframe,
+            oi_aligned=open_interest,
         )
         
         return {

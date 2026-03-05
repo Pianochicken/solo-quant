@@ -78,7 +78,6 @@ class DataFetcher:
 
         try:
             # 1. Fetch OHLCV (Spot Price)
-            t0 = time.time()
             if cache_key_ohlcv in self.cache:
                 # Fast update: only fetch the last 5 candles
                 recent_ohlcv = fetch_paginated(self.exchange.fetch_ohlcv, ohlcv_symbol, 5, is_ohlcv=True)
@@ -109,7 +108,6 @@ class DataFetcher:
 
 
             # 2. Fetch Funding Rate (Perp)
-            t1 = time.time()
             funding_limit = max(limit * 3, 300)
             
             if cache_key_funding in self.cache:
@@ -123,7 +121,6 @@ class DataFetcher:
             funding_to_align = self.cache[cache_key_funding]
 
             # --- Data Alignment Logic (Upsampling) ---
-            t2 = time.time()
             df_price_times = pd.DataFrame([x[0] for x in raw_ohlcv_for_alignment], columns=['timestamp'])
             # Ensure sorting
             df_price_times.sort_values('timestamp', inplace=True)
@@ -237,7 +234,6 @@ class DataFetcher:
                 if end_ts is not None:
                     params['end'] = str(end_ts)
                 
-                t0 = time.time()
                 response = self.exchange.publicGetRubikStatTakerVolume(params)
                 
                 if response.get('code') != '0':
@@ -320,7 +316,6 @@ class DataFetcher:
                 if since is not None:
                     params['until'] = since  # Fetch data before this timestamp
                 
-                t0 = time.time()
                 oi_data = self.exchange.fetch_open_interest_history(
                     symbol, timeframe, limit=per_page, since=since, params=params
                 )

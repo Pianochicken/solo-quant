@@ -1,12 +1,9 @@
 export interface IndicatorData {
-    liquidity_walls: {
-        bid_walls: { price: number; volume: number }[];
-        ask_walls: { price: number; volume: number }[];
-    };
     lsur_z_score: number;
     lsur_history: { time: number; value: number } | null;
     cvd_history: { time: number; value: number }[];
     open_interest: { time: number; value: number }[];
+    oi_percentile: number;
     ema_fast?: { time: number; value: number }[];
     ema_slow?: { time: number; value: number }[];
     trend_state?: 'uptrend' | 'downtrend' | 'neutral';
