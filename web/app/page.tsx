@@ -182,7 +182,7 @@ export default function Dashboard() {
 
           {/* Right Column: Analysis & Grid Controls */}
           <div className="col-span-12 lg:col-span-4 flex flex-col gap-4 h-full overflow-y-auto pr-2 custom-scrollbar">
-            {/* 1. Sentinel (CoinKarma) */}
+            {/* 1. Sentinel (Sentiment) */}
             <SentimentPanel indicators={data?.indicators || null} />
 
             {/* 2. Grid Strategy Controls */}

@@ -77,9 +77,11 @@ Each indicator has its own small chart for visual context:
 - **OI**: Histogram (green/red), green = OI increase, red = decrease
 - **Funding Rate**: Histogram (green/red), positive = longs pay, negative = shorts pay
 
-### Right Panel (CoinKarma Sentinel)
+### Right Panel (Sentiment Sentinel)
 - LSUR Z-Score current value + status text
-- Liquidity Walls top 5 dense order book levels
+- EMA Trend state (Uptrend / Downtrend / Neutral)
+- RSI (14) current value + status
+- OI Percentile (rolling 90-day rank)
 
 ### Design Rules
 - All indicator labels have ⓘ InfoTooltip (Chinese explanation)

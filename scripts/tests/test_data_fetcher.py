@@ -1,7 +1,7 @@
 from api.core.fetcher import DataFetcher
 import json
 
-def test_coinkarma_data():
+def test_data_fetcher():
     fetcher = DataFetcher()
     symbol = "BTC/USDT"
     
@@ -32,4 +32,4 @@ def test_coinkarma_data():
         print(f"Failed to fetch USDC/USDT: {e}")
 
 if __name__ == "__main__":
-    test_coinkarma_data()
+    test_data_fetcher()

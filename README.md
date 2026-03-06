@@ -1,30 +1,49 @@
 # SoloQuant 🚀
 
-**SoloQuant** is a modern, full-stack quantitative trading platform designed for crypto algorithmic trading. It features a real-time dashboard, grid trading strategy execution, and a visual backtesting engine.
-
-![SoloQuant Dashboard](https://via.placeholder.com/800x400?text=SoloQuant+Dashboard+Preview)
+**SoloQuant** is a modern, full-stack quantitative trading platform designed for crypto algorithmic trading. It features a real-time dashboard with multi-indicator confluence signals, grid trading strategy execution, and a visual backtesting engine.
 
 ## ✨ Features
 
-- **Real-time Market Data**: milliseconds-latency price and funding rate updates via OKX API.
-- **Interactive Dashboard**:
-    - **Synced Charts**: Professional K-Line charts with overlaid Funding Rate indicators using `lightweight-charts`.
-    - **Order Management**: Visual tracking of open orders and trade history.
-- **Quantitative Strategies**:
-    - **Grid Trading Bot**: Automated high-frequency grid strategy (Arithmetic/Geometric).
-    - **Dry Run Mode**: Simulate trading logic without risking real assets.
-- **Backtesting System**:
-    - **Vectorized Engine**: Fast historical simulations against real market data.
-    - **Visual Reports**: Equity curves, PnL analysis, and trade execution visualization.
-- **Hybrid Architecture**: Combines Python's data science ecosystem with Next.js's reactive UI.
+### 📊 Real-time Dashboard
+- **Professional K-Line Charts**: Interactive candlestick charts with overlaid indicators using `lightweight-charts`.
+- **Multi-Timeframe Support**: 15m / 1h / 4h / 1D with instant switching (Stale-While-Revalidate cache).
+- **Indicator Overlays**: EMA50/200, RSI(14), Funding Rate, CVD, Open Interest.
+
+### 🎯 Multi-Indicator Confluence Signal System (v4)
+7 indicators scored in parallel to generate high-confidence buy/sell signals:
+
+| # | Indicator | Bullish Condition | Bearish Condition |
+|---|-----------|-------------------|-------------------|
+| 1 | LSUR Z-Score | Overcrowded shorts | Overcrowded longs |
+| 2 | CVD Momentum | Buying pressure ↑ | Selling pressure ↑ |
+| 3 | OI × Price | Price↑ + OI↑ (new longs) / Deleverage bottom | Price↓ + OI↑ (new shorts) / Short squeeze |
+| 4 | Funding Rate | Negative extreme | Positive extreme |
+| 5 | RSI (14) | Oversold | Overbought |
+| 6 | EMA Zone | Price below EMA50 | Price above EMA50 |
+| 7 | Bollinger %B | Below lower band | Above upper band |
+
+- **Timeframe-Adaptive Thresholds**: Each timeframe has its own tuned parameter profile.
+- **Signal Threshold**: 3/7 confluence required to trigger.
+- **Cooldown**: Prevents signal clustering (8 bars on 15m, 2 bars on 1D).
+
+### 🤖 Quantitative Strategies
+- **Grid Trading Bot**: Automated grid strategy with AI-suggested parameters.
+- **Dry Run Mode**: Simulate trading logic without risking real assets.
+- **Backtesting Engine**: Fast historical simulations with equity curves and PnL analysis.
+
+### 📡 Sentiment Panel
+- **LSUR Z-Score**: Crowded positioning indicator.
+- **EMA Trend**: 50/200 EMA trend filter (Uptrend / Downtrend / Neutral).
+- **RSI (14)**: Overbought/Oversold momentum gauge.
+- **OI Percentile**: Current leverage level relative to 90-day history.
 
 ## 🛠️ Tech Stack
 
 ### Backend (Python / FastAPI)
 - **FastAPI**: High-performance async web framework.
-- **CCXT**: Universal crypto exchange API connector (OKX supported).
-- **Pandas & NumPy**: Quantitative analysis and vectorized backtesting.
-- **Pydantic**: Data validation and settings management.
+- **CCXT**: Universal crypto exchange API connector (OKX).
+- **Pandas & NumPy**: Quantitative analysis and indicator calculations.
+- **Concurrent Futures**: Parallel API data fetching for low latency.
 
 ### Frontend (TypeScript / Next.js)
 - **Next.js 14+**: App Router-based modern React framework.
@@ -48,11 +67,8 @@
 
 2.  **Setup Backend**
     ```bash
-    # Create virtual environment
     python -m venv .venv
     source .venv/bin/activate  # Windows: .venv\Scripts\activate
-
-    # Install dependencies
     pip install -r requirements.txt
     ```
 
@@ -64,10 +80,7 @@
 
 ### Running the Application
 
-We provide a convenient script to launch both services simultaneously:
-
 ```bash
-# In the root directory
 ./run_fullstack.sh
 ```
 
@@ -79,20 +92,16 @@ We provide a convenient script to launch both services simultaneously:
 ```
 solo-quant/
 ├── api/                 # FastAPI Backend
-│   ├── core/            # Core logic (Fetcher, Execution)
+│   ├── core/            # Core logic (Fetcher, Indicators, Execution)
 │   ├── quant/           # Quant strategies & Backtester
-│   └── main.py          # API Gateway
+│   └── main.py          # API Gateway & Data Orchestration
 ├── web/                 # Next.js Frontend
 │   ├── app/             # App Router pages
-│   ├── components/      # React UI components
-│   └── lib/             # API clients & utilities
+│   ├── components/      # React UI components (Chart, SentimentPanel)
+│   └── lib/             # API clients & type definitions
 ├── run_fullstack.sh     # Startup script
 └── requirements.txt     # Python dependencies
 ```
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## 📜 License
 

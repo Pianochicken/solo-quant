@@ -58,7 +58,7 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
         }
         indicator_period = tf_map.get(timeframe, '1H')
         
-        # 1. Fetch Basic Data and CoinKarma Data Concurrently
+        # 1. Fetch Basic Data and Indicator Data Concurrently
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             future_data = pool.submit(fetcher.fetch_market_data, formatted_symbol, timeframe, limit)

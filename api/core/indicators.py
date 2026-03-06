@@ -4,7 +4,7 @@ from typing import List, Dict
 
 class IndicatorEngine:
     """
-    Processes raw market data into 'CoinKarma' style indicators.
+    Processes raw market data into quantitative trading indicators.
     """
     
     @staticmethod

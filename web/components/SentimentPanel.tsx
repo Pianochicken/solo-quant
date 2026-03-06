@@ -45,7 +45,7 @@ export default function SentimentPanel({ indicators }: SentimentPanelProps) {
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 h-full flex flex-col">
             <h3 className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-4 flex items-center gap-2">
                 <Activity className="w-4 h-4" />
-                CoinKarma Sentinel
+                Sentiment Sentinel
             </h3>
 
             <div className="grid grid-cols-2 gap-4 flex-1">
