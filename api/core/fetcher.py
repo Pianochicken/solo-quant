@@ -55,6 +55,9 @@ class DataFetcher:
                     if is_ohlcv:
                         batch = fetch_func(target_symbol, timeframe=timeframe, limit=max_per_req, params=params)
                     else:
+                        # For swap/perp symbols, tell CCXT the market type to avoid disambiguation errors
+                        if ':' in target_symbol:
+                            params['type'] = 'swap'
                         batch = fetch_func(target_symbol, limit=max_per_req, params=params)
                     
                     if not batch:

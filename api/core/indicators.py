@@ -240,9 +240,9 @@ class IndicatorEngine:
         
         df['rsi'] = rsi
         
-        # Return only valid RSI values (after period warmup)
-        valid = df.iloc[period:]
-        return [{'time': int(r['time']), 'value': round(r['rsi'], 1)} for _, r in valid.iterrows()]
+        # Return RSI for ALL timestamps (fillna(50) handles warmup period).
+        # This keeps the array length matching price data for chart alignment.
+        return [{'time': int(r['time']), 'value': round(r['rsi'], 1)} for _, r in df.iterrows()]
 
     @staticmethod
     def calculate_bollinger_bands(price_data: List[Dict], period: int = 20, std_multiplier: float = 2.0) -> Dict:

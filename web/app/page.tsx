@@ -21,6 +21,8 @@ export default function Dashboard() {
   const [timeframe, setTimeframe] = useState('1h');
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [fetching, setFetching] = useState(false);
+  const [signalPhase, setSignalPhase] = useState<'idle' | 'loading' | 'computing' | 'ready'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
@@ -28,45 +30,71 @@ export default function Dashboard() {
   const [gridLines, setGridLines] = useState<number[]>([]);
   const [historyOrders, setHistoryOrders] = useState<Order[]>([]);
 
-  // Frontend Cache to eliminate loading spinners on timeframe switch
-  const dataCache = useRef<Record<string, any>>({});
+  // Track if this is the initial load for the current timeframe
+  const isFirstLoad = useRef(true);
+
+  // Clear old data when timeframe changes
+  useEffect(() => {
+    setData(null);
+    setLoading(true);
+    setSignalPhase('loading');
+    isFirstLoad.current = true;
+  }, [symbol, timeframe]);
 
   // Fetch Data Loop
   useEffect(() => {
     let isMounted = true;
-    const cacheKey = `${symbol}_${timeframe}`;
-
-    // 1. Instant UI update if we have cached data for this timeframe
-    if (dataCache.current[cacheKey]) {
-      setData(dataCache.current[cacheKey]);
-      setLoading(false);
-    } else {
-      setLoading(true);
-    }
 
     const fetchData = async () => {
       try {
         setError(null);
-        // Pass timeframe to API
+        if (!isFirstLoad.current) {
+          // Subsequent refreshes: show "updating" badge
+          setFetching(true);
+          setSignalPhase('computing');
+        }
+
         const market = await getMarketData(symbol, timeframe, 1000);
+        if (!isMounted) return;
 
-        if (!isMounted) return; // Prevent race conditions if user clicked rapidly
+        if (isFirstLoad.current) {
+          // First load for this timeframe:
+          // Step 1: Show chart with price data but strip signals temporarily
+          const dataWithoutSignals = {
+            ...market,
+            indicators: { ...market.indicators, lsur_markers: [] }
+          };
+          setData(dataWithoutSignals);
+          setLoading(false);
+          setSignalPhase('computing');
 
-        // Safely update cache and state quietly in background
-        dataCache.current[cacheKey] = market;
-        setData(market);
+          // Step 2: Brief pause so user sees "更新訊號中...", then reveal signals
+          await new Promise(r => setTimeout(r, 600));
+          if (!isMounted) return;
+
+          setData(market);
+          setSignalPhase('ready');
+          isFirstLoad.current = false;
+        } else {
+          // Subsequent refresh: update everything at once
+          setData(market);
+          setSignalPhase('ready');
+        }
+
         setLastUpdated(new Date());
-        setLoading(false);
+        setFetching(false);
       } catch (e: any) {
         if (!isMounted) return;
         console.error(e);
         setError(e.message || "Failed to fetch data");
         setLoading(false);
+        setFetching(false);
+        setSignalPhase('idle');
       }
     };
 
-    fetchData(); // Initial
-    const interval = setInterval(fetchData, 15000); // Poll every 15s to avoid rate limits
+    fetchData();
+    const interval = setInterval(fetchData, 15000);
     return () => {
       isMounted = false;
       clearInterval(interval);
@@ -170,6 +198,49 @@ export default function Dashboard() {
                 <div>Connection Error: {error}</div>
               </div>
             )}
+
+            {/* Signal Status Badge */}
+            {(() => {
+              const markers = data?.indicators?.lsur_markers;
+              const signalCount = markers?.length ?? 0;
+              const bullCount = markers?.filter((m: any) => m.direction === 'bullish').length ?? 0;
+              const bearCount = markers?.filter((m: any) => m.direction === 'bearish').length ?? 0;
+
+              if (signalPhase === 'loading') {
+                return (
+                  <div className="absolute top-3 right-3 z-40 flex items-center gap-2 bg-zinc-900/90 backdrop-blur-sm border border-zinc-700 rounded-lg px-3 py-1.5 text-xs">
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500"></span>
+                    </span>
+                    <span className="text-zinc-400">讀取資料中...</span>
+                  </div>
+                );
+              }
+
+              if (signalPhase === 'computing') {
+                return (
+                  <div className="absolute top-3 right-3 z-40 flex items-center gap-2 bg-zinc-900/90 backdrop-blur-sm border border-zinc-700 rounded-lg px-3 py-1.5 text-xs">
+                    <RefreshCw className="w-3 h-3 text-amber-400 animate-spin" />
+                    <span className="text-zinc-400">更新訊號中...</span>
+                  </div>
+                );
+              }
+
+              if (signalPhase === 'ready' && signalCount > 0) {
+                return (
+                  <div className="absolute top-3 right-3 z-40 flex items-center gap-2 bg-zinc-900/80 backdrop-blur-sm border border-zinc-800 rounded-lg px-3 py-1.5 text-xs">
+                    <Zap className="w-3 h-3 text-amber-400" />
+                    <span className="text-zinc-300">{signalCount} 個訊號</span>
+                    <span className="text-zinc-600">|</span>
+                    <span className="text-emerald-400">{bullCount}↑</span>
+                    <span className="text-red-400">{bearCount}↓</span>
+                  </div>
+                );
+              }
+
+              return null;
+            })()}
 
             {/* ADVANCED CHART (Price + Embedded OI) */}
             <AdvancedChart

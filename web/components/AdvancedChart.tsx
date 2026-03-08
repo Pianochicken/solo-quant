@@ -77,7 +77,7 @@ export default function AdvancedChart({ symbol, data, indicators, gridLines = []
         const commonOptions = {
             layout: { background: { type: ColorType.Solid, color: 'transparent' }, textColor: '#d1d5db' },
             grid: { vertLines: { color: '#27272a' }, horzLines: { color: '#27272a' } },
-            timeScale: { visible: true, timeVisible: true, secondsVisible: false },
+            timeScale: { visible: false, timeVisible: true, secondsVisible: false },
             crosshair: { mode: CrosshairMode.Normal },
             rightPriceScale: { visible: true, minimumWidth: 80 },
         };
@@ -87,6 +87,7 @@ export default function AdvancedChart({ symbol, data, indicators, gridLines = []
             ...commonOptions,
             width: chartContainerRef.current.clientWidth,
             height: 400,
+            timeScale: { visible: true, timeVisible: true, secondsVisible: false },
         });
         chartRef.current = chart;
         mainSeriesRef.current = chart.addSeries(CandlestickSeries, {
@@ -156,6 +157,7 @@ export default function AdvancedChart({ symbol, data, indicators, gridLines = []
             ...commonOptions,
             width: fundingContainerRef.current.clientWidth,
             height: 100,
+            timeScale: { visible: true, timeVisible: true, secondsVisible: false },
             rightPriceScale: { visible: true, minimumWidth: 80, scaleMargins: { top: 0.1, bottom: 0.1 } },
         });
         fundingChartRef.current = fundingChart;
