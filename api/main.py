@@ -26,6 +26,17 @@ def get_fetcher() -> DataFetcher:
 def read_root():
     return {"status": "SoloQuant API is running 🚀"}
 
+@app.post("/clear-cache")
+def clear_cache():
+    """
+    Clears the in-memory cache of the DataFetcher to force fresh data fetches.
+    """
+    global _fetcher_instance
+    if _fetcher_instance and hasattr(_fetcher_instance, 'cache'):
+        _fetcher_instance.cache.clear()
+        return {"status": "success", "message": "Cache cleared successfully"}
+    return {"status": "info", "message": "Cache was already empty"}
+
 from api.core.indicators import IndicatorEngine
 
 @app.get("/market/{symbol}")

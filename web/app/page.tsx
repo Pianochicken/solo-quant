@@ -6,7 +6,8 @@ import AdvancedChart from '@/components/AdvancedChart';
 import { GridPanel } from '@/components/GridPanel';
 import SentimentPanel from '@/components/SentimentPanel';
 import { HistoryPanel, Order } from '@/components/HistoryPanel';
-import { RefreshCw, Zap, BarChart3, Clock, AlertTriangle } from 'lucide-react';
+import { IndicatorsInfoModal } from '@/components/IndicatorsInfoModal';
+import { RefreshCw, Zap, BarChart3, Clock, AlertTriangle, Info } from 'lucide-react';
 import Link from 'next/link';
 
 const TIMEFRAMES = [
@@ -22,6 +23,7 @@ export default function Dashboard() {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [fetching, setFetching] = useState(false);
+  const [isClearingCache, setIsClearingCache] = useState(false);
   const [signalPhase, setSignalPhase] = useState<'idle' | 'loading' | 'computing' | 'ready'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -29,6 +31,9 @@ export default function Dashboard() {
   // State for Grid & Orders
   const [gridLines, setGridLines] = useState<number[]>([]);
   const [historyOrders, setHistoryOrders] = useState<Order[]>([]);
+
+  // State for Info Modal
+  const [isInfoModalOpen, setIsInfoModalOpen] = useState(false);
 
   // Track if this is the initial load for the current timeframe
   const isFirstLoad = useRef(true);
@@ -101,6 +106,26 @@ export default function Dashboard() {
     };
   }, [symbol, timeframe]);
 
+  const handleClearCache = async () => {
+    try {
+      setIsClearingCache(true);
+      await fetch('http://localhost:8000/clear-cache', { method: 'POST' });
+      // Force unmount/remount behavior or just refetch directly
+      setData(null);
+      setLoading(true);
+      isFirstLoad.current = true;
+      const res = await getMarketData(symbol, timeframe, 1000);
+      setData(res);
+      setSignalPhase('ready');
+      setLastUpdated(new Date());
+    } catch (error) {
+      console.error("Failed to clear cache:", error);
+    } finally {
+      setIsClearingCache(false);
+      setLoading(false);
+    }
+  };
+
   // Derived State
   const currentPrice = data?.data?.price?.length ? data.data.price[data.data.price.length - 1].close : 0;
 
@@ -153,32 +178,55 @@ export default function Dashboard() {
             ))}
           </div>
 
-          <Link href="/backtest" className="flex items-center gap-2 px-4 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 transition-colors text-sm font-medium text-zinc-400 hover:text-white border border-zinc-800">
-            <BarChart3 className="w-4 h-4" />
-            Backtester
-          </Link>
+          <div className="flex items-center gap-2">
+            {/* Clear Cache Button */}
+            <button
+              onClick={handleClearCache}
+              disabled={isClearingCache}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-all font-medium text-sm ${isClearingCache ? 'opacity-50 cursor-not-allowed' : ''}`}
+              title="清除快取並重新抓取資料"
+            >
+              <RefreshCw className={`w-4 h-4 ${isClearingCache ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">清除快取</span>
+            </button>
 
-          <div className="flex items-center gap-2 bg-zinc-900 rounded-lg p-1 border border-zinc-800">
-            {['BTC/USDT', 'ETH/USDT', 'SOL/USDT'].map(s => (
-              <button
-                key={s}
-                onClick={() => { setSymbol(s); }}
-                className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${symbol === s
-                  ? 'bg-zinc-800 text-white shadow-sm'
-                  : 'text-zinc-500 hover:text-zinc-300'
-                  }`}
-              >
-                {s.split('/')[0]}
-              </button>
-            ))}
+            {/* Info Button */}
+            <button
+              onClick={() => setIsInfoModalOpen(true)}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-amber-400 hover:border-amber-900/50 hover:bg-amber-950/20 transition-all font-medium text-sm"
+              title="指標說明"
+            >
+              <Info className="w-4 h-4" />
+              指標說明
+            </button>
+
+            <Link href="/backtest" className="flex items-center gap-2 px-4 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 transition-colors text-sm font-medium text-zinc-400 hover:text-white border border-zinc-800">
+              <BarChart3 className="w-4 h-4" />
+              Backtester
+            </Link>
+
+            <div className="flex items-center gap-2 bg-zinc-900 rounded-lg p-1 border border-zinc-800">
+              {['BTC/USDT', 'ETH/USDT', 'SOL/USDT'].map(s => (
+                <button
+                  key={s}
+                  onClick={() => { setSymbol(s); }}
+                  className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${symbol === s
+                    ? 'bg-zinc-800 text-white shadow-sm'
+                    : 'text-zinc-500 hover:text-zinc-300'
+                    }`}
+                >
+                  {s.split('/')[0]}
+                </button>
+              ))}
+            </div>
+
+            {lastUpdated && (
+              <span className="text-xs text-zinc-600 flex items-center gap-1">
+                <Clock className="w-3 h-3" />
+                {lastUpdated.toLocaleTimeString()}
+              </span>
+            )}
           </div>
-
-          {lastUpdated && (
-            <span className="text-xs text-zinc-600 flex items-center gap-1">
-              <Clock className="w-3 h-3" />
-              {lastUpdated.toLocaleTimeString()}
-            </span>
-          )}
         </div>
       </div>
 
@@ -245,6 +293,7 @@ export default function Dashboard() {
             {/* ADVANCED CHART (Price + Embedded OI) */}
             <AdvancedChart
               symbol={symbol}
+              timeframe={timeframe}
               data={data?.data || null}
               indicators={data?.indicators || null}
               gridLines={gridLines}
@@ -254,7 +303,7 @@ export default function Dashboard() {
           {/* Right Column: Analysis & Grid Controls */}
           <div className="col-span-12 lg:col-span-4 flex flex-col gap-4 h-full overflow-y-auto pr-2 custom-scrollbar">
             {/* 1. Sentinel (Sentiment) */}
-            <SentimentPanel indicators={data?.indicators || null} />
+            <SentimentPanel indicators={data?.indicators || null} timeframe={timeframe} />
 
             {/* 2. Grid Strategy Controls */}
             <GridPanel
@@ -286,6 +335,12 @@ export default function Dashboard() {
           />
         </div>
       </div>
+
+      {/* Indicators Information Modal */}
+      <IndicatorsInfoModal
+        isOpen={isInfoModalOpen}
+        onClose={() => setIsInfoModalOpen(false)}
+      />
     </main>
   );
 }

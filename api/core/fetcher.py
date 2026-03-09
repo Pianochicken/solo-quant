@@ -55,9 +55,6 @@ class DataFetcher:
                     if is_ohlcv:
                         batch = fetch_func(target_symbol, timeframe=timeframe, limit=max_per_req, params=params)
                     else:
-                        # For swap/perp symbols, tell CCXT the market type to avoid disambiguation errors
-                        if ':' in target_symbol:
-                            params['type'] = 'swap'
                         batch = fetch_func(target_symbol, limit=max_per_req, params=params)
                     
                     if not batch:
@@ -119,9 +116,10 @@ class DataFetcher:
                 self.cache[cache_key_funding] = self._merge_history(self.cache[cache_key_funding], recent_funding, time_key='timestamp')
             else:
                 funding = fetch_paginated(self.exchange.fetch_funding_rate_history, funding_symbol, funding_limit, is_ohlcv=False)
-                self.cache[cache_key_funding] = funding
+                if funding:  # Only cache if we actually got data (avoid caching empty on transient errors)
+                    self.cache[cache_key_funding] = funding
 
-            funding_to_align = self.cache[cache_key_funding]
+            funding_to_align = self.cache.get(cache_key_funding, [])
 
             # --- Data Alignment Logic (Upsampling) ---
             df_price_times = pd.DataFrame([x[0] for x in raw_ohlcv_for_alignment], columns=['timestamp'])
