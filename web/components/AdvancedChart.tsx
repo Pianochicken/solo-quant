@@ -2,9 +2,11 @@
 import React, { useEffect, useRef } from 'react';
 import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickSeries, HistogramSeries, LineSeries, Time, CrosshairMode, createSeriesMarkers } from 'lightweight-charts';
 import { InfoTooltip } from './InfoTooltip';
+import { getThresholds } from '@/lib/thresholds';
 
 interface AdvancedChartProps {
     symbol: string;
+    timeframe?: string;
     data: {
         price: any[];
         funding: any[];
@@ -24,7 +26,8 @@ interface AdvancedChartProps {
     gridLines?: number[];
 }
 
-export default function AdvancedChart({ symbol, data, indicators, gridLines = [] }: AdvancedChartProps) {
+export default function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines = [] }: AdvancedChartProps) {
+    const T = getThresholds(timeframe);
     // Container Refs
     const chartContainerRef = useRef<HTMLDivElement>(null);
     const rsiContainerRef = useRef<HTMLDivElement>(null);
@@ -407,11 +410,11 @@ export default function AdvancedChart({ symbol, data, indicators, gridLines = []
             {/* 2. RSI Chart */}
             <div className="relative w-full h-[80px] border-t border-zinc-800">
                 <div className="absolute top-1 left-2 z-10 bg-black/50 px-2 py-0.5 rounded text-[10px] text-zinc-400 flex gap-2">
-                    <span className="font-bold text-purple-400">RSI (14)</span><InfoTooltip text="相對強弱指數：衡量價格動能的振盪指標。RSI > 70 = 超買（可能回落），RSI < 30 = 超賣（可能反彈）。用於偵測短期價格極端" />
-                    <span className="text-zinc-600 text-[9px]">30</span>
-                    <span className="text-zinc-600 text-[9px]">70</span>
+                    <span className="font-bold text-purple-400">RSI (14)</span><InfoTooltip text={`相對強弱指數：衡量價格動能的振盪指標。RSI > ${T.rsi_bear} = 超買（可能回落），RSI < ${T.rsi_bull} = 超賣（可能反彈）。門檻會隨週期動態調整`} />
+                    <span className="text-zinc-600 text-[9px]">{T.rsi_bull}</span>
+                    <span className="text-zinc-600 text-[9px]">{T.rsi_bear}</span>
                     {rsiLegendValue !== null && (
-                        <span className={`font-mono ${rsiLegendValue > 70 ? 'text-red-400' : rsiLegendValue < 30 ? 'text-emerald-400' : 'text-zinc-200'}`}>
+                        <span className={`font-mono ${rsiLegendValue > T.rsi_bear ? 'text-red-400' : rsiLegendValue < T.rsi_bull ? 'text-emerald-400' : 'text-zinc-200'}`}>
                             {rsiLegendValue.toFixed(0)}
                         </span>
                     )}
@@ -444,7 +447,7 @@ export default function AdvancedChart({ symbol, data, indicators, gridLines = []
             {/* 4. Funding Chart */}
             <div className="relative w-full h-[100px] border-t border-zinc-800">
                 <div className="absolute top-1 left-2 z-10 bg-black/50 px-2 py-0.5 rounded text-[10px] text-zinc-400 flex gap-2">
-                    <span className="font-bold text-emerald-400">Funding Rate</span><InfoTooltip text="資金費率：多頭和空頭之間定期支付的費用。正值 = 多頭付費給空頭（看漲情緒高），負值 = 空頭付費給多頭（看跌情緒高）" />
+                    <span className="font-bold text-emerald-400">Funding Rate</span><InfoTooltip text={`資金費率：多空之間定期支付的費用。FR > ${T.fr_bear}% = 多頭過多（看跌），FR < ${T.fr_bull}% = 空頭過多（看漲）。門檻會隨週期動態調整`} />
                     {fundingLegendValue !== null && (
                         <span className={`${fundingLegendValue >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                             {fundingLegendValue.toFixed(4)}%
