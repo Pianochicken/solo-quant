@@ -4,12 +4,13 @@ from typing import List, Dict
 from api.quant.grid_bot import GridBot
 
 class Backtester:
-    def __init__(self, bot: GridBot, data: List[Dict], sentiment_data: List[Dict] = None):
+    def __init__(self, bot: GridBot, data: List[Dict], sentiment_data: List[Dict] = None, regime_data: Dict = None):
         self.bot = bot
         self.data = data # List of {'time', 'open', 'high', 'low', 'close'}
         # sentiment_data: List of {'time', 'value'} (LSUR Z-Score)
         # Convert to dict for fast lookup: {time_ms: z_score}
         self.sentiment_map = {d['time']: d['value'] for d in sentiment_data} if sentiment_data else {}
+        self.regime_map = regime_data if regime_data else {}
         
         self.trades = []
         self.equity_curve = []
@@ -101,10 +102,9 @@ class Backtester:
         high = candle['high']
         time = candle['time']
         
-        # Get Sentiment for this candle (approximate to nearest or exact)
-        # For simplicity, look for exact match or nearest previous?
-        # Assuming data is aligned 1h candles.
-        sentiment_score = self.sentiment_map.get(time, 0.0) # Default 0 if missing
+        # Get Sentiment & Regime for this candle
+        sentiment_score = self.sentiment_map.get(time, 0.0)
+        regime_state = self.regime_map.get(time, {})
         
         # Filter out executed orders
         remaining_orders = []
@@ -116,20 +116,29 @@ class Backtester:
             # HIT?
             if low <= price <= high:
                 
-                # --- SENTIMENT GUARD ---
-                # Before executing, check if we should SKIP
-                if order['side'] == 'buy' and sentiment_score > 2.0:
-                     # Crowd Euphoric -> Don't Buy High -> Skip execution, keep order open?
-                     # OR Temporary Pause? If we skip, the price might bounce back up and we never bought.
-                     # "Wait for dip" implies we just don't execute NOW.
-                     # If we keep it in remaining_orders, it might execute next candle if price is still there.
+                # --- AI SMART GUARDRAILS ---
+                # Check if we should PAUSE execution due to market conditions
+                
+                # Sells: We pause selling if the market is trending UP strongly (no_short = True)
+                if order['side'] == 'sell' and regime_state.get('no_short', False):
+                     # Market is heavily bullish. HODL inventory instead of selling early.
                      remaining_orders.append(order)
                      continue
                      
-                if order['side'] == 'sell' and sentiment_score < -2.0:
-                     # Crowd Panic -> Don't Sell Low -> Skip
+                # Buys: We pause buying if the market is trending DOWN strongly (no_long = True)
+                if order['side'] == 'buy' and regime_state.get('no_long', False):
+                     # Catching knives. Wait for trend to break before buying more grids.
                      remaining_orders.append(order)
                      continue
+                
+                # Legacy basic sentiment guard fallback if no regime data
+                if not regime_state:
+                    if order['side'] == 'buy' and sentiment_score > 2.0:
+                         remaining_orders.append(order)
+                         continue
+                    if order['side'] == 'sell' and sentiment_score < -2.0:
+                         remaining_orders.append(order)
+                         continue
                 # -----------------------
 
                 # EXECUTE

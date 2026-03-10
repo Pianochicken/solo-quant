@@ -243,8 +243,8 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
             oi_aligned=open_interest,
         )
         
-        # 7. Composite Score (Market Pulse) v5
-        composite_score = IndicatorEngine.calculate_composite_score(
+        # 7 & 8. Composite Score (Market Pulse) v5 & History
+        composite_score_history = IndicatorEngine.calculate_composite_score(
             price_data=data['price'],
             lsur_z_aligned=lsur_z_aligned,
             cvd_aligned=cvd_aligned,
@@ -254,6 +254,13 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
             bb_pctb_aligned=bb_pctb,
             oi_aligned=open_interest,
             timeframe=timeframe,
+        )
+        composite_score = composite_score_history[-1]['value'] if composite_score_history else 50.0
+
+        # 9. Market Regime Detection History
+        market_regime_history = IndicatorEngine.calculate_market_regime_history(
+            price_data=data['price'],
+            cvd_aligned=cvd_aligned
         )
         
         return {
@@ -275,7 +282,9 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
                 "trend_state": trend_state,
                 "rsi_history": rsi_history,
                 "market_regime": market_regime,
-                "composite_score": composite_score
+                "market_regime_history": market_regime_history,
+                "composite_score": composite_score,
+                "composite_score_history": composite_score_history
             }
         }
     except Exception as e:
@@ -433,6 +442,7 @@ class BacktestParams(BaseModel):
     grid_count: int
     investment: float
     duration_days: int = 7 # Default backtest 7 days
+    is_ai_mode: bool = False
 
 @app.post("/quant/backtest")
 def run_backtest(params: BacktestParams):
@@ -441,6 +451,7 @@ def run_backtest(params: BacktestParams):
         fetcher = get_fetcher()
         
         # 1. Fetch Price History
+        end_time = int(time.time() * 1000)
         start_time = end_time - (params.duration_days * 24 * 60 * 60 * 1000)
         
         history = fetcher.fetch_history(formatted_symbol, start_time, end_time, '1h')
@@ -448,27 +459,15 @@ def run_backtest(params: BacktestParams):
         if not history:
              raise HTTPException(status_code=404, detail="No historical data found")
 
-        # 2. Fetch Sentiment History (LSUR)
-        # We need LSUR for the same period. 
-        # OKX LSUR endpoint usually returns recent data. 
-        # For BACKTESTING, we ideally need historical LSUR.
-        # Implied limitation: We might only get recent 1440 points (OKX limit).
-        # If duration > available LSUR history, we pad with Neutral (0).
+        # 2. Fetch AI Indicators History if AI mode is ON
+        # In a real heavy backtester, we'd cache this heavily or pull from DB.
+        # For our lightweight demo, we fetch or compute on the fly.
+        regime_data = []
+        pulse_data = []
         
-        # Try fetching 1H LSUR. 7 days * 24 = 168 points. Easy.
-        # `fetch_long_short_ratio` implementation uses `limit`. 
-        # We need to ensure we get enough points.
+        # Simple LSUR fallback for non-AI mode
         hours_needed = params.duration_days * 24
         lsur_raw = fetcher.fetch_long_short_ratio(formatted_symbol, period='1H', limit=hours_needed + 50) 
-        
-        # Calculate Z-Scores for this history
-        # We need a rolling window for Z-Score. `calculate_lsur_z_score` does this.
-        # But `calculate_lsur_z_score` returns a SINGLE current Z-Score.
-        # We need a SERIES of Z-Scores corresponding to each timestamp.
-        
-        # We need to expose a helper or recalculate here.
-        # Let's simple-calc here for MVP:
-        # Z = (Value - Mean(Last 20)) / Std(Last 20)
         
         import pandas as pd
         import numpy as np
@@ -476,19 +475,52 @@ def run_backtest(params: BacktestParams):
         lsur_df = pd.DataFrame(lsur_raw)
         if not lsur_df.empty:
             lsur_df['value'] = lsur_df['value'].astype(float)
-            # Sort by time ascending
             lsur_df = lsur_df.sort_values('time')
-            
-            # Calculate rolling Z-Score
             window = 20
             lsur_df['mean'] = lsur_df['value'].rolling(window=window).mean()
             lsur_df['std'] = lsur_df['value'].rolling(window=window).std()
             lsur_df['z_score'] = (lsur_df['value'] - lsur_df['mean']) / lsur_df['std']
-            
-            # Convert back to list of dicts: [{'time': t, 'value': z}, ...]
             sentiment_data = lsur_df[['time', 'z_score']].dropna().rename(columns={'z_score': 'value'}).to_dict('records')
         else:
             sentiment_data = []
+
+        if params.is_ai_mode:
+            # Reusing the existing calculation pipelines
+            taker_vol_raw = fetcher.fetch_taker_volume(formatted_symbol, period='1h', limit=hours_needed + 50)
+            
+            # Align CVD
+            df_price = pd.DataFrame(history)
+            df_price.sort_values('time', inplace=True)
+            
+            if taker_vol_raw:
+                cvd_raw = IndicatorEngine.calculate_cvd_history(taker_vol_raw)
+                if cvd_raw:
+                    df_cvd = pd.DataFrame(cvd_raw)
+                    df_cvd['time'] = df_cvd['time'].astype(int)
+                    df_cvd.sort_values('time', inplace=True)
+                    merged_cvd = pd.merge_asof(
+                        df_price[['time']],
+                        df_cvd[['time', 'value']],
+                        on='time',
+                        direction='backward'
+                    )
+                    merged_cvd['value'] = merged_cvd['value'].ffill().fillna(0)
+                    cvd_aligned = merged_cvd[['time', 'value']].to_dict('records')
+                else:
+                    cvd_aligned = []
+            else:
+                cvd_aligned = []
+                
+            regime_history_full = IndicatorEngine.calculate_market_regime_history(
+                price_data=history,
+                cvd_aligned=cvd_aligned
+            )
+            # Map for quick O(1) time lookups
+            regime_data = {r['time']: r for r in regime_history_full}
+            
+            # (Optional: Also calculate Pulse for visual backtest overlay)
+            # pulse_score_full = IndicatorEngine.calculate_composite_score_history(...)
+            # pulse_data = {p['time']: p['value'] for p in pulse_score_full}
 
         # 3. Init Bot
         bot = GridBot(
@@ -500,7 +532,7 @@ def run_backtest(params: BacktestParams):
         )
         
         # 4. Run Backtest
-        tester = Backtester(bot, history, sentiment_data=sentiment_data)
+        tester = Backtester(bot, history, sentiment_data=sentiment_data, regime_data=regime_data)
         result = tester.run()
         
         # 5. Metrics

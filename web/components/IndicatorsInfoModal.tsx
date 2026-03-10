@@ -196,17 +196,27 @@ export function IndicatorsInfoModal({ isOpen, onClose }: IndicatorsInfoModalProp
 
                     </div>
 
-                    {/* 9. Market Pulse */}
                     <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full md:col-span-2">
                         <div className="flex items-center gap-2 mb-2">
                             <span className="flex items-center justify-center w-6 h-6 rounded bg-zinc-500/20 text-zinc-400 text-xs font-bold shrink-0">9</span>
                             <h3 className="font-semibold text-zinc-200">Market Pulse (綜合情緒指數)</h3>
                         </div>
                         <p className="text-xs text-zinc-400 mb-2">將上述 7 種核心指標的狀態，加權計算為 0 ~ 100 的綜合指數。這不是買賣觸發訊號，而是用來直觀感受市場整體的溫度：</p>
+
+                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 mb-3 mt-1 text-[11px]">
+                            <div className="bg-zinc-900/50 p-2 rounded border border-zinc-800"><span className="text-zinc-500">LSUR 多空比:</span> <strong className="text-zinc-200">15%</strong></div>
+                            <div className="bg-zinc-900/50 p-2 rounded border border-zinc-800"><span className="text-zinc-500">CVD 資金動能:</span> <strong className="text-zinc-200">20%</strong></div>
+                            <div className="bg-zinc-900/50 p-2 rounded border border-zinc-800"><span className="text-zinc-500">RSI 相對強弱:</span> <strong className="text-zinc-200">10%</strong></div>
+                            <div className="bg-zinc-900/50 p-2 rounded border border-zinc-800"><span className="text-zinc-500">OI 加權資金費率:</span> <strong className="text-zinc-200">15%</strong></div>
+                            <div className="bg-zinc-900/50 p-2 rounded border border-zinc-800"><span className="text-zinc-500">EMA 乖離率:</span> <strong className="text-zinc-200">15%</strong></div>
+                            <div className="bg-zinc-900/50 p-2 rounded border border-zinc-800"><span className="text-zinc-500">布林帶 %B:</span> <strong className="text-zinc-200">10%</strong></div>
+                            <div className="bg-zinc-900/50 p-2 rounded border border-zinc-800"><span className="text-zinc-500">OI 籌碼背離:</span> <strong className="text-zinc-200">15%</strong></div>
+                        </div>
+
                         <ul className="text-xs text-zinc-400 space-y-1 ml-4 list-disc">
-                            <li><strong className="text-emerald-400">0 - 20 (極度看漲)：</strong>市場極度超賣、空頭擁擠、資金費率極度負值，隨時可能發生強勁的軋空反彈。</li>
+                            <li><strong className="text-emerald-400">0 - 20 (極度看漲)：</strong>市場極度超賣、空頭擁擠、極度負值，隨時可能發生強勁的反彈。</li>
                             <li><strong className="text-zinc-400">40 - 60 (中性)：</strong>市場情緒穩定，多空力量均衡。</li>
-                            <li><strong className="text-red-400">80 - 100 (極度看跌)：</strong>市場極度超買、多頭擁擠、資金費率極度正值，隨時可能發生多殺多的崩跌。</li>
+                            <li><strong className="text-red-400">80 - 100 (極度看跌)：</strong>市場極度超買、多頭擁擠、極度正值，隨時可能發生崩跌。</li>
                         </ul>
                     </div>
                 </div>

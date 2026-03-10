@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { BacktestParams, runBacktest, BacktestResult, getSmartGridParams } from '@/lib/api';
 import { ArrowLeft, Play, Calculator, Activity, TrendingUp, DollarSign, Brain, RefreshCw } from 'lucide-react';
 import { createChart, ColorType, AreaSeries } from 'lightweight-charts';
+import { InfoTooltip } from '@/components/InfoTooltip';
 import Link from 'next/link';
 
 export default function BacktestPage() {
@@ -88,7 +89,8 @@ export default function BacktestPage() {
                 upper_price: parseFloat(upperPrice),
                 grid_count: parseInt(gridCount),
                 investment: parseFloat(investment),
-                duration_days: parseInt(duration)
+                duration_days: parseInt(duration),
+                is_ai_mode: isAiMode
             };
             const res = await runBacktest(params);
             setResult(res);
@@ -126,16 +128,19 @@ export default function BacktestPage() {
                             Parameters
                         </h2>
 
-                        <button
-                            onClick={toggleAiMode}
-                            className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold transition-all border ${isAiMode
-                                ? "bg-purple-900/50 border-purple-500 text-purple-300 shadow-[0_0_15px_rgba(168,85,247,0.3)]"
-                                : "bg-zinc-800 border-zinc-700 text-zinc-500 hover:text-zinc-300"
-                                }`}
-                        >
-                            {aiLoading ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Brain className="w-3 h-3" />}
-                            AI {isAiMode ? "ON" : "OFF"}
-                        </button>
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={toggleAiMode}
+                                className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold transition-all border ${isAiMode
+                                    ? "bg-purple-900/50 border-purple-500 text-purple-300 shadow-[0_0_15px_rgba(168,85,247,0.3)]"
+                                    : "bg-zinc-800 border-zinc-700 text-zinc-500 hover:text-zinc-300"
+                                    }`}
+                            >
+                                {aiLoading ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Brain className="w-3 h-3" />}
+                                AI {isAiMode ? "ON" : "OFF"}
+                            </button>
+                            <InfoTooltip text="開啟 AI 模式後，回測引擎會根據歷史 Market Regime 動態暫停高風險的網格交易（例如在強勢下跌段暫停買入），藉此減少勝率低的出手並保護利潤。開啟後將會從伺服器載入多維度的深度歷史資料進行精密模擬。" />
+                        </div>
                     </div>
 
                     <div className="space-y-4">

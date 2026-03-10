@@ -100,8 +100,10 @@ export default function SentimentPanel({ indicators, timeframe = '1h' }: Sentime
 
                 {/* Market Pulse Card — NEW */}
                 {(() => {
-                    const pulseData = (indicators as any).composite_score;
-                    const pulseValue = pulseData && pulseData.length > 0 ? pulseData[pulseData.length - 1].value : null;
+                    let pulseValue: number | null = null;
+                    if (typeof (indicators as any).composite_score === 'number') {
+                        pulseValue = (indicators as any).composite_score;
+                    }
                     let pColor = 'text-zinc-400';
                     let pBg = 'border-zinc-800';
                     let pText = 'Neutral';

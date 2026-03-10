@@ -8,6 +8,10 @@ export interface IndicatorData {
     ema_slow?: { time: number; value: number }[];
     trend_state?: 'uptrend' | 'downtrend' | 'neutral';
     rsi_history?: { time: number; value: number }[];
+    composite_score?: number;
+    composite_score_history?: { time: number; value: number }[];
+    market_regime?: any;
+    market_regime_history?: any;
 }
 
 export interface MarketData {
@@ -92,6 +96,7 @@ export interface BacktestParams {
     grid_count: number;
     investment: number;
     duration_days: number;
+    is_ai_mode?: boolean;
 }
 
 export interface BacktestResult {

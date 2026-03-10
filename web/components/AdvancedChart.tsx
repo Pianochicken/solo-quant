@@ -286,7 +286,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
         // by filling missing records with whitespace data { time: t }
         const priceTimes = data.price.map(p => p.time as Time);
         const alignData = (rawArray: any[], mapFn: (item: any, i: number, arr: any[]) => any) => {
-            if (!rawArray || rawArray.length === 0) return [];
+            if (!Array.isArray(rawArray) || rawArray.length === 0) return [];
             const mapped = rawArray.map(mapFn);
             const dataMap = new Map();
             mapped.forEach(item => dataMap.set(item.time, item));
@@ -347,8 +347,8 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
 
         // Update Market Pulse
         let pulseData: any[] = [];
-        if (pulseSeriesRef.current && indicators?.composite_score) {
-            pulseData = alignData(indicators.composite_score, item => {
+        if (pulseSeriesRef.current && (indicators as any)?.composite_score_history) {
+            pulseData = alignData((indicators as any).composite_score_history, item => {
                 let color = '#a8a29e'; // Gray neutral
                 if (item.value >= 80) color = '#ef4444'; // Red extreme bearish
                 else if (item.value <= 20) color = '#10b981'; // Green extreme bullish
@@ -425,10 +425,9 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
                         if (crosshairValue === undefined && pointData.close !== undefined) {
                             crosshairValue = pointData.close;
                         }
-                        c.api.setCrosshairPosition(crosshairValue, param.time, c.series as any);
-                    } else {
-                        // Keep time line but don't snap value if no data
-                        c.api.setCrosshairPosition(NaN, param.time, c.series as any);
+                        if (crosshairValue !== undefined && !isNaN(crosshairValue)) {
+                            c.api.setCrosshairPosition(crosshairValue, param.time, c.series as any);
+                        }
                     }
                 }
             });

@@ -454,6 +454,145 @@ class IndicatorEngine:
         return result
 
     @staticmethod
+    def calculate_market_regime_history(
+        price_data: List[Dict],
+        cvd_aligned: List[Dict] = None,
+        adx_period: int = 14,
+        bb_period: int = 20,
+        cvd_lookback: int = 10,
+    ) -> List[Dict]:
+        """
+        Calculates the historical rolling Market Regime for every timestamp.
+        Used by the Backtester AI Mode.
+        """
+        if not price_data or len(price_data) < adx_period * 2 + 10:
+            return []
+            
+        df = pd.DataFrame(price_data)
+        df['time'] = df['time'].astype(int)
+        df.sort_values('time', inplace=True)
+        df.reset_index(drop=True, inplace=True)
+        
+        # === 1. ADX Calculation (Vectorized / Rolling) ===
+        high = df['high'].values
+        low = df['low'].values
+        close = df['close'].values
+        
+        tr = np.zeros(len(close))
+        tr[0] = high[0] - low[0]
+        for j in range(1, len(close)):
+            tr[j] = max(high[j] - low[j], abs(high[j] - close[j-1]), abs(low[j] - close[j-1]))
+            
+        plus_dm = np.zeros(len(close))
+        minus_dm = np.zeros(len(close))
+        for j in range(1, len(close)):
+            up_move = high[j] - high[j-1]
+            down_move = low[j-1] - low[j]
+            plus_dm[j] = up_move if (up_move > down_move and up_move > 0) else 0
+            minus_dm[j] = down_move if (down_move > up_move and down_move > 0) else 0
+            
+        def wilder_sum(data, period):
+            out = np.zeros(len(data))
+            if len(data) < period + 1: return out
+            out[period] = np.sum(data[1:period+1])
+            for j in range(period + 1, len(data)):
+                out[j] = out[j-1] - (out[j-1] / period) + data[j]
+            return out
+            
+        atr = wilder_sum(tr, adx_period)
+        plus_di_raw = wilder_sum(plus_dm, adx_period)
+        minus_di_raw = wilder_sum(minus_dm, adx_period)
+        
+        with np.errstate(divide='ignore', invalid='ignore'):
+            plus_di = np.where(atr > 0, 100 * plus_di_raw / atr, 0)
+            minus_di = np.where(atr > 0, 100 * minus_di_raw / atr, 0)
+            
+        di_sum = plus_di + minus_di
+        with np.errstate(divide='ignore', invalid='ignore'):
+            dx = np.where(di_sum > 0, 100 * np.abs(plus_di - minus_di) / di_sum, 0)
+            
+        adx = np.zeros(len(dx))
+        start_idx = adx_period * 2 - 1
+        if len(dx) >= adx_period * 2:
+            adx[start_idx] = np.mean(dx[adx_period:start_idx+1])
+            for j in range(start_idx + 1, len(dx)):
+                adx[j] = (adx[j-1] * (adx_period - 1) + dx[j]) / adx_period
+                
+        adx_trending = adx > 25
+        adx_direction = np.where(plus_di > minus_di, 'up', 'down')
+        
+        # === 2. BB Width Expansion (Vectorized) ===
+        sma = df['close'].rolling(window=bb_period).mean()
+        std = df['close'].rolling(window=bb_period).std()
+        bb_width = (2 * std / sma).fillna(0)
+        
+        # Rolling average of BB Width over the last 20 periods
+        avg_width = bb_width.rolling(window=20, min_periods=1).mean()
+        # Shift avg_width by 1 so we compare current against PREVIOUS 20 average
+        avg_width_shifted = avg_width.shift(1).fillna(0)
+        bb_trending = (bb_width > avg_width_shifted * 1.5).values
+        
+        # === 3. CVD Slope (Rolling) ===
+        cvd_trending = np.zeros(len(close), dtype=bool)
+        cvd_direction = np.full(len(close), 'neutral', dtype=object)
+        
+        if cvd_aligned and len(cvd_aligned) > 0:
+            cvd_df = pd.DataFrame(cvd_aligned)
+            if 'timestamp' not in cvd_df.columns and 'time' in cvd_df.columns:
+                cvd_df['timestamp'] = cvd_df['time']
+            merged_cvd = pd.merge_asof(
+                df[['time']], 
+                cvd_df[['timestamp', 'value']], 
+                left_on='time', 
+                right_on='timestamp', 
+                direction='backward'
+            )
+            cvd_vals = merged_cvd['value'].fillna(0).values
+            
+            for i in range(cvd_lookback + 1, len(cvd_vals)):
+                window_cvd = cvd_vals[i-cvd_lookback:i+1]
+                slope = window_cvd[-1] - window_cvd[0]
+                
+                positive_moves = sum(1 for k in range(1, len(window_cvd)) if window_cvd[k] > window_cvd[k-1])
+                negative_moves = len(window_cvd) - 1 - positive_moves
+                consistency = max(positive_moves, negative_moves) / (len(window_cvd) - 1)
+                
+                if consistency >= 0.7:
+                    cvd_trending[i] = True
+                    cvd_direction[i] = 'up' if slope > 0 else 'down'
+                    
+        # === Aggregate History ===
+        history = []
+        for i in range(len(close)):
+            votes = sum([adx_trending[i], bb_trending[i], cvd_trending[i]])
+            
+            regime = 'ranging'
+            direction = 'neutral'
+            no_short = False
+            no_long = False
+            
+            if votes >= 2:
+                regime = 'trending'
+                # ADX direction takes priority
+                direction = adx_direction[i]
+                
+                if direction == 'up':
+                    no_short = True
+                elif direction == 'down':
+                    no_long = True
+                    
+            history.append({
+                "time": int(df['time'].iloc[i]),
+                "regime": regime,
+                "direction": direction,
+                "adx": round(float(adx[i]), 1),
+                "no_short": no_short,
+                "no_long": no_long
+            })
+            
+        return history
+
+    @staticmethod
     def calculate_confluence_signals(
         price_data: List[Dict],
         lsur_z_aligned: List[Dict],
