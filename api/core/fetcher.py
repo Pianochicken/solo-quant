@@ -208,6 +208,14 @@ class DataFetcher:
         Paginates backward to get more historical data.
         """
         try:
+            # OKX Rubik Taker Volume strictly supports: 5m, 1H, 1D. Map standard periods safely:
+            okx_period = '5m'
+            p_lower = period.lower()
+            if p_lower in ['1h', '2h', '4h', '6h', '8h', '12h']:
+                okx_period = '1H'
+            elif p_lower in ['1d', '2d', '3d', '1w', '1M']:
+                okx_period = '1D'
+                
             # 1. Parse Currency (e.g., BTC/USDT -> BTC)
             ccy = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[0]
             
@@ -230,7 +238,7 @@ class DataFetcher:
                 params = {
                     'ccy': ccy,
                     'instType': 'CONTRACTS',
-                    'period': period,
+                    'period': okx_period,
                 }
                 if end_ts is not None:
                     params['end'] = str(end_ts)
@@ -238,7 +246,7 @@ class DataFetcher:
                 response = self.exchange.publicGetRubikStatTakerVolume(params)
                 
                 if response.get('code') != '0':
-                    print(f"OKX Taker Volume Error for {symbol} (ccy={ccy}, period={period}): {response}")
+                    print(f"OKX Taker Volume Error for {symbol} (ccy={ccy}, period={okx_period} mapped from {period}): {response}")
                     break
 
                 data = response.get('data', [])
