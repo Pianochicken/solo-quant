@@ -483,7 +483,7 @@ class IndicatorEngine:
           1. LSUR Z-Score — crowded positioning (+ dulling detection)
           2. CVD Momentum — buying/selling pressure direction
           3. OI × Price — leverage fuel divergence
-          4. Funding Rate — sentiment extreme
+          4. Funding Rate — sentiment extreme (+ OI-Weighted logic)
           5. RSI — overbought/oversold
           6. EMA Zone — price stretched from EMA50
           7. Bollinger %B — volatility-based extreme
@@ -647,8 +647,18 @@ class IndicatorEngine:
                     bull_reasons.append('OI去槓')
             
             if funding_now is not None and funding_now < P['fr_bull']:
-                bull_score += 1
-                bull_reasons.append('FR-')
+                discount = cvd_slope_extreme
+                # OI-Weighted Funding Rate Logic
+                if oi_chg_pct is not None:
+                    if oi_chg_pct > 0:
+                        bull_score += 1.0 if not discount else 0.5
+                        bull_reasons.append('FR-(OI↑)')
+                    else:
+                        bull_score += 0.5 if not discount else 0.25 # Reduced signal if OI is dropping
+                        bull_reasons.append('FR-(OI↓)')
+                else:
+                    bull_score += 1.0 if not discount else 0.5
+                    bull_reasons.append('FR-')
             
             if rsi_now is not None and rsi_now < P['rsi_bull']:
                 bull_score += 1
@@ -686,8 +696,18 @@ class IndicatorEngine:
                     bear_reasons.append('OI去槓')
             
             if funding_now is not None and funding_now > P['fr_bear']:
-                bear_score += 1
-                bear_reasons.append('FR+')
+                discount = cvd_slope_extreme
+                # OI-Weighted Funding Rate Logic
+                if oi_chg_pct is not None:
+                    if oi_chg_pct > 0:
+                        bear_score += 1.0 if not discount else 0.5
+                        bear_reasons.append('FR+(OI↑)')
+                    else:
+                        bear_score += 0.5 if not discount else 0.25 # Reduced signal if OI is dropping
+                        bear_reasons.append('FR+(OI↓)')
+                else:
+                    bear_score += 1.0 if not discount else 0.5
+                    bear_reasons.append('FR+')
             
             if rsi_now is not None and rsi_now > P['rsi_bear']:
                 bear_score += 1
@@ -740,3 +760,131 @@ class IndicatorEngine:
         
         return markers, regime
 
+    @staticmethod
+    def calculate_composite_score(
+        price_data: List[Dict],
+        lsur_z_aligned: List[Dict],
+        cvd_aligned: List[Dict],
+        funding_aligned: List[Dict],
+        rsi_aligned: List[Dict] = None,
+        ema_fast_aligned: List[Dict] = None,
+        bb_pctb_aligned: List[Dict] = None,
+        oi_aligned: List[Dict] = None,
+        timeframe: str = '1h'
+    ) -> List[Dict]:
+        """
+        Calculates the Market Pulse (Composite Score) from 0 to 100 continuously.
+        0-20: Extreme Bullish
+        40-60: Neutral
+        80-100: Extreme Bearish
+        """
+        if not price_data:
+            return []
+            
+        # Simplified profiles for continuous scoring bounds
+        PROFILES = {
+            '15m': {'rsi': (20, 80), 'fr': (-0.006, 0.012), 'bb': (0, 1.0), 'z': (-1.8, 1.8), 'ema': 0.6},
+            '1h':  {'rsi': (25, 75), 'fr': (-0.004, 0.010), 'bb': (0, 1.0), 'z': (-1.5, 1.5), 'ema': 1.2},
+            '4h':  {'rsi': (30, 70), 'fr': (-0.003, 0.008), 'bb': (0, 1.0), 'z': (-1.2, 1.2), 'ema': 2.5},
+            '1d':  {'rsi': (35, 65), 'fr': (-0.002, 0.006), 'bb': (0, 1.0), 'z': (-1.0, 1.0), 'ema': 4.0},
+        }
+        P = PROFILES.get(timeframe, PROFILES['1h'])
+
+        # Build lookup dicts
+        z_by_time = {item['time']: item['value'] for item in lsur_z_aligned}
+        cvd_by_time = {item['time']: item['value'] for item in cvd_aligned}
+        funding_by_time = {item['time']: item['value'] for item in funding_aligned}
+        rsi_by_time = {item['time']: item['value'] for item in (rsi_aligned or [])}
+        ema_fast_by_time = {item['time']: item['value'] for item in (ema_fast_aligned or [])}
+        bb_by_time = {item['time']: item['value'] for item in (bb_pctb_aligned or [])}
+        oi_by_time = {item['time']: item['value'] for item in (oi_aligned or [])}
+        price_by_time = {p['time']: p for p in price_data}
+        times = [p['time'] for p in price_data]
+
+        scores = []
+        lookback = 3
+
+        def normalize(val, min_val, max_val, clamp=True):
+            if val is None: return 0.5
+            n = (val - min_val) / (max_val - min_val) if max_val != min_val else 0.5
+            return max(0.0, min(1.0, n)) if clamp else n
+
+        for i in range(lookback, len(times)):
+            t = times[i]
+            
+            # --- 1. LSUR Z-Score (15%) ---
+            z_val = z_by_time.get(t)
+            s_z = normalize(z_val, P['z'][0], P['z'][1])
+            
+            # --- 2. CVD Momentum (20%) ---
+            cvd_now = cvd_by_time.get(t)
+            cvd_prev = cvd_by_time.get(times[i - lookback])
+            s_cvd = 0.5
+            if cvd_now is not None and cvd_prev is not None:
+                # Approximate normalization: if CVD has moved significantly
+                # We use a recent range to estimate
+                if i >= 10:
+                    cvd_range_vals = [cvd_by_time.get(times[k], 0) for k in range(i-10, i+1)]
+                    c_min, c_max = min(cvd_range_vals), max(cvd_range_vals)
+                    c_delta = cvd_now - cvd_prev
+                    c_range = max(c_max - c_min, 1)
+                    # Normalize slope to roughly 0-1 where <0 is bullish(c_delta<0 means selling pressure, meaning bearish. WAIT: higher score = bearish)
+                    # if cvd drops (selling pressure), score should be higher (bearish)
+                    s_cvd = normalize(-c_delta, -c_range/2, c_range/2) 
+            
+            # --- 3. RSI (10%) ---
+            rsi_val = rsi_by_time.get(t)
+            s_rsi = normalize(rsi_val, P['rsi'][0], P['rsi'][1])
+            
+            # --- 4. Funding Rate (15%) ---
+            fr_val = funding_by_time.get(t)
+            s_fr = normalize(fr_val, P['fr'][0], P['fr'][1])
+            
+            # --- 5. EMA Zone Dist (15%) ---
+            ema_val = ema_fast_by_time.get(t)
+            price_bar = price_by_time.get(t)
+            s_ema = 0.5
+            if ema_val is not None and price_bar is not None:
+                dist_pct = (price_bar['close'] - ema_val) / ema_val * 100
+                s_ema = normalize(dist_pct, -P['ema'], P['ema'])
+                
+            # --- 6. Bollinger %B (10%) ---
+            bb_val = bb_by_time.get(t)
+            s_bb = normalize(bb_val, P['bb'][0], P['bb'][1])
+            
+            # --- 7. OI x Price Divergence (15%) ---
+            # Approximated continuously:
+            oi_now = oi_by_time.get(t)
+            oi_prev = oi_by_time.get(times[i - lookback])
+            price_prev = price_by_time.get(times[i - lookback])
+            s_oi = 0.5
+            if oi_now and oi_prev and oi_prev > 0 and price_bar and price_prev:
+                oi_chg = (oi_now - oi_prev) / oi_prev * 100
+                p_chg = (price_bar['close'] - price_prev['close']) / price_prev['close'] * 100
+                
+                # If price drops and OI rises (bearish buildup) -> score higher
+                # If price rises and OI rises (bullish buildup) -> score lower
+                if p_chg < -P['ema']/2 and oi_chg > 0:
+                    s_oi = 0.8
+                elif p_chg > P['ema']/2 and oi_chg > 0:
+                    s_oi = 0.2
+                elif oi_chg < -4.0: # Huge deleverage is neutral/reversal
+                    s_oi = 0.5
+
+            # Weighted sum
+            w_z = 0.15 * s_z
+            w_cvd = 0.20 * s_cvd
+            w_rsi = 0.10 * s_rsi
+            w_fr = 0.15 * s_fr
+            w_ema = 0.15 * s_ema
+            w_bb = 0.10 * s_bb
+            w_oi = 0.15 * s_oi
+            
+            total = (w_z + w_cvd + w_rsi + w_fr + w_ema + w_bb + w_oi) * 100
+            
+            scores.append({
+                'time': t,
+                'value': round(total, 1)
+            })
+
+        return scores

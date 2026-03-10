@@ -98,6 +98,52 @@ export default function SentimentPanel({ indicators, timeframe = '1h' }: Sentime
                     )}
                 </div>
 
+                {/* Market Pulse Card — NEW */}
+                {(() => {
+                    const pulseData = (indicators as any).composite_score;
+                    const pulseValue = pulseData && pulseData.length > 0 ? pulseData[pulseData.length - 1].value : null;
+                    let pColor = 'text-zinc-400';
+                    let pBg = 'border-zinc-800';
+                    let pText = 'Neutral';
+                    if (pulseValue !== null) {
+                        if (pulseValue <= 20) { pColor = 'text-emerald-400'; pBg = 'border-emerald-900/30'; pText = 'Extreme Bullish (Oversold)'; }
+                        else if (pulseValue < 40) { pColor = 'text-emerald-300'; pText = 'Bullish'; }
+                        else if (pulseValue > 80) { pColor = 'text-red-400'; pBg = 'border-red-900/30'; pText = 'Extreme Bearish (Overbought)'; }
+                        else if (pulseValue > 60) { pColor = 'text-red-300'; pText = 'Bearish'; }
+                    }
+
+                    return (
+                        <div className={`bg-zinc-950/50 rounded-lg p-3 border ${pBg} flex flex-col col-span-2`}>
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <div className="text-xs text-zinc-500 mb-1 flex items-center">Market Pulse<InfoTooltip text="綜合情緒指數 (0-100)：加權合併了 7 個指標的狀態。分數越低代表群眾過度看跌(超賣)，是買入良機；分數越高代表群眾過度看漲(超買)，是危險信號。" /></div>
+                                    <div className={`text-xl font-mono font-bold ${pColor}`}>
+                                        {pulseValue !== null ? pulseValue.toFixed(1) : '—'}
+                                    </div>
+                                </div>
+                                <div className="text-right flex flex-col justify-end">
+                                    <div className={`text-xs font-medium ${pColor}`}>
+                                        {pText}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Simple Progress Bar */}
+                            {pulseValue !== null && (
+                                <div className="relative w-full mt-3">
+                                    <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden flex">
+                                        <div className="h-full bg-emerald-500" style={{ width: '20%' }}></div>
+                                        <div className="h-full bg-zinc-600" style={{ width: '60%' }}></div>
+                                        <div className="h-full bg-red-500" style={{ width: '20%' }}></div>
+                                    </div>
+                                    {/* Indicator Pip */}
+                                    <div className="absolute top-1/2 -translate-y-1/2 h-3 w-1 bg-white rounded-sm shadow-sm" style={{ left: `calc(${Math.min(Math.max(pulseValue, 0), 100)}% - 2px)` }}></div>
+                                </div>
+                            )}
+                        </div>
+                    );
+                })()}
+
                 {/* L/S Z-Score Card */}
                 <div className="bg-zinc-950/50 rounded-lg p-3 border border-zinc-800 flex flex-col justify-between">
                     <div>

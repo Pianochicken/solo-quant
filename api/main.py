@@ -243,6 +243,19 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
             oi_aligned=open_interest,
         )
         
+        # 7. Composite Score (Market Pulse) v5
+        composite_score = IndicatorEngine.calculate_composite_score(
+            price_data=data['price'],
+            lsur_z_aligned=lsur_z_aligned,
+            cvd_aligned=cvd_aligned,
+            funding_aligned=funding_aligned,
+            rsi_aligned=rsi_history,
+            ema_fast_aligned=ema_trend['ema_fast'],
+            bb_pctb_aligned=bb_pctb,
+            oi_aligned=open_interest,
+            timeframe=timeframe,
+        )
+        
         return {
             "symbol": formatted_symbol,
             "data": {
@@ -261,7 +274,8 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
                 "ema_slow": ema_trend['ema_slow'],
                 "trend_state": trend_state,
                 "rsi_history": rsi_history,
-                "market_regime": market_regime
+                "market_regime": market_regime,
+                "composite_score": composite_score
             }
         }
     except Exception as e:

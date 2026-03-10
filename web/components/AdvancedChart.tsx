@@ -22,6 +22,8 @@ interface AdvancedChartProps {
         ema_slow?: { time: number; value: number }[];
         trend_state?: 'uptrend' | 'downtrend' | 'neutral';
         rsi_history?: { time: number; value: number }[];
+        composite_score?: { time: number; value: number }[];
+        funding_history?: { time: number; value: number }[];
     } | null;
     gridLines?: number[];
 }
@@ -34,6 +36,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
     const cvdContainerRef = useRef<HTMLDivElement>(null);
     const oiContainerRef = useRef<HTMLDivElement>(null);
     const fundingContainerRef = useRef<HTMLDivElement>(null);
+    const pulseContainerRef = useRef<HTMLDivElement>(null);
 
     // Chart Instance Refs
     const chartRef = useRef<IChartApi | null>(null);
@@ -41,6 +44,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
     const cvdChartRef = useRef<IChartApi | null>(null);
     const oiChartRef = useRef<IChartApi | null>(null);
     const fundingChartRef = useRef<IChartApi | null>(null);
+    const pulseChartRef = useRef<IChartApi | null>(null);
 
     // Series Refs
     const mainSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -48,6 +52,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
     const cvdSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
     const oiSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
     const fundingSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+    const pulseSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
 
     // Overlay Refs
     const gridLinesRef = useRef<any[]>([]);
@@ -60,13 +65,14 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
     const [cvdLegendValue, setCvdLegendValue] = React.useState<number | null>(null);
     const [oiLegendValue, setOiLegendValue] = React.useState<number | null>(null);
     const [fundingLegendValue, setFundingLegendValue] = React.useState<number | null>(null);
+    const [pulseLegendValue, setPulseLegendValue] = React.useState<number | null>(null);
 
     // Marker Tooltip State
     const [hoveredMarker, setHoveredMarker] = React.useState<{ x: number; y: number; text: string; color: string } | null>(null);
 
     // 1. INITIALIZATION
     useEffect(() => {
-        if (!chartContainerRef.current || !rsiContainerRef.current || !cvdContainerRef.current || !oiContainerRef.current || !fundingContainerRef.current) return;
+        if (!chartContainerRef.current || !rsiContainerRef.current || !cvdContainerRef.current || !oiContainerRef.current || !fundingContainerRef.current || !pulseContainerRef.current) return;
 
         // Utility: Abbreviate large numbers
         const abbreviateNumber = (value: number): string => {
@@ -82,7 +88,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
             grid: { vertLines: { color: '#27272a' }, horzLines: { color: '#27272a' } },
             timeScale: { visible: false, timeVisible: true, secondsVisible: false },
             crosshair: { mode: CrosshairMode.Normal },
-            rightPriceScale: { visible: true, minimumWidth: 80 },
+            rightPriceScale: { visible: true, minimumWidth: 120 },
         };
 
         // --- Main Price Chart ---
@@ -118,7 +124,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
             ...commonOptions,
             width: rsiContainerRef.current.clientWidth,
             height: 80,
-            rightPriceScale: { visible: true, minimumWidth: 80, scaleMargins: { top: 0.05, bottom: 0.05 } },
+            rightPriceScale: { visible: true, minimumWidth: 120, scaleMargins: { top: 0.05, bottom: 0.05 } },
         });
         rsiChartRef.current = rsiChart;
         rsiSeriesRef.current = rsiChart.addSeries(LineSeries, {
@@ -160,8 +166,8 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
             ...commonOptions,
             width: fundingContainerRef.current.clientWidth,
             height: 100,
-            timeScale: { visible: true, timeVisible: true, secondsVisible: false },
-            rightPriceScale: { visible: true, minimumWidth: 80, scaleMargins: { top: 0.1, bottom: 0.1 } },
+            timeScale: { visible: true, timeVisible: true, secondsVisible: false }, // Bottom-most chart shows time
+            rightPriceScale: { visible: true, minimumWidth: 120, scaleMargins: { top: 0.1, bottom: 0.1 } },
         });
         fundingChartRef.current = fundingChart;
         fundingSeriesRef.current = fundingChart.addSeries(HistogramSeries, {
@@ -169,8 +175,27 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
             priceFormat: { type: 'custom', formatter: (price: number) => `${price.toFixed(4)}%` },
         });
 
+        // --- Market Pulse Chart (Line) ---
+        const pulseChart = createChart(pulseContainerRef.current, {
+            ...commonOptions,
+            width: pulseContainerRef.current.clientWidth,
+            height: 100,
+            timeScale: { visible: false, timeVisible: true, secondsVisible: false },
+            rightPriceScale: { visible: true, minimumWidth: 120, scaleMargins: { top: 0.1, bottom: 0.1 } },
+        });
+        pulseChartRef.current = pulseChart;
+        pulseSeriesRef.current = pulseChart.addSeries(LineSeries, {
+            color: '#a8a29e', // base gray
+            lineWidth: 2,
+            priceFormat: { type: 'custom', formatter: (price: number) => price.toFixed(1) },
+        });
+
+        // Add 20 and 80 grid lines for Pulse
+        pulseSeriesRef.current.createPriceLine({ price: 80, color: '#ef4444', lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
+        pulseSeriesRef.current.createPriceLine({ price: 20, color: '#10b981', lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
+
         // --- Synchronization Loop ---
-        const charts = [chart, rsiChart, cvdChart, oiChart, fundingChart];
+        const charts = [chart, rsiChart, cvdChart, oiChart, fundingChart, pulseChart];
 
         // Sync TimeScales
         charts.forEach((c1, i) => {
@@ -184,14 +209,8 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
             });
         });
 
-        // Sync Crosshair (Manual propagation)
-        // Note: lightweight-charts doesn't natively sync crosshairs perfectly across instances without more complex logic.
-        // For now, allow independent crosshair but sync TimeScale is the most important.
-        // We will just listen to Main Chart crosshair to update ALL legends.
-
-        chart.subscribeCrosshairMove((param) => {
-            // We'll handle data lookup in the Data Effect for simplicity
-        });
+        // Sync Crosshair (Manual propagation) handled in the Data effect to access data points
+        // We will just expose the charts to a higher scope or rely on useEffect dependencies.
 
 
         // Resize Handler
@@ -228,13 +247,17 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
         // Update LSUR Z-Score Markers on Price Chart
         if (indicators?.lsur_markers && indicators.lsur_markers.length > 0) {
             const markers = indicators.lsur_markers
-                .map(m => ({
-                    time: m.time as Time,
-                    position: m.position as 'aboveBar' | 'belowBar',
-                    color: m.color,
-                    shape: m.shape as 'arrowDown' | 'arrowUp',
-                    text: '', // Empty text so it doesn't clutter the chart; we'll show it on hover.
-                }))
+                .filter(m => m.time && m.position && m.color && (m.shape === 'arrowUp' || m.shape === 'arrowDown'))
+                .map(m => {
+                    const markerData: any = {
+                        time: m.time as Time,
+                        position: m.position as 'aboveBar' | 'belowBar',
+                        color: m.color,
+                        shape: m.shape as 'arrowDown' | 'arrowUp',
+                        size: 1, // explicit size
+                    };
+                    return markerData;
+                })
                 .sort((a, b) => (a.time as number) - (b.time as number));
 
             // v5 API: createSeriesMarkers returns a plugin with setMarkers()
@@ -259,10 +282,24 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
             );
         }
 
+        // Helper to perfectly align indicator timelines with the main price chart
+        // by filling missing records with whitespace data { time: t }
+        const priceTimes = data.price.map(p => p.time as Time);
+        const alignData = (rawArray: any[], mapFn: (item: any, i: number, arr: any[]) => any) => {
+            if (!rawArray || rawArray.length === 0) return [];
+            const mapped = rawArray.map(mapFn);
+            const dataMap = new Map();
+            mapped.forEach(item => dataMap.set(item.time, item));
+            return priceTimes.map(t => {
+                if (dataMap.has(t)) return dataMap.get(t);
+                return { time: t }; // whitespace
+            });
+        };
+
         // Update RSI
         let rsiData: any[] = [];
         if (rsiSeriesRef.current && indicators?.rsi_history) {
-            rsiData = indicators.rsi_history.map(item => ({
+            rsiData = alignData(indicators.rsi_history, item => ({
                 time: item.time as Time,
                 value: item.value
             }));
@@ -272,7 +309,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
         // Update CVD
         let cvdData: any[] = [];
         if (cvdSeriesRef.current && indicators?.cvd_history) {
-            cvdData = indicators.cvd_history.map(item => ({
+            cvdData = alignData(indicators.cvd_history, item => ({
                 time: item.time as Time,
                 value: item.value
             }));
@@ -282,7 +319,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
         // Update OI
         let oiData: any[] = [];
         if (oiSeriesRef.current && indicators?.open_interest) {
-            oiData = indicators.open_interest.map((item, index, arr) => {
+            oiData = alignData(indicators.open_interest, (item, index, arr) => {
                 const prev = arr[index - 1]?.value || item.value;
                 const color = item.value >= prev ? 'rgba(38, 166, 154, 0.6)' : 'rgba(239, 83, 80, 0.6)';
                 return {
@@ -297,7 +334,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
         // Update Funding
         let fundingData: any[] = [];
         if (fundingSeriesRef.current && data.funding) {
-            fundingData = data.funding.map((item) => {
+            fundingData = data.funding.map(item => {
                 const color = item.value >= 0 ? '#10b981' : '#ef4444';
                 return {
                     time: item.time as Time,
@@ -308,52 +345,107 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
             fundingSeriesRef.current.setData(fundingData);
         }
 
-        // SYNC LEGENDS (Listen to Main Chart)
-        if (chartRef.current) {
-            chartRef.current.subscribeCrosshairMove((param) => {
-                // Handle Marker Tooltip (show when hovering over a marker time)
-                if (param.time && param.point && indicators?.lsur_markers) {
-                    const marker = indicators.lsur_markers.find(m => m.time === param.time);
-                    if (marker && marker.text) {
-                        setHoveredMarker({
-                            x: param.point.x,
-                            y: param.point.y,
-                            text: marker.text,
-                            color: marker.color
-                        });
-                    } else {
-                        setHoveredMarker(null);
-                    }
+        // Update Market Pulse
+        let pulseData: any[] = [];
+        if (pulseSeriesRef.current && indicators?.composite_score) {
+            pulseData = alignData(indicators.composite_score, item => {
+                let color = '#a8a29e'; // Gray neutral
+                if (item.value >= 80) color = '#ef4444'; // Red extreme bearish
+                else if (item.value <= 20) color = '#10b981'; // Green extreme bullish
+                return {
+                    time: item.time as Time,
+                    value: item.value,
+                    color: color
+                };
+            });
+            pulseSeriesRef.current.setData(pulseData);
+        }
+
+        // SYNC LEGENDS AND CROSSHAIR Bidirectionally
+        const chartsArray = [
+            { api: chartRef.current, series: mainSeriesRef.current, data: data.price },
+            { api: rsiChartRef.current, series: rsiSeriesRef.current, data: rsiData },
+            { api: cvdChartRef.current, series: cvdSeriesRef.current, data: cvdData },
+            { api: oiChartRef.current, series: oiSeriesRef.current, data: oiData },
+            { api: fundingChartRef.current, series: fundingSeriesRef.current, data: fundingData },
+            { api: pulseChartRef.current, series: pulseSeriesRef.current, data: pulseData }
+        ];
+
+        const syncCrosshairHandler = (sourceChartApi: IChartApi, param: any) => {
+            // Handle Marker Tooltip (show when hovering over a marker time)
+            if (param.time && param.point && indicators?.lsur_markers && sourceChartApi === chartRef.current) {
+                const marker = indicators.lsur_markers.find(m => m.time === param.time);
+                if (marker && marker.text) {
+                    setHoveredMarker({
+                        x: param.point.x,
+                        y: param.point.y,
+                        text: marker.text,
+                        color: marker.color
+                    });
                 } else {
                     setHoveredMarker(null);
                 }
+            } else if (!param.time) {
+                setHoveredMarker(null);
+            }
 
-                if (param.time) {
-                    // Find matching points in other datasets
-                    const rsiPoint = rsiData.find(p => p.time === param.time);
-                    if (rsiPoint) setRsiLegendValue(rsiPoint.value);
-                    else setRsiLegendValue(null);
+            if (!param.time) {
+                // Clear crosshairs and legends
+                chartsArray.forEach(c => {
+                    if (c.api && c.api !== sourceChartApi) {
+                        c.api.clearCrosshairPosition();
+                    }
+                });
+                setRsiLegendValue(null);
+                setCvdLegendValue(null);
+                setOiLegendValue(null);
+                setFundingLegendValue(null);
+                setPulseLegendValue(null);
+                return;
+            }
 
-                    const cvdPoint = cvdData.find(p => p.time === param.time);
-                    if (cvdPoint) setCvdLegendValue(cvdPoint.value);
-                    else setCvdLegendValue(null);
+            // Sync other charts and legends
+            chartsArray.forEach(c => {
+                if (!c.api || !c.series) return;
 
-                    const oiPoint = oiData.find(p => p.time === param.time);
-                    if (oiPoint) setOiLegendValue(oiPoint.value);
-                    else setOiLegendValue(null);
+                const pointData = c.data.find((p: any) => p.time === param.time);
 
-                    const fundingPoint = fundingData.find(p => p.time === param.time);
-                    if (fundingPoint) setFundingLegendValue(fundingPoint.value);
-                    else setFundingLegendValue(null);
+                // Update Legend state based on chart type
+                if (c.api === rsiChartRef.current) setRsiLegendValue(pointData ? pointData.value : null);
+                if (c.api === cvdChartRef.current) setCvdLegendValue(pointData ? pointData.value : null);
+                if (c.api === oiChartRef.current) setOiLegendValue(pointData ? pointData.value : null);
+                if (c.api === fundingChartRef.current) setFundingLegendValue(pointData ? pointData.value : null);
+                if (c.api === pulseChartRef.current) setPulseLegendValue(pointData ? pointData.value : null);
 
-                } else {
-                    setRsiLegendValue(null);
-                    setCvdLegendValue(null);
-                    setOiLegendValue(null);
-                    setFundingLegendValue(null);
+                // Sync Crosshair Line
+                if (c.api !== sourceChartApi) {
+                    if (pointData) {
+                        // For Candlestick (price) determine value from close
+                        let crosshairValue = pointData.value;
+                        if (crosshairValue === undefined && pointData.close !== undefined) {
+                            crosshairValue = pointData.close;
+                        }
+                        c.api.setCrosshairPosition(crosshairValue, param.time, c.series as any);
+                    } else {
+                        // Keep time line but don't snap value if no data
+                        c.api.setCrosshairPosition(NaN, param.time, c.series as any);
+                    }
                 }
             });
-        }
+        };
+
+        // Attach to all
+        const unsubscribeHandlers: (() => void)[] = [];
+        chartsArray.forEach(c => {
+            if (c.api) {
+                const handler = (param: any) => syncCrosshairHandler(c.api!, param);
+                c.api.subscribeCrosshairMove(handler);
+                unsubscribeHandlers.push(() => {
+                    // Type safely check before unsubscribing
+                    if (c.api) c.api.unsubscribeCrosshairMove(handler);
+                });
+            }
+        });
 
         // Draw Grid Lines (Only on Price Chart)
         const series = mainSeriesRef.current;
@@ -361,27 +453,34 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
             gridLinesRef.current.forEach(l => series.removePriceLine(l));
             gridLinesRef.current = [];
 
-            gridLines.forEach((price) => {
+            gridLines.filter(p => !isNaN(p) && p > 0).forEach((price) => {
                 const line = series.createPriceLine({
                     price: price,
                     color: '#eab308',
                     lineWidth: 1,
-                    lineStyle: 0,
-                    axisLabelVisible: false,
-                    title: 'Grid',
+                    lineStyle: 3,
+                    axisLabelVisible: false
                 });
                 gridLinesRef.current.push(line);
             });
         }
+
+        // Cleanup event listeners
+        return () => {
+            unsubscribeHandlers.forEach(unsub => unsub());
+        };
 
     }, [data, indicators, gridLines]);
 
     return (
         <div className="w-full flex flex-col gap-1 bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden shadow-lg p-1">
             {/* 1. Main Chart */}
-            <div className="relative w-full h-[400px]">
+            <div
+                className="relative w-full h-[400px]"
+                onMouseLeave={() => setHoveredMarker(null)}
+            >
                 {/* Marker Hover Tooltip */}
-                {hoveredMarker && (
+                {hoveredMarker && hoveredMarker.text && (
                     <div
                         className="absolute z-50 px-2 py-1 bg-zinc-800/90 backdrop-blur-sm border border-zinc-700 rounded text-xs pointer-events-none whitespace-nowrap shadow-xl font-mono"
                         style={{
@@ -407,7 +506,20 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
                 </div>
             </div>
 
-            {/* 2. RSI Chart */}
+            {/* 2. Market Pulse Chart */}
+            <div className="relative w-full h-[100px] border-t border-zinc-800">
+                <div className="absolute top-1 left-2 z-10 bg-black/50 px-2 py-0.5 rounded text-[10px] text-zinc-400 flex gap-2">
+                    <span className="font-bold text-zinc-300">Market Pulse</span><InfoTooltip text="綜合情緒指數 (0-100)：匯總所有 7 種指標的得分。越接近 100 代表市場越看跌（做空擁擠／超買），越接近 0 代表市場越看漲（做多擁擠／超賣）。" />
+                    {pulseLegendValue !== null && (
+                        <span className={`font-mono font-bold ${pulseLegendValue >= 80 ? 'text-red-400' : pulseLegendValue <= 20 ? 'text-emerald-400' : 'text-zinc-400'}`}>
+                            {pulseLegendValue.toFixed(1)}
+                        </span>
+                    )}
+                </div>
+                <div ref={pulseContainerRef} className="w-full h-full" />
+            </div>
+
+            {/* 3. RSI Chart */}
             <div className="relative w-full h-[80px] border-t border-zinc-800">
                 <div className="absolute top-1 left-2 z-10 bg-black/50 px-2 py-0.5 rounded text-[10px] text-zinc-400 flex gap-2">
                     <span className="font-bold text-purple-400">RSI (14)</span><InfoTooltip text={`相對強弱指數：衡量價格動能的振盪指標。RSI > ${T.rsi_bear} = 超買（可能回落），RSI < ${T.rsi_bull} = 超賣（可能反彈）。門檻會隨週期動態調整`} />
@@ -422,7 +534,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
                 <div ref={rsiContainerRef} className="w-full h-full" />
             </div>
 
-            {/* 3. CVD Chart */}
+            {/* 4. CVD Chart */}
             <div className="relative w-full h-[100px] border-t border-zinc-800">
                 <div className="absolute top-1 left-2 z-10 bg-black/50 px-2 py-0.5 rounded text-[10px] text-zinc-400 flex gap-2">
                     <span className="font-bold text-yellow-500">CVD (Volume Delta)</span><InfoTooltip text="累積成交量差值：追蹤主動買入與賣出的淨差額。上升 = 買方主導，下降 = 賣方主導。反映真實資金流向" />
@@ -433,7 +545,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
                 <div ref={cvdContainerRef} className="w-full h-full" />
             </div>
 
-            {/* 3. OI Chart */}
+            {/* 5. OI Chart */}
             <div className="relative w-full h-[100px] border-t border-zinc-800">
                 <div className="absolute top-1 left-2 z-10 bg-black/50 px-2 py-0.5 rounded text-[10px] text-zinc-400 flex gap-2">
                     <span className="font-bold text-blue-400">Open Interest</span><InfoTooltip text="未平倉合約量：市場中所有未結算的合約總值。綠色 = OI 增加（新倉位開設），紅色 = OI 減少（倉位平倉/清算）。注意：OI 本身無法區分多空方向，需搭配 LSUR/CVD 判斷實際偏向" />
@@ -444,7 +556,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
                 <div ref={oiContainerRef} className="w-full h-full" />
             </div>
 
-            {/* 4. Funding Chart */}
+            {/* 6. Funding Chart */}
             <div className="relative w-full h-[100px] border-t border-zinc-800">
                 <div className="absolute top-1 left-2 z-10 bg-black/50 px-2 py-0.5 rounded text-[10px] text-zinc-400 flex gap-2">
                     <span className="font-bold text-emerald-400">Funding Rate</span><InfoTooltip text={`資金費率：多空之間定期支付的費用。FR > ${T.fr_bear}% = 多頭過多（看跌），FR < ${T.fr_bull}% = 空頭過多（看漲）。門檻會隨週期動態調整`} />

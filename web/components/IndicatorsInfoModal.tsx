@@ -85,9 +85,9 @@ export function IndicatorsInfoModal({ isOpen, onClose }: IndicatorsInfoModalProp
                         <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full">
                             <div className="flex items-center gap-2 mb-2">
                                 <span className="flex items-center justify-center w-6 h-6 rounded bg-emerald-500/20 text-emerald-400 text-xs font-bold shrink-0">3</span>
-                                <h3 className="font-semibold text-zinc-200">Funding Rate (資金費率)</h3>
+                                <h3 className="font-semibold text-zinc-200">OI-Weighted Funding Rate (資金費率)</h3>
                             </div>
-                            <p className="text-xs text-zinc-400 mb-3 flex-grow">永續合約多空雙方支付的利息。當費率極端時，通常代表該方向擁擠不堪，隨時準備反轉。</p>
+                            <p className="text-xs text-zinc-400 mb-3 flex-grow">永續合約多空雙方支付的利息。當費率極端時，代表該方向擁擠。v5 系統加入 OI 變化：若費率極端且 OI 持續增加，視為高危險訊號（加滿分）；若 OI 開始下降（代表平倉），則危險訊號減半。</p>
                             <div className="overflow-x-auto rounded border border-zinc-800">
                                 <table className="w-full text-[10px] text-left">
                                     <thead className="bg-zinc-800/50 text-zinc-400 uppercase">
@@ -194,6 +194,20 @@ export function IndicatorsInfoModal({ isOpen, onClose }: IndicatorsInfoModalProp
                             </div>
                         </div>
 
+                    </div>
+
+                    {/* 9. Market Pulse */}
+                    <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full md:col-span-2">
+                        <div className="flex items-center gap-2 mb-2">
+                            <span className="flex items-center justify-center w-6 h-6 rounded bg-zinc-500/20 text-zinc-400 text-xs font-bold shrink-0">9</span>
+                            <h3 className="font-semibold text-zinc-200">Market Pulse (綜合情緒指數)</h3>
+                        </div>
+                        <p className="text-xs text-zinc-400 mb-2">將上述 7 種核心指標的狀態，加權計算為 0 ~ 100 的綜合指數。這不是買賣觸發訊號，而是用來直觀感受市場整體的溫度：</p>
+                        <ul className="text-xs text-zinc-400 space-y-1 ml-4 list-disc">
+                            <li><strong className="text-emerald-400">0 - 20 (極度看漲)：</strong>市場極度超賣、空頭擁擠、資金費率極度負值，隨時可能發生強勁的軋空反彈。</li>
+                            <li><strong className="text-zinc-400">40 - 60 (中性)：</strong>市場情緒穩定，多空力量均衡。</li>
+                            <li><strong className="text-red-400">80 - 100 (極度看跌)：</strong>市場極度超買、多頭擁擠、資金費率極度正值，隨時可能發生多殺多的崩跌。</li>
+                        </ul>
                     </div>
                 </div>
             </div>
