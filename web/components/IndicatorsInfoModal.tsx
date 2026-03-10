@@ -15,7 +15,7 @@ export function IndicatorsInfoModal({ isOpen, onClose }: IndicatorsInfoModalProp
                 <div className="sticky top-0 z-10 bg-zinc-900/90 backdrop-blur-md border-b border-zinc-800 px-6 py-4 flex items-center justify-between">
                     <div className="flex items-center gap-3">
                         <Zap className="w-5 h-5 text-amber-400" />
-                        <h2 className="text-lg font-bold text-zinc-100">Multi-Indicator Confluence Signal (v4)</h2>
+                        <h2 className="text-lg font-bold text-zinc-100">Multi-Indicator Confluence Signal (v5)</h2>
                     </div>
                     <button
                         onClick={onClose}
@@ -28,7 +28,7 @@ export function IndicatorsInfoModal({ isOpen, onClose }: IndicatorsInfoModalProp
                 {/* Content */}
                 <div className="p-6 space-y-6">
                     <p className="text-sm text-zinc-400 leading-relaxed">
-                        此系統採用「多指標匯合（Confluence）」邏輯。系統會同時運算 7 種不同維度的指標，當有 <span className="text-amber-400 font-bold">3 個以上的指標</span> 同時指向同一個方向時，才會在圖表上觸發 ⚡ 閃電買賣訊號。所有的「極端門檻」都會根據您選擇的 K 線週期自動調整。
+                        此系統採用「多指標匯合（Confluence）」邏輯。系統會同時運算 7 種不同維度的指標，並由第 8 項「行情體制判斷」來決定當前的動態門檻。在<span className="text-amber-400 font-bold">震盪行情</span>下，當有 <span className="text-amber-400 font-bold">3 個以上的指標</span> 同時指向同向時觸發 ⚡ 訊號；而在<span className="text-emerald-400 font-bold">趨勢行情</span>下，需要的匯合度會提高至 <span className="text-emerald-400 font-bold">4 個指標</span>，並啟動對應的勿空/勿多保護。所有的「極端門檻」都會根據您選擇的 K 線週期自動調整。
                     </p>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -175,6 +175,23 @@ export function IndicatorsInfoModal({ isOpen, onClose }: IndicatorsInfoModalProp
                                 <h3 className="font-semibold text-zinc-200">CVD (累積成交量差值)</h3>
                             </div>
                             <p className="text-xs text-zinc-400 mb-2">追蹤主動買入（Taker Buy）與主動賣出（Taker Sell）的淨差額，反映真實資金流向。此訊號沒有固定門檻，而是動態計算當前 K 棒的 CVD 減去過去 N 根 K 棒的 CVD，若為正則加 1 分(看漲)，若為負則加 1 分(看跌)。(N = 3 根)</p>
+                        </div>
+
+                        {/* 8. Market Regime Detection */}
+                        <div className="bg-zinc-950/50 border border-emerald-900/40 rounded-lg p-4 flex flex-col h-full md:col-span-2">
+                            <div className="flex items-center gap-2 mb-2">
+                                <span className="flex items-center justify-center w-6 h-6 rounded bg-emerald-500/20 text-emerald-400 text-xs font-bold shrink-0">8</span>
+                                <h3 className="font-semibold text-emerald-400">Market Regime (行情體制判斷)</h3>
+                            </div>
+                            <p className="text-xs text-zinc-400 mb-2">使用三個大數據因子投票，動態判斷目前的市場狀態並調整訊號過濾機制：</p>
+                            <ul className="text-xs text-zinc-400 space-y-1 ml-4 list-disc mb-3">
+                                <li><strong className="text-zinc-200">ADX 動向指數：</strong>ADX &gt; 25 代表趨勢形成。</li>
+                                <li><strong className="text-zinc-200">布林帶寬度擴張：</strong>寬度大於過去均值 1.5 倍代表波動放大。</li>
+                                <li><strong className="text-zinc-200">CVD 斜率方向：</strong>CVD 近期走勢 70% 的時間朝向同一方向。</li>
+                            </ul>
+                            <div className="bg-zinc-900/50 p-2 rounded text-[11px] text-zinc-300">
+                                <span className="text-emerald-400 font-bold">機制：</span>若 3 者中有 2 者成立，判定為「趨勢行情」，將觸發門檻從 3 分提高為 4 分，並啟動逆勢保護（例如在上漲趨勢中封鎖做空訊號），否則為「震盪行情」。
+                            </div>
                         </div>
 
                     </div>

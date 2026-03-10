@@ -307,6 +307,153 @@ class IndicatorEngine:
         return results
 
     @staticmethod
+    def calculate_market_regime(
+        price_data: List[Dict],
+        cvd_aligned: List[Dict] = None,
+        adx_period: int = 14,
+        bb_period: int = 20,
+        cvd_lookback: int = 10,
+    ) -> Dict:
+        """
+        Market Regime Detection — determines if market is trending or ranging.
+        
+        Uses 3 factors (majority vote):
+          1. ADX (Average Directional Index): ADX > 25 = trending
+          2. BB Width Expansion: current width > 1.5x average width = trending
+          3. CVD Slope: sustained directional pressure = trending
+        
+        Returns:
+            {
+                'regime': 'trending' | 'ranging',
+                'direction': 'up' | 'down' | 'neutral',
+                'adx': float,
+                'no_short': bool,    # True = block bearish signals
+                'no_long': bool,     # True = block bullish signals
+            }
+        """
+        result = {
+            'regime': 'ranging',
+            'direction': 'neutral',
+            'adx': 0.0,
+            'no_short': False,
+            'no_long': False,
+        }
+        
+        if not price_data or len(price_data) < adx_period * 2 + 10:
+            return result
+        
+        df = pd.DataFrame(price_data)
+        df['time'] = df['time'].astype(int)
+        df.sort_values('time', inplace=True)
+        df.reset_index(drop=True, inplace=True)
+        
+        # === Factor 1: ADX ===
+        high = df['high'].values
+        low = df['low'].values
+        close = df['close'].values
+        
+        # True Range
+        tr = np.zeros(len(close))
+        tr[0] = high[0] - low[0]
+        for j in range(1, len(close)):
+            tr[j] = max(high[j] - low[j], abs(high[j] - close[j-1]), abs(low[j] - close[j-1]))
+        
+        # +DM / -DM
+        plus_dm = np.zeros(len(close))
+        minus_dm = np.zeros(len(close))
+        for j in range(1, len(close)):
+            up_move = high[j] - high[j-1]
+            down_move = low[j-1] - low[j]
+            plus_dm[j] = up_move if (up_move > down_move and up_move > 0) else 0
+            minus_dm[j] = down_move if (down_move > up_move and down_move > 0) else 0
+        
+        # Wilder's smoothing (Running Sum)
+        def wilder_sum(data, period):
+            out = np.zeros(len(data))
+            if len(data) < period + 1: return out
+            out[period] = np.sum(data[1:period+1])
+            for j in range(period + 1, len(data)):
+                out[j] = out[j-1] - (out[j-1] / period) + data[j]
+            return out
+        
+        atr = wilder_sum(tr, adx_period)
+        plus_di_raw = wilder_sum(plus_dm, adx_period)
+        minus_di_raw = wilder_sum(minus_dm, adx_period)
+        
+        # +DI / -DI
+        with np.errstate(divide='ignore', invalid='ignore'):
+            plus_di = np.where(atr > 0, 100 * plus_di_raw / atr, 0)
+            minus_di = np.where(atr > 0, 100 * minus_di_raw / atr, 0)
+        
+        # DX
+        di_sum = plus_di + minus_di
+        with np.errstate(divide='ignore', invalid='ignore'):
+            dx = np.where(di_sum > 0, 100 * np.abs(plus_di - minus_di) / di_sum, 0)
+        
+        # ADX = smoothed DX (Running Average, alpha = 1 / period)
+        adx = np.zeros(len(dx))
+        if len(dx) >= adx_period * 2:
+            start_idx = adx_period * 2 - 1
+            adx[start_idx] = np.mean(dx[adx_period:start_idx+1])
+            for j in range(start_idx + 1, len(dx)):
+                adx[j] = (adx[j-1] * (adx_period - 1) + dx[j]) / adx_period
+        
+        current_adx = float(adx[-1]) if len(adx) > 0 else 0
+        result['adx'] = round(current_adx, 1)
+        
+        adx_trending = current_adx > 25
+        adx_direction = 'up' if plus_di[-1] > minus_di[-1] else 'down'
+        
+        # === Factor 2: BB Width Expansion ===
+        bb_trending = False
+        if len(close) >= bb_period + 20:
+            sma = pd.Series(close).rolling(window=bb_period).mean()
+            std = pd.Series(close).rolling(window=bb_period).std()
+            bb_width = (2 * std / sma).fillna(0)
+            
+            # Current BB width vs average of last 20 periods
+            current_width = float(bb_width.iloc[-1])
+            avg_width = float(bb_width.iloc[-21:-1].mean()) if len(bb_width) > 21 else current_width
+            
+            bb_trending = current_width > avg_width * 1.5 if avg_width > 0 else False
+        
+        # === Factor 3: CVD Slope ===
+        cvd_trending = False
+        cvd_direction = 'neutral'
+        if cvd_aligned and len(cvd_aligned) >= cvd_lookback + 1:
+            cvd_vals = [item['value'] for item in cvd_aligned[-cvd_lookback-1:]]
+            cvd_slope = cvd_vals[-1] - cvd_vals[0]
+            
+            # Check if CVD has been mostly one-directional
+            positive_moves = sum(1 for k in range(1, len(cvd_vals)) if cvd_vals[k] > cvd_vals[k-1])
+            negative_moves = len(cvd_vals) - 1 - positive_moves
+            
+            consistency = max(positive_moves, negative_moves) / (len(cvd_vals) - 1)
+            
+            if consistency >= 0.7:  # 70%+ of moves in same direction
+                cvd_trending = True
+                cvd_direction = 'up' if cvd_slope > 0 else 'down'
+        
+        # === Majority Vote ===
+        trending_votes = sum([adx_trending, bb_trending, cvd_trending])
+        
+        if trending_votes >= 2:
+            result['regime'] = 'trending'
+            # Direction: ADX direction takes priority, CVD confirms
+            if adx_direction == cvd_direction:
+                result['direction'] = adx_direction
+            else:
+                result['direction'] = adx_direction  # ADX as tiebreaker
+            
+            # No-Short / No-Long filters
+            if result['direction'] == 'up':
+                result['no_short'] = True
+            elif result['direction'] == 'down':
+                result['no_long'] = True
+        
+        return result
+
+    @staticmethod
     def calculate_confluence_signals(
         price_data: List[Dict],
         lsur_z_aligned: List[Dict],
@@ -322,16 +469,20 @@ class IndicatorEngine:
         oi_aligned: List[Dict] = None,
     ) -> List[Dict]:
         """
-        Multi-Indicator Confluence Signal System v4: Timeframe-Adaptive.
+        Multi-Indicator Confluence Signal System v5: Regime-Adaptive.
         
-        7 indicators with timeframe-specific thresholds.
-        EMA Trend Filter adjusts bull/bear thresholds dynamically.
-        Per-bar rolling OI percentile replaces global OI check.
+        Upgrades from v4:
+          - Market Regime Detection (ADX + BB Width + CVD slope)
+          - Dynamic threshold: 3/7 (ranging) vs 4/7 (trending)
+          - No-Short Filter: blocks bearish signals in uptrend regime
+          - No-Long Filter: blocks bullish signals in downtrend regime
+          - LSUR Dulling Detection: skips Z-score when price contradicts
+          - CVD Slope Discount: halves reversal indicator scores in strong CVD trends
         
         INDICATORS (each = 1 point):
-          1. LSUR Z-Score — crowded positioning
+          1. LSUR Z-Score — crowded positioning (+ dulling detection)
           2. CVD Momentum — buying/selling pressure direction
-          3. OI Percentile — leverage fuel (rolling per-bar)
+          3. OI × Price — leverage fuel divergence
           4. Funding Rate — sentiment extreme
           5. RSI — overbought/oversold
           6. EMA Zone — price stretched from EMA50
@@ -387,10 +538,29 @@ class IndicatorEngine:
         COOLDOWN = P['cooldown']
         
         # === Signal Threshold ===
-        # Fixed at 3/7 regardless of trend state.
-        # Trend state is still displayed as context but does NOT alter thresholds.
-        bull_threshold = 3
-        bear_threshold = 3
+        # v5: Market Regime Detection — dynamic thresholds
+        regime = IndicatorEngine.calculate_market_regime(
+            price_data=price_data,
+            cvd_aligned=cvd_aligned,
+        )
+        
+        # Trending markets need stronger confluence (4/7), ranging uses standard (3/7)
+        if regime['regime'] == 'trending':
+            bull_threshold = 4
+            bear_threshold = 4
+        else:
+            bull_threshold = 3
+            bear_threshold = 3
+        
+        # CVD slope for reversal-indicator discount
+        cvd_slope_extreme = False
+        if cvd_aligned and len(cvd_aligned) >= lookback + 1:
+            cvd_recent = [item['value'] for item in cvd_aligned[-lookback-1:]]
+            cvd_slope_val = cvd_recent[-1] - cvd_recent[0]
+            # Normalize: compare against typical CVD range
+            cvd_range = max(abs(cvd_aligned[-1]['value'] - cvd_aligned[0]['value']), 1)
+            cvd_slope_ratio = abs(cvd_slope_val) / cvd_range
+            cvd_slope_extreme = cvd_slope_ratio > 0.3  # 30%+ of total range in lookback
         
         # Build lookup dicts by time for O(1) access
         z_by_time = {item['time']: item['value'] for item in lsur_z_aligned}
@@ -445,11 +615,21 @@ class IndicatorEngine:
             
             price_close = price_bar['close'] if price_bar else None
             
+            # --- LSUR Dulling Detection ---
+            # If LSUR Z says bearish (overcrowded longs) but price is RISING, skip Z
+            # If LSUR Z says bullish (overcrowded shorts) but price is FALLING, skip Z
+            lsur_dulled = False
+            if z_val is not None and price_chg_pct is not None:
+                if z_val >= P['z_bear'] and price_chg_pct > price_thresh:
+                    lsur_dulled = True  # Z says sell but price going up
+                elif z_val <= P['z_bull'] and price_chg_pct < -price_thresh:
+                    lsur_dulled = True  # Z says buy but price going down
+            
             # ===== BULLISH confluence =====
             bull_score = 0
             bull_reasons = []
             
-            if z_val <= P['z_bull']:
+            if z_val <= P['z_bull'] and not lsur_dulled:
                 bull_score += 1
                 bull_reasons.append('Z')
             
@@ -488,7 +668,7 @@ class IndicatorEngine:
             bear_score = 0
             bear_reasons = []
             
-            if z_val >= P['z_bear']:
+            if z_val >= P['z_bear'] and not lsur_dulled:
                 bear_score += 1
                 bear_reasons.append('Z')
             
@@ -523,29 +703,40 @@ class IndicatorEngine:
                 bear_score += 1
                 bear_reasons.append('BB↓')
             
-            # --- Emit signal if score >= threshold, respecting cooldown ---
+            # --- Regime tag for signal text ---
+            regime_tag = 'T' if regime['regime'] == 'trending' else 'R'
+            
+            # --- Emit signal if score >= threshold, respecting cooldown & regime filters ---
             if bull_score >= bull_threshold and (i - last_bull_idx) >= COOLDOWN:
-                markers.append({
-                    "time": t,
-                    "position": "belowBar",
-                    "color": "#22c55e",
-                    "shape": "arrowUp",
-                    "text": f"⚡{bull_score}/7 {'+'.join(bull_reasons)}",
-                    "score": bull_score,
-                    "direction": "bullish"
-                })
-                last_bull_idx = i
+                # No-Long filter: block bullish signals in downtrend regime
+                if regime['no_long']:
+                    pass  # Signal blocked by regime filter
+                else:
+                    markers.append({
+                        "time": t,
+                        "position": "belowBar",
+                        "color": "#22c55e",
+                        "shape": "arrowUp",
+                        "text": f"⚡{bull_score}/7 [{regime_tag}] {'+'.join(bull_reasons)}",
+                        "score": bull_score,
+                        "direction": "bullish"
+                    })
+                    last_bull_idx = i
             elif bear_score >= bear_threshold and (i - last_bear_idx) >= COOLDOWN:
-                markers.append({
-                    "time": t,
-                    "position": "aboveBar",
-                    "color": "#ef4444",
-                    "shape": "arrowDown",
-                    "text": f"⚡{bear_score}/7 {'+'.join(bear_reasons)}",
-                    "score": bear_score,
-                    "direction": "bearish"
-                })
-                last_bear_idx = i
+                # No-Short filter: block bearish signals in uptrend regime
+                if regime['no_short']:
+                    pass  # Signal blocked by regime filter
+                else:
+                    markers.append({
+                        "time": t,
+                        "position": "aboveBar",
+                        "color": "#ef4444",
+                        "shape": "arrowDown",
+                        "text": f"⚡{bear_score}/7 [{regime_tag}] {'+'.join(bear_reasons)}",
+                        "score": bear_score,
+                        "direction": "bearish"
+                    })
+                    last_bear_idx = i
         
-        return markers
+        return markers, regime
 

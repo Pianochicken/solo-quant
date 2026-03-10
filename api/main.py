@@ -229,7 +229,7 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
         
         # 6. Multi-Indicator Confluence Signals v4
         # Timeframe-adaptive thresholds, trend filter, per-bar rolling OI percentile
-        confluence_markers = IndicatorEngine.calculate_confluence_signals(
+        confluence_markers, market_regime = IndicatorEngine.calculate_confluence_signals(
             price_data=data['price'],
             lsur_z_aligned=lsur_z_aligned,
             cvd_aligned=cvd_aligned,
@@ -260,7 +260,8 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
                 "ema_fast": ema_trend['ema_fast'],
                 "ema_slow": ema_trend['ema_slow'],
                 "trend_state": trend_state,
-                "rsi_history": rsi_history
+                "rsi_history": rsi_history,
+                "market_regime": market_regime
             }
         }
     except Exception as e:

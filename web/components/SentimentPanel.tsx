@@ -1,4 +1,4 @@
-import { TrendingUp, TrendingDown, Activity, Layers } from 'lucide-react';
+import { TrendingUp, TrendingDown, Activity, Layers, Shield } from 'lucide-react';
 import { InfoTooltip } from './InfoTooltip';
 import { IndicatorData } from '@/lib/api';
 import { getThresholds } from '@/lib/thresholds';
@@ -41,6 +41,23 @@ export default function SentimentPanel({ indicators, timeframe = '1h' }: Sentime
         TrendIcon = TrendingDown;
     }
 
+    // Market Regime
+    const regime = (indicators as any).market_regime || { regime: 'ranging', direction: 'neutral', adx: 0, no_short: false, no_long: false };
+    let regimeColor = 'text-amber-400';
+    let regimeLabel = '🔄 Ranging';
+    let regimeBgClass = 'border-amber-900/30';
+    if (regime.regime === 'trending') {
+        if (regime.direction === 'up') {
+            regimeColor = 'text-emerald-400';
+            regimeLabel = '📈 Trending ↑';
+            regimeBgClass = 'border-emerald-900/30';
+        } else {
+            regimeColor = 'text-red-400';
+            regimeLabel = '📉 Trending ↓';
+            regimeBgClass = 'border-red-900/30';
+        }
+    }
+
     return (
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 h-full flex flex-col">
             <h3 className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-4 flex items-center gap-2">
@@ -49,6 +66,38 @@ export default function SentimentPanel({ indicators, timeframe = '1h' }: Sentime
             </h3>
 
             <div className="grid grid-cols-2 gap-4 flex-1">
+                {/* Market Regime Card — NEW: spans full width */}
+                <div className={`bg-zinc-950/50 rounded-lg p-3 border ${regimeBgClass} flex flex-col col-span-2`}>
+                    <div className="flex items-center justify-between">
+                        <div>
+                            <div className="text-xs text-zinc-500 mb-1 flex items-center">Market Regime<InfoTooltip text="行情體制判斷：使用 ADX、布林帶寬度、CVD 斜率三因子投票決定目前是「震盪行情」還是「趨勢行情」。趨勢行情中，匯合門檻從 3/7 提升至 4/7，並啟用方向性過濾" /></div>
+                            <div className={`text-xl font-mono font-bold ${regimeColor}`}>
+                                {regimeLabel}
+                            </div>
+                        </div>
+                        <div className="text-right">
+                            <div className="text-[10px] text-zinc-600 mb-1">ADX</div>
+                            <div className={`text-lg font-mono font-bold ${regime.adx > 25 ? 'text-purple-400' : 'text-zinc-500'}`}>
+                                {regime.adx?.toFixed(1) || '—'}
+                            </div>
+                        </div>
+                    </div>
+                    {(regime.no_short || regime.no_long) && (
+                        <div className="mt-2 flex gap-2">
+                            {regime.no_short && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-950/50 border border-emerald-800/30 text-emerald-400 text-[10px] font-medium">
+                                    <Shield className="w-3 h-3" /> 勿空保護
+                                </span>
+                            )}
+                            {regime.no_long && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-red-950/50 border border-red-800/30 text-red-400 text-[10px] font-medium">
+                                    <Shield className="w-3 h-3" /> 勿多保護
+                                </span>
+                            )}
+                        </div>
+                    )}
+                </div>
+
                 {/* L/S Z-Score Card */}
                 <div className="bg-zinc-950/50 rounded-lg p-3 border border-zinc-800 flex flex-col justify-between">
                     <div>
