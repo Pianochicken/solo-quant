@@ -12,6 +12,11 @@ export interface IndicatorData {
     composite_score_history?: { time: number; value: number }[];
     market_regime?: any;
     market_regime_history?: any;
+    exchange_breakdown?: {
+        binance: number;
+        okx: number;
+        total: number;
+    };
 }
 
 export interface MarketData {

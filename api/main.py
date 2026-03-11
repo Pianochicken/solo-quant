@@ -266,7 +266,7 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
         return {
             "symbol": formatted_symbol,
             "data": {
-                "price": data['price'],
+                "price": df_price.to_dict('records') if not df_price.empty else [],
                 "funding": funding_aligned
             },
             "indicators": {
@@ -284,7 +284,8 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
                 "market_regime": market_regime,
                 "market_regime_history": market_regime_history,
                 "composite_score": composite_score,
-                "composite_score_history": composite_score_history
+                "composite_score_history": composite_score_history,
+                "exchange_breakdown": fetcher.latest_oi_breakdown
             }
         }
     except Exception as e:

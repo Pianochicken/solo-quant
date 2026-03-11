@@ -1,15 +1,23 @@
 import ccxt
 import pandas as pd
 import time
+import concurrent.futures
 from typing import Tuple, Dict
 
 class DataFetcher:
     """
-    SoloQuant Data Handler (OKX Edition).
+    SoloQuant Data Handler (OKX + Binance Aggregator Edition).
     """
     def __init__(self):
-        self.exchange = ccxt.okx()
+        self.okx = ccxt.okx()
+        self.binance = ccxt.binance({
+            'options': {
+                'defaultType': 'future',
+            }
+        })
+        self.exchange = self.okx  # Fallback target for existing Spot OHLCV logic
         self.cache = {}  # In-memory cache for historical data
+        self.latest_oi_breakdown = {"binance": 0, "okx": 0, "total": 0}
 
     def _merge_history(self, cached: list, new_data: list, time_key: str = 'time') -> list:
         """
@@ -204,11 +212,19 @@ class DataFetcher:
     def fetch_taker_volume(self, symbol: str, period: str = '5m', limit: int = 100) -> list:
         """
         Fetches Taker Buy/Sell Volume to calculate CVD.
-        Uses OKX Rubik API: /api/v5/rubik/stat/taker-volume
-        Paginates backward to get more historical data.
+        Aggregates data from OKX Rubik API and Binance USDⓈ-M Futures API.
         """
-        try:
-            # OKX Rubik Taker Volume strictly supports: 5m, 1H, 1D. Map standard periods safely:
+        ccy = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[0]
+        cache_key = f"taker_vol_agg_{ccy}_{period}"
+        
+        if cache_key in self.cache:
+            # Short-circuit incremental fetch
+            limit_to_fetch = min(limit, 20)
+        else:
+            limit_to_fetch = limit
+
+        def fetch_okx():
+            # OKX Rubik Taker Volume strictly supports: 5m, 1H, 1D.
             okx_period = '5m'
             p_lower = period.lower()
             if p_lower in ['1h', '2h', '4h', '6h', '8h', '12h']:
@@ -216,71 +232,103 @@ class DataFetcher:
             elif p_lower in ['1d', '2d', '3d', '1w', '1M']:
                 okx_period = '1D'
                 
-            # 1. Parse Currency (e.g., BTC/USDT -> BTC)
-            ccy = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[0]
-            
-            if not hasattr(self.exchange, 'publicGetRubikStatTakerVolume'):
+            if not hasattr(self.okx, 'publicGetRubikStatTakerVolume'):
                 return []
-            
-            cache_key = f"taker_vol_{ccy}_{period}"
-            
-            if cache_key in self.cache:
-                # Incremental Update: Just fetch 1 page (100 items)
-                max_pages = 1
-            else:
-                # Full Fetch
-                max_pages = min((limit + 99) // 100, 5)  # Cap at 5 pages to avoid rate limiting
                 
-            all_results = []
-            end_ts = None  # Start from latest
+            max_pages = min((limit_to_fetch + 99) // 100, 5)
+            results = []
+            end_ts = None
             
             for page in range(max_pages):
-                params = {
-                    'ccy': ccy,
-                    'instType': 'CONTRACTS',
-                    'period': okx_period,
-                }
+                params = {'ccy': ccy, 'instType': 'CONTRACTS', 'period': okx_period}
                 if end_ts is not None:
                     params['end'] = str(end_ts)
-                
-                response = self.exchange.publicGetRubikStatTakerVolume(params)
-                
-                if response.get('code') != '0':
-                    print(f"OKX Taker Volume Error for {symbol} (ccy={ccy}, period={okx_period} mapped from {period}): {response}")
+                try:
+                    res = self.okx.publicGetRubikStatTakerVolume(params)
+                    if res.get('code') != '0': break
+                    data = res.get('data', [])
+                    if not data: break
+                    
+                    for item in data:
+                        results.append({"time": int(int(item[0])/1000), "sell_vol": float(item[1]), "buy_vol": float(item[2])})
+                        
+                    earliest_ts = min(int(item[0]) for item in data)
+                    if end_ts is not None and earliest_ts >= end_ts: break
+                    end_ts = earliest_ts - 1
+                    if len(data) < 100: break
+                    if page < max_pages - 1: time.sleep(0.2)
+                except Exception as e:
+                    print(f"OKX Taker Vol Error: {e}")
                     break
+            return results
 
-                data = response.get('data', [])
-                if not data:
-                    break
+        def fetch_binance():
+            binance_period = '5m'
+            p_lower = period.lower()
+            if p_lower in ['1h', '2h', '4h', '6h', '8h', '12h']: binance_period = '1h'
+            elif p_lower in ['1d', '2d', '3d', '1w', '1M']: binance_period = '1d'
                 
-                for item in data:
-                    # item: [ts, sellVol, buyVol]
-                    all_results.append({
-                        "time": int(int(item[0]) / 1000),
-                        "sell_vol": float(item[1]),
-                        "buy_vol": float(item[2])
-                    })
-                
-                # Paginate backward: use the earliest timestamp in this batch
-                earliest_ts = min(int(item[0]) for item in data)
-                if end_ts is not None and earliest_ts >= end_ts:
-                    break  # No more older data
-                end_ts = earliest_ts - 1
-                
-                if len(data) < 100:
-                    break  # Last page
-                
-                if page < max_pages - 1:
-                    time.sleep(0.5)  # Rate limit: avoid OKX 50011 Too Many Requests
+            binance_symbol = f"{ccy}USDT"
+            max_pages = min((limit_to_fetch + 499) // 500, 3)
+            results = []
+            end_ts = None
             
-            # Deduplicate and sort chronologically
-            seen = set()
-            unique = []
-            for item in all_results:
-                if item['time'] not in seen:
-                    seen.add(item['time'])
-                    unique.append(item)
-            unique.sort(key=lambda x: x['time'])
+            for page in range(max_pages):
+                params = {'symbol': binance_symbol, 'period': binance_period, 'limit': min(limit_to_fetch, 500)}
+                if end_ts is not None:
+                    params['endTime'] = int(end_ts)
+                try:
+                    res = self.binance.fapidataGetTakerlongshortratio(params)
+                    if not isinstance(res, list) or not res: break
+                    
+                    for item in res:
+                        results.append({"time": int(int(item['timestamp'])/1000), "sell_vol": float(item['sellVol']), "buy_vol": float(item['buyVol'])})
+                        
+                    earliest_ts = min(int(item['timestamp']) for item in res)
+                    if end_ts is not None and earliest_ts >= end_ts: break
+                    end_ts = earliest_ts - 1
+                    if len(res) < 500: break
+                except Exception as e:
+                    print(f"Binance Taker Vol Error: {e}")
+                    break
+            return results
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                f_okx = executor.submit(fetch_okx)
+                f_bin = executor.submit(fetch_binance)
+                okx_data = f_okx.result()
+                bin_data = f_bin.result()
+                
+            if not okx_data and not bin_data:
+                return []
+                
+            df_okx = pd.DataFrame(okx_data) if okx_data else pd.DataFrame(columns=['time', 'sell_vol', 'buy_vol'])
+            df_bin = pd.DataFrame(bin_data) if bin_data else pd.DataFrame(columns=['time', 'sell_vol', 'buy_vol'])
+            
+            # Align by time using binance as basis if it has more tracking, or just concatenate and group
+            # Taker Volume is discrete per period, so grouping by approximated time is easiest
+            merged = pd.concat([df_okx, df_bin])
+            if merged.empty: return []
+            
+            # Since OKX and Binance might have slight timestamp differences for the same 5m/1h candle 
+            # (e.g., 1700000000 vs 1700000001), we round the time to the nearest period interval.
+            period_seconds = 300 # default 5m
+            if 'h' in period.lower() or 'H' in period: period_seconds = 3600
+            elif 'd' in period.lower() or 'D' in period: period_seconds = 86400
+            
+            merged['rounded_time'] = (merged['time'] // period_seconds) * period_seconds
+            
+            # Group by rounded time and sum volumes
+            agg_df = merged.groupby('rounded_time').agg({
+                'sell_vol': 'sum',
+                'buy_vol': 'sum'
+            }).reset_index()
+            
+            agg_df.rename(columns={'rounded_time': 'time'}, inplace=True)
+            agg_df.sort_values('time', inplace=True)
+            
+            unique = agg_df.to_dict('records')
             
             if cache_key in self.cache:
                 self.cache[cache_key] = self._merge_history(self.cache[cache_key], unique)
@@ -290,94 +338,113 @@ class DataFetcher:
             return self.cache[cache_key][-limit:]
             
         except Exception as e:
-            print(f"Failed to fetch Taker Volume: {e}")
+            print(f"Failed to fetch Aggregated Taker Volume: {e}")
             return []
 
     def fetch_open_interest(self, symbol: str, limit: int = 90, timeframe: str = '1h') -> list:
         """
-        Fetches Open Interest History from OKX with pagination.
-        OKX returns max ~100 entries per request, so we paginate backward
-        to get enough data to cover the full price chart range.
+        Fetches Open Interest History from OKX and Binance.
+        Sums up the OI values across both exchanges for a global metric.
         """
-        # Logic: If Spot (no :), convert to Perp (add :USDT) to get OI
-        if '/' in symbol and ':' not in symbol:
-            symbol = f"{symbol}:USDT"
+        ccy = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[0]
+        binance_symbol = f"{ccy}/USDT:USDT"
+        
+        # Keep original OKX logic handling
+        if '/' in symbol and ':' not in symbol: okx_symbol = f"{symbol}:USDT"
+        else: okx_symbol = symbol
+        
+        cache_key = f"oi_agg_{symbol}_{timeframe}"
+        if cache_key in self.cache: limit_to_fetch = min(limit, 20)
+        else: limit_to_fetch = limit
+
+        def fetch_okx():
+            try:
+                per_page = 100
+                max_pages = min((limit_to_fetch + per_page - 1) // per_page, 3)
+                all_data = []
+                since = None
+                for page in range(max_pages):
+                    params = {}
+                    if since: params['until'] = since
+                    res = self.okx.fetch_open_interest_history(okx_symbol, timeframe, limit=per_page, params=params)
+                    if not res: break
+                    for item in res:
+                        all_data.append({"time": int(item['timestamp']/1000), "value": float(item.get('openInterestValue') or item.get('openInterest') or item.get('oi') or 0)})
+                    earliest_ts = min(item['timestamp'] for item in res)
+                    if since and earliest_ts >= since: break
+                    since = earliest_ts - 1
+                    if len(res) < per_page: break
+                    if page < max_pages - 1: time.sleep(0.2)
+                return all_data
+            except Exception as e:
+                print(f"OKX OI Error: {e}")
+                return []
+
+        def fetch_binance():
+            try:
+                per_page = 500
+                max_pages = min((limit_to_fetch + per_page - 1) // per_page, 2)
+                all_data = []
+                since = None
+                for page in range(max_pages):
+                    params = {}
+                    if since: params['endTime'] = since
+                    res = self.binance.fetch_open_interest_history(binance_symbol, timeframe, limit=per_page, params=params)
+                    if not res: break
+                    for item in res:
+                        all_data.append({"time": int(item['timestamp']/1000), "value": float(item.get('openInterestValue') or item.get('openInterest') or item.get('oi') or 0)})
+                    earliest_ts = min(item['timestamp'] for item in res)
+                    if since and earliest_ts >= since: break
+                    since = earliest_ts - 1
+                    if len(res) < per_page: break
+                return all_data
+            except Exception as e:
+                print(f"Binance OI Error: {e}")
+                return []
 
         try:
-            cache_key = f"oi_{symbol}_{timeframe}"
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                f_okx = executor.submit(fetch_okx)
+                f_bin = executor.submit(fetch_binance)
+                okx_data, bin_data = f_okx.result(), f_bin.result()
             
-            if cache_key in self.cache:
-                # Incremental Update
-                max_pages = 1
-            else:
-                # Full Fetch
-                per_page = 100  # OKX typical max per request
-                total_needed = limit
-                pages_needed = (total_needed + per_page - 1) // per_page
-                max_pages = min(pages_needed, 3)  # Cap at 3 pages to avoid rate limiting
+            df_okx = pd.DataFrame(okx_data) if okx_data else pd.DataFrame(columns=['time', 'value'])
+            df_bin = pd.DataFrame(bin_data) if bin_data else pd.DataFrame(columns=['time', 'value'])
             
-            all_data = []
-            per_page = 100
-            since = None  # Start from latest, paginate backward
+            dfs_to_concat = []
+            if not df_okx.empty: dfs_to_concat.append(df_okx)
+            if not df_bin.empty: dfs_to_concat.append(df_bin)
             
-            for page in range(max_pages):
-                params = {}
-                if since is not None:
-                    params['until'] = since  # Fetch data before this timestamp
+            if not dfs_to_concat:
+                return []
                 
-                oi_data = self.exchange.fetch_open_interest_history(
-                    symbol, timeframe, limit=per_page, since=since, params=params
-                )
-                
-                if not oi_data:
-                    break
-                
-                page_results = [
-                    {
-                        "time": int(item['timestamp'] / 1000),
-                        "value": float(item.get('openInterestValue') or item.get('openInterest') or item.get('oi') or 0)
-                    }
-                    for item in oi_data
-                ]
-                
-                all_data.extend(page_results)
-                
-                # For next page, go further back in time
-                # Find the earliest timestamp in this batch
-                earliest_ts = min(item['timestamp'] for item in oi_data)
-                
-                if since is not None and earliest_ts >= since:
-                    break  # No more older data available
-                
-                since = earliest_ts - 1  # Go back before the earliest point
-                
-                # If we got fewer results than requested, we've reached the API limit
-                if len(oi_data) < per_page:
-                    break
-                
-                if page < max_pages - 1:
-                    time.sleep(0.5)  # Rate limit: avoid OKX 50011 Too Many Requests
+            merged = pd.concat(dfs_to_concat)
             
-            # Deduplicate by time and sort chronologically
-            seen_times = set()
-            unique_data = []
-            for item in all_data:
-                if item['time'] not in seen_times:
-                    seen_times.add(item['time'])
-                    unique_data.append(item)
+            # Save latest proportions for UI Visualization
+            latest_binance = float(df_bin.iloc[-1]['value']) if not df_bin.empty else 0
+            latest_okx = float(df_okx.iloc[-1]['value']) if not df_okx.empty else 0
+            self.latest_oi_breakdown = {
+                "binance": latest_binance,
+                "okx": latest_okx,
+                "total": latest_binance + latest_okx
+            }
+
+            period_seconds = 3600
+            if 'm' in timeframe.lower(): period_seconds = int(timeframe.lower().replace('m', '')) * 60
+            elif 'd' in timeframe.lower(): period_seconds = 86400
             
-            unique_data.sort(key=lambda x: x['time'])
+            merged['rounded_time'] = (merged['time'] // period_seconds) * period_seconds
+            agg_df = merged.groupby('rounded_time')['value'].sum().reset_index()
+            agg_df.rename(columns={'rounded_time': 'time'}, inplace=True)
+            agg_df.sort_values('time', inplace=True)
             
-            if cache_key in self.cache:
-                self.cache[cache_key] = self._merge_history(self.cache[cache_key], unique_data)
-            else:
-                self.cache[cache_key] = unique_data
-                
+            unique = agg_df.to_dict('records')
+            if cache_key in self.cache: self.cache[cache_key] = self._merge_history(self.cache[cache_key], unique)
+            else: self.cache[cache_key] = unique
             return self.cache[cache_key][-limit:]
-            
         except Exception as e:
-             print(f"Failed to fetch OI history: {e}")
-             return []
+            print(f"Agg OI Error: {e}")
+            return []
 
     def fetch_order_book_depth(self, symbol: str, limit: int = 400) -> Dict:
         """
@@ -398,65 +465,93 @@ class DataFetcher:
 
     def fetch_long_short_ratio(self, symbol: str, period: str = '5m', limit: int = 100) -> list:
         """
-        Fetches 'Long/Short Account Ratio' from OKX Rubik (Trading Data) API.
-        NOTE: CCXT does not have a unified endpoint for this, using implicit API.
-        Symbol format for OKX Rubik: 'BTC' (ccy), not 'BTC/USDT'.
+        Fetches 'Long/Short Account Ratio' from OKX Rubik and Binance Futures.
+        Uses ThreadPoolExecutor to aggregate the values globally.
         """
+        ccy = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[0]
+        cache_key = f"lsr_agg_{ccy}_{period}"
+        limit_to_fetch = min(limit, 20) if cache_key in self.cache else limit
+        
+        def fetch_okx():
+            try:
+                okx_period = '5m'
+                p_lower = period.lower()
+                if p_lower in ['1h', '2h', '4h', '6h', '8h', '12h']: okx_period = '1H'
+                elif p_lower in ['1d', '2d', '3d', '1w', '1m']: okx_period = '1D'
+                
+                if not hasattr(self.okx, 'publicGetRubikStatContractsLongShortAccountRatio'): return []
+                res = self.okx.publicGetRubikStatContractsLongShortAccountRatio({'ccy': ccy, 'period': okx_period, 'limit': min(limit_to_fetch, 100)})
+                if res.get('code') != '0': return []
+                data = res.get('data', [])
+                results = []
+                for item in data:
+                    if isinstance(item, list): ts, ratio = item[0], item[1]
+                    elif isinstance(item, dict): ts, ratio = item['ts'], item['ratio']
+                    else: continue
+                    results.append({"time": int(int(ts)/1000), "value": float(ratio)})
+                return results
+            except Exception as e:
+                print(f"OKX LSR Error: {e}")
+                return []
+                
+        def fetch_binance():
+            try:
+                max_pages = min((limit_to_fetch + 499) // 500, 2)
+                results = []
+                end_ts = None
+                
+                binance_period = '5m'
+                p_lower = period.lower()
+                if p_lower in ['1h', '2h', '4h', '6h', '8h', '12h']: binance_period = '1h'
+                elif p_lower in ['1d', '2d', '3d', '1w', '1M']: binance_period = '1d'
+                
+                for page in range(max_pages):
+                    params = {'symbol': f"{ccy}USDT", 'period': binance_period, 'limit': min(limit_to_fetch, 500)}
+                    if end_ts: params['endTime'] = int(end_ts)
+                    res = self.binance.fapidataGetToplongshortaccountratio(params)
+                    if not isinstance(res, list) or not res: break
+                    for item in res:
+                        results.append({"time": int(int(item['timestamp'])/1000), "value": float(item['longShortRatio'])})
+                    earliest_ts = min(int(item['timestamp']) for item in res)
+                    if end_ts and earliest_ts >= end_ts: break
+                    end_ts = earliest_ts - 1
+                    if len(res) < 500: break
+                return results
+            except Exception as e:
+                print(f"Binance LSR Error: {e}")
+                return []
+                
         try:
-            # 1. Parse Currency (e.g., BTC/USDT -> BTC)
-            ccy = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[0]
-            
-            cache_key = f"lsr_{ccy}_{period}"
-            
-            fetch_limit = limit
-            if cache_key in self.cache:
-                 # Fast update
-                 fetch_limit = min(50, limit)
-                 
-            # 2. Call OKX Implicit API
-            # Endpoint: GET /api/v5/rubik/stat/contracts/long-short-account-ratio
-            # Params: ccy=BTC, period=5m
-            # CCXT method: publicGetRubikStatContractsLongShortAccountRatio
-            if hasattr(self.exchange, 'publicGetRubikStatContractsLongShortAccountRatio'):
-                response = self.exchange.publicGetRubikStatContractsLongShortAccountRatio({
-                    'ccy': ccy,
-                    'period': period,
-                    'limit': fetch_limit
-                })
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                f_okx = executor.submit(fetch_okx)
+                f_bin = executor.submit(fetch_binance)
+                okx_data, bin_data = f_okx.result(), f_bin.result()
                 
-                # Response format: {'code': '0', 'data': [{'ts': '...', 'ratio': '...'}, ...]}
-                # Response format: {'code': '0', 'data': [['ts', 'ratio'], ...]} OR [{'ts': ..., 'ratio': ...}]
-                if response['code'] == '0':
-                    data = response['data']
-                    results = []
-                    
-                    for item in data:
-                        # Handle List format (common in V5 history)
-                        if isinstance(item, list):
-                            ts = item[0]
-                            ratio = item[1]
-                        # Handle Dict format
-                        elif isinstance(item, dict):
-                            ts = item['ts']
-                            ratio = item['ratio']
-                        else:
-                            continue
-                            
-                        results.append({
-                            "time": int(int(ts) / 1000),
-                            "value": float(ratio)
-                        })
-                        
-                    results = results[::-1] # Reverse to chronological order
-                    
-                    if cache_key in self.cache:
-                        self.cache[cache_key] = self._merge_history(self.cache[cache_key], results)
-                    else:
-                        self.cache[cache_key] = results
-                        
-                    return self.cache[cache_key][-limit:]
+            df_okx = pd.DataFrame(okx_data) if okx_data else pd.DataFrame(columns=['time', 'value'])
+            df_bin = pd.DataFrame(bin_data) if bin_data else pd.DataFrame(columns=['time', 'value'])
+            
+            dfs_to_concat = []
+            if not df_okx.empty: dfs_to_concat.append(df_okx)
+            if not df_bin.empty: dfs_to_concat.append(df_bin)
+            
+            if not dfs_to_concat:
+                return []
                 
-            return []
+            merged = pd.concat(dfs_to_concat)
+
+            period_seconds = 300
+            if 'h' in period.lower() or 'H' in period: period_seconds = 3600
+            elif 'd' in period.lower() or 'D' in period: period_seconds = 86400
+            
+            merged['rounded_time'] = (merged['time'] // period_seconds) * period_seconds
+            agg_df = merged.groupby('rounded_time')['value'].mean().reset_index()
+            agg_df.rename(columns={'rounded_time': 'time'}, inplace=True)
+            agg_df.sort_values('time', inplace=True)
+            
+            unique = agg_df.to_dict('records')
+            if cache_key in self.cache: self.cache[cache_key] = self._merge_history(self.cache[cache_key], unique)
+            else: self.cache[cache_key] = unique
+            return self.cache[cache_key][-limit:]
         except Exception as e:
-            print(f"Failed to fetch Long/Short Ratio: {e}")
+            print(f"Agg LSR Error: {e}")
             return []
