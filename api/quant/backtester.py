@@ -4,13 +4,14 @@ from typing import List, Dict
 from api.quant.grid_bot import GridBot
 
 class Backtester:
-    def __init__(self, bot: GridBot, data: List[Dict], sentiment_data: List[Dict] = None, regime_data: Dict = None):
+    def __init__(self, bot: GridBot, data: List[Dict], sentiment_data: List[Dict] = None, regime_data: Dict = None, enable_protection: bool = True):
         self.bot = bot
         self.data = data # List of {'time', 'open', 'high', 'low', 'close'}
         # sentiment_data: List of {'time', 'value'} (LSUR Z-Score)
         # Convert to dict for fast lookup: {time_ms: z_score}
         self.sentiment_map = {d['time']: d['value'] for d in sentiment_data} if sentiment_data else {}
         self.regime_map = regime_data if regime_data else {}
+        self.enable_protection = enable_protection
         
         self.trades = []
         self.equity_curve = []
@@ -105,6 +106,7 @@ class Backtester:
         # Get Sentiment & Regime for this candle
         sentiment_score = self.sentiment_map.get(time, 0.0)
         regime_state = self.regime_map.get(time, {})
+        APPLY_DIRECTIONAL_PROTECTION = self.enable_protection
         
         # Filter out executed orders
         remaining_orders = []
@@ -120,13 +122,13 @@ class Backtester:
                 # Check if we should PAUSE execution due to market conditions
                 
                 # Sells: We pause selling if the market is trending UP strongly (no_short = True)
-                if order['side'] == 'sell' and regime_state.get('no_short', False):
+                if APPLY_DIRECTIONAL_PROTECTION and order['side'] == 'sell' and regime_state.get('no_short', False):
                      # Market is heavily bullish. HODL inventory instead of selling early.
                      remaining_orders.append(order)
                      continue
                      
                 # Buys: We pause buying if the market is trending DOWN strongly (no_long = True)
-                if order['side'] == 'buy' and regime_state.get('no_long', False):
+                if APPLY_DIRECTIONAL_PROTECTION and order['side'] == 'buy' and regime_state.get('no_long', False):
                      # Catching knives. Wait for trend to break before buying more grids.
                      remaining_orders.append(order)
                      continue

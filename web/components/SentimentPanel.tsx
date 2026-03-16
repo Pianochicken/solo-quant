@@ -46,6 +46,7 @@ export default function SentimentPanel({ indicators, timeframe = '1h' }: Sentime
     let regimeColor = 'text-amber-400';
     let regimeLabel = '🔄 Ranging';
     let regimeBgClass = 'border-amber-900/30';
+
     if (regime.regime === 'trending') {
         if (regime.direction === 'up') {
             regimeColor = 'text-emerald-400';
@@ -70,7 +71,7 @@ export default function SentimentPanel({ indicators, timeframe = '1h' }: Sentime
                 <div className={`bg-zinc-950/50 rounded-lg p-3 border ${regimeBgClass} flex flex-col col-span-2`}>
                     <div className="flex items-center justify-between">
                         <div>
-                            <div className="text-xs text-zinc-500 mb-1 flex items-center">Market Regime<InfoTooltip text="行情體制判斷：使用 ADX、布林帶寬度、CVD 斜率三因子投票決定目前是「震盪行情」還是「趨勢行情」。趨勢行情中，匯合門檻從 3/7 提升至 4/7，並啟用方向性過濾" /></div>
+                            <div className="text-xs text-zinc-500 mb-1 flex items-center">Market Regime<InfoTooltip text="行情體制判斷：使用 ADX、布林帶寬度、CVD 斜率三因子投票決定目前是「震盪行情」還是「趨勢行情」。匯合門檻與保護機制會根據您的「訊號設定」自動切換。" /></div>
                             <div className={`text-xl font-mono font-bold ${regimeColor}`}>
                                 {regimeLabel}
                             </div>

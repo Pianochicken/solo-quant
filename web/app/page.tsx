@@ -7,7 +7,8 @@ import { GridPanel } from '@/components/GridPanel';
 import SentimentPanel from '@/components/SentimentPanel';
 import { HistoryPanel, Order } from '@/components/HistoryPanel';
 import { IndicatorsInfoModal } from '@/components/IndicatorsInfoModal';
-import { RefreshCw, Zap, BarChart3, Clock, AlertTriangle, Info } from 'lucide-react';
+import { SignalSettingsModal } from '@/components/SignalSettingsModal';
+import { RefreshCw, Zap, BarChart3, Clock, AlertTriangle, Info, Settings } from 'lucide-react';
 import Link from 'next/link';
 
 const TIMEFRAMES = [
@@ -35,16 +36,24 @@ export default function Dashboard() {
   // State for Info Modal
   const [isInfoModalOpen, setIsInfoModalOpen] = useState(false);
 
+  // State for Settings Modal
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [signalConfig, setSignalConfig] = useState({
+    rangingThreshold: 3,
+    trendingThreshold: 4,
+    enableProtection: true
+  });
+
   // Track if this is the initial load for the current timeframe
   const isFirstLoad = useRef(true);
 
-  // Clear old data when timeframe changes
+  // Clear old data when timeframe or config changes
   useEffect(() => {
     setData(null);
     setLoading(true);
     setSignalPhase('loading');
     isFirstLoad.current = true;
-  }, [symbol, timeframe]);
+  }, [symbol, timeframe, signalConfig]);
 
   // Fetch Data Loop
   useEffect(() => {
@@ -59,7 +68,7 @@ export default function Dashboard() {
           setSignalPhase('computing');
         }
 
-        const market = await getMarketData(symbol, timeframe, 1000);
+        const market = await getMarketData(symbol, timeframe, 1000, signalConfig);
         if (!isMounted) return;
 
         if (isFirstLoad.current) {
@@ -104,7 +113,7 @@ export default function Dashboard() {
       isMounted = false;
       clearInterval(interval);
     };
-  }, [symbol, timeframe]);
+  }, [symbol, timeframe, signalConfig]);
 
   const handleClearCache = async () => {
     try {
@@ -114,7 +123,7 @@ export default function Dashboard() {
       setData(null);
       setLoading(true);
       isFirstLoad.current = true;
-      const res = await getMarketData(symbol, timeframe, 1000);
+      const res = await getMarketData(symbol, timeframe, 1000, signalConfig);
       setData(res);
       setSignalPhase('ready');
       setLastUpdated(new Date());
@@ -179,6 +188,16 @@ export default function Dashboard() {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Settings Button */}
+            <button
+              onClick={() => setIsSettingsModalOpen(true)}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-all font-medium text-sm"
+              title="訊號參數設定"
+            >
+              <Settings className="w-4 h-4" />
+              <span className="hidden sm:inline">訊號設定</span>
+            </button>
+
             {/* Clear Cache Button */}
             <button
               onClick={handleClearCache}
@@ -340,6 +359,14 @@ export default function Dashboard() {
       <IndicatorsInfoModal
         isOpen={isInfoModalOpen}
         onClose={() => setIsInfoModalOpen(false)}
+      />
+
+      {/* Signal Settings Modal */}
+      <SignalSettingsModal
+        isOpen={isSettingsModalOpen}
+        onClose={() => setIsSettingsModalOpen(false)}
+        currentConfig={signalConfig}
+        onSave={setSignalConfig}
       />
     </main>
   );

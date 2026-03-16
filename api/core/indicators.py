@@ -606,13 +606,16 @@ class IndicatorEngine:
         lookback: int = 3,
         timeframe: str = '1h',
         oi_aligned: List[Dict] = None,
+        ranging_threshold: int = 3,
+        trending_threshold: int = 4,
+        enable_protection: bool = True,
     ) -> List[Dict]:
         """
         Multi-Indicator Confluence Signal System v5: Regime-Adaptive.
         
         Upgrades from v4:
           - Market Regime Detection (ADX + BB Width + CVD slope)
-          - Dynamic threshold: 3/7 (ranging) vs 4/7 (trending)
+                    - Fixed threshold: 3/7 in both ranging and trending regimes
           - No-Short Filter: blocks bearish signals in uptrend regime
           - No-Long Filter: blocks bullish signals in downtrend regime
           - LSUR Dulling Detection: skips Z-score when price contradicts
@@ -675,21 +678,22 @@ class IndicatorEngine:
         }
         P = PROFILES.get(timeframe, PROFILES['1h'])
         COOLDOWN = P['cooldown']
+        APPLY_DIRECTIONAL_PROTECTION = enable_protection
         
         # === Signal Threshold ===
-        # v5: Market Regime Detection — dynamic thresholds
+        # Adjust threshold based on market regime and provided configs
         regime = IndicatorEngine.calculate_market_regime(
             price_data=price_data,
             cvd_aligned=cvd_aligned,
         )
-        
-        # Trending markets need stronger confluence (4/7), ranging uses standard (3/7)
+
         if regime['regime'] == 'trending':
-            bull_threshold = 4
-            bear_threshold = 4
+            base_threshold = trending_threshold
         else:
-            bull_threshold = 3
-            bear_threshold = 3
+            base_threshold = ranging_threshold
+
+        bull_threshold = base_threshold
+        bear_threshold = base_threshold
         
         # CVD slope for reversal-indicator discount
         cvd_slope_extreme = False
@@ -865,10 +869,10 @@ class IndicatorEngine:
             # --- Regime tag for signal text ---
             regime_tag = 'T' if regime['regime'] == 'trending' else 'R'
             
-            # --- Emit signal if score >= threshold, respecting cooldown & regime filters ---
+            # --- Emit signal if score >= threshold (cooldown applies; directional protection can be toggled) ---
             if bull_score >= bull_threshold and (i - last_bull_idx) >= COOLDOWN:
                 # No-Long filter: block bullish signals in downtrend regime
-                if regime['no_long']:
+                if APPLY_DIRECTIONAL_PROTECTION and regime['no_long']:
                     pass  # Signal blocked by regime filter
                 else:
                     markers.append({
@@ -883,7 +887,7 @@ class IndicatorEngine:
                     last_bull_idx = i
             elif bear_score >= bear_threshold and (i - last_bear_idx) >= COOLDOWN:
                 # No-Short filter: block bearish signals in uptrend regime
-                if regime['no_short']:
+                if APPLY_DIRECTIONAL_PROTECTION and regime['no_short']:
                     pass  # Signal blocked by regime filter
                 else:
                     markers.append({

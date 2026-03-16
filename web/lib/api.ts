@@ -19,6 +19,12 @@ export interface IndicatorData {
     };
 }
 
+export interface SignalConfig {
+    rangingThreshold: number;
+    trendingThreshold: number;
+    enableProtection: boolean;
+}
+
 export interface MarketData {
     symbol: string;
     data: {
@@ -40,7 +46,7 @@ export interface MarketData {
 
 const API_BASE = 'http://127.0.0.1:8000';
 
-export async function getMarketData(symbol: string, timeframe: string = '1h', limit: number = 100): Promise<MarketData> {
+export async function getMarketData(symbol: string, timeframe: string = '1h', limit: number = 100, config?: SignalConfig): Promise<MarketData> {
     // Convert slash to dash for URL safety if needed.
     // Our FastAPI backend expects the symbol in the path.
     // We replace slash with dash just to be safe in URL path, but we need to ensure backend handles it.
@@ -49,7 +55,11 @@ export async function getMarketData(symbol: string, timeframe: string = '1h', li
     const safeSymbol = symbol.replace('/', '-');
 
     try {
-        const res = await fetch(`${API_BASE}/market/${safeSymbol}?timeframe=${timeframe}&limit=${limit}`);
+        let url = `${API_BASE}/market/${safeSymbol}?timeframe=${timeframe}&limit=${limit}`;
+        if (config) {
+            url += `&ranging_threshold=${config.rangingThreshold}&trending_threshold=${config.trendingThreshold}&enable_protection=${config.enableProtection}`;
+        }
+        const res = await fetch(url);
         if (!res.ok) throw new Error('Failed to fetch market data');
         return res.json();
     } catch (error) {
@@ -102,6 +112,9 @@ export interface BacktestParams {
     investment: number;
     duration_days: number;
     is_ai_mode?: boolean;
+    ranging_threshold?: number;
+    trending_threshold?: number;
+    enable_protection?: boolean;
 }
 
 export interface BacktestResult {

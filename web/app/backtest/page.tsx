@@ -44,7 +44,10 @@ export default function BacktestPage() {
         });
 
         // Ensure data is sorted by time
-        const sortedEquity = [...result.equity_curve].sort((a, b) => a.time - b.time);
+        const sortedEquity = [...result.equity_curve]
+            .sort((a, b) => a.time - b.time)
+            .map(item => ({ ...item, time: item.time as any }));
+        
         areaSeries.setData(sortedEquity);
         chart.timeScale().fitContent();
 
@@ -90,7 +93,10 @@ export default function BacktestPage() {
                 grid_count: parseInt(gridCount),
                 investment: parseFloat(investment),
                 duration_days: parseInt(duration),
-                is_ai_mode: isAiMode
+                is_ai_mode: isAiMode,
+                ranging_threshold: 3,
+                trending_threshold: 4,
+                enable_protection: true
             };
             const res = await runBacktest(params);
             setResult(res);

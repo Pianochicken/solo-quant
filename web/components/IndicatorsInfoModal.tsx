@@ -28,7 +28,7 @@ export function IndicatorsInfoModal({ isOpen, onClose }: IndicatorsInfoModalProp
                 {/* Content */}
                 <div className="p-6 space-y-6">
                     <p className="text-sm text-zinc-400 leading-relaxed">
-                        此系統採用「多指標匯合（Confluence）」邏輯。系統會同時運算 7 種不同維度的指標，並由第 8 項「行情體制判斷」來決定當前的動態門檻。在<span className="text-amber-400 font-bold">震盪行情</span>下，當有 <span className="text-amber-400 font-bold">3 個以上的指標</span> 同時指向同向時觸發 ⚡ 訊號；而在<span className="text-emerald-400 font-bold">趨勢行情</span>下，需要的匯合度會提高至 <span className="text-emerald-400 font-bold">4 個指標</span>，並啟動對應的勿空/勿多保護。所有的「極端門檻」都會根據您選擇的 K 線週期自動調整。
+                        此系統採用「多指標匯合（Confluence）」邏輯。系統會同時運算 7 種不同維度的指標，並由第 8 項「行情體制判斷」來決定當前的方向性過濾。您可以透過「訊號設定」來獨立控制在「震盪行情」與「趨勢行情」時的動態門檻，並決定是否開啟防止逆勢逆向操作的「保護機制」。所有的「極端門檻」都會根據您選擇的 K 線週期自動調整。
                     </p>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -190,7 +190,7 @@ export function IndicatorsInfoModal({ isOpen, onClose }: IndicatorsInfoModalProp
                                 <li><strong className="text-zinc-200">CVD 斜率方向：</strong>CVD 近期走勢 70% 的時間朝向同一方向。</li>
                             </ul>
                             <div className="bg-zinc-900/50 p-2 rounded text-[11px] text-zinc-300">
-                                <span className="text-emerald-400 font-bold">機制：</span>若 3 者中有 2 者成立，判定為「趨勢行情」，將觸發門檻從 3 分提高為 4 分，並啟動逆勢保護（例如在上漲趨勢中封鎖做空訊號），否則為「震盪行情」。
+                                <span className="text-emerald-400 font-bold">機制：</span>若 3 者中有 2 者成立，判定為「趨勢行情」，會自動套用您設定的趨勢門檻；您也可以隨時調整是否啟用逆勢保護（勿空/勿多）。
                             </div>
                         </div>
 

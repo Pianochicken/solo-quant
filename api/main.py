@@ -40,7 +40,14 @@ def clear_cache():
 from api.core.indicators import IndicatorEngine
 
 @app.get("/market/{symbol}")
-def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
+def get_market_data(
+    symbol: str, 
+    timeframe: str = '1d', 
+    limit: int = 100, 
+    ranging_threshold: int = 3, 
+    trending_threshold: int = 4, 
+    enable_protection: bool = True
+):
     """
     Get generic market data (Price + Funding + Sentiment).
     """
@@ -241,6 +248,9 @@ def get_market_data(symbol: str, timeframe: str = '1d', limit: int = 100):
             bb_pctb_aligned=bb_pctb,
             timeframe=timeframe,
             oi_aligned=open_interest,
+            ranging_threshold=ranging_threshold,
+            trending_threshold=trending_threshold,
+            enable_protection=enable_protection,
         )
         
         # 7 & 8. Composite Score (Market Pulse) v5 & History
@@ -444,6 +454,9 @@ class BacktestParams(BaseModel):
     investment: float
     duration_days: int = 7 # Default backtest 7 days
     is_ai_mode: bool = False
+    ranging_threshold: int = 3
+    trending_threshold: int = 4
+    enable_protection: bool = True
 
 @app.post("/quant/backtest")
 def run_backtest(params: BacktestParams):
@@ -533,7 +546,13 @@ def run_backtest(params: BacktestParams):
         )
         
         # 4. Run Backtest
-        tester = Backtester(bot, history, sentiment_data=sentiment_data, regime_data=regime_data)
+        tester = Backtester(
+            bot, 
+            history, 
+            sentiment_data=sentiment_data, 
+            regime_data=regime_data,
+            enable_protection=params.enable_protection
+        )
         result = tester.run()
         
         # 5. Metrics
