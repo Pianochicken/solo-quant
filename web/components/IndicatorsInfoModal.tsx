@@ -28,14 +28,15 @@ export function IndicatorsInfoModal({ isOpen, onClose }: IndicatorsInfoModalProp
                 {/* Content */}
                 <div className="p-6 space-y-6">
                     <p className="text-sm text-zinc-400 leading-relaxed">
-                        此系統採用「多指標匯合（Confluence）」邏輯。系統會同時運算 7 種不同維度的指標，並由第 8 項「行情體制判斷」來決定當前的方向性過濾。您可以透過「訊號設定」來獨立控制在「震盪行情」與「趨勢行情」時的動態門檻，並決定是否開啟防止逆勢逆向操作的「保護機制」。所有的「極端門檻」都會根據您選擇的 K 線週期自動調整。
+                        此系統採用「多指標匯合（Confluence）」邏輯。為了解決「共線性誤判」（避免只因為價格急跌就累積滿分），目前的指標被歸類為「價格(Price)」、「情緒(Sentiment)」與「動能(Momentum)」三個維度。要觸發 ⚡ 訊號，除了總分需達標外，<strong>這些分數必須來自至少 2 個不同的維度分類</strong>。您可以透過右上角的「訊號設定」來控制不同行情的觸發門檻與保護機制。
                     </p>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 
                         {/* 1. LSUR Z-Score */}
-                        <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full">
+                        <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full relative">
                             <div className="flex items-center gap-2 mb-2">
+                                <span className="absolute top-4 right-4 text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">Sentiment</span>
                                 <span className="flex items-center justify-center w-6 h-6 rounded bg-purple-500/20 text-purple-400 text-xs font-bold shrink-0">1</span>
                                 <h3 className="font-semibold text-zinc-200">LSUR Z-Score (多空比 Z 分數)</h3>
                             </div>
@@ -56,8 +57,9 @@ export function IndicatorsInfoModal({ isOpen, onClose }: IndicatorsInfoModalProp
                         </div>
 
                         {/* 2. OI × Price */}
-                        <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full">
+                        <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full relative">
                             <div className="flex items-center gap-2 mb-2">
+                                <span className="absolute top-4 right-4 text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">Momentum</span>
                                 <span className="flex items-center justify-center w-6 h-6 rounded bg-blue-500/20 text-blue-400 text-xs font-bold shrink-0">2</span>
                                 <h3 className="font-semibold text-zinc-200">OI × Price (未平倉量與價格背離)</h3>
                             </div>
@@ -82,8 +84,9 @@ export function IndicatorsInfoModal({ isOpen, onClose }: IndicatorsInfoModalProp
                         </div>
 
                         {/* 3. Funding Rate */}
-                        <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full">
+                        <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full relative">
                             <div className="flex items-center gap-2 mb-2">
+                                <span className="absolute top-4 right-4 text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">Sentiment</span>
                                 <span className="flex items-center justify-center w-6 h-6 rounded bg-emerald-500/20 text-emerald-400 text-xs font-bold shrink-0">3</span>
                                 <h3 className="font-semibold text-zinc-200">OI-Weighted Funding Rate (資金費率)</h3>
                             </div>
@@ -104,8 +107,9 @@ export function IndicatorsInfoModal({ isOpen, onClose }: IndicatorsInfoModalProp
                         </div>
 
                         {/* 4. RSI */}
-                        <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full">
+                        <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full relative">
                             <div className="flex items-center gap-2 mb-2">
+                                <span className="absolute top-4 right-4 text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">Price</span>
                                 <span className="flex items-center justify-center w-6 h-6 rounded bg-indigo-500/20 text-indigo-400 text-xs font-bold shrink-0">4</span>
                                 <h3 className="font-semibold text-zinc-200">RSI (相對強弱指數)</h3>
                             </div>
@@ -126,8 +130,9 @@ export function IndicatorsInfoModal({ isOpen, onClose }: IndicatorsInfoModalProp
                         </div>
 
                         {/* 5. EMA Zone */}
-                        <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full">
+                        <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full relative">
                             <div className="flex items-center gap-2 mb-2">
+                                <span className="absolute top-4 right-4 text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">Price</span>
                                 <span className="flex items-center justify-center w-6 h-6 rounded bg-orange-500/20 text-orange-400 text-xs font-bold shrink-0">5</span>
                                 <h3 className="font-semibold text-zinc-200">EMA Zone (均線乖離率)</h3>
                             </div>
@@ -148,8 +153,9 @@ export function IndicatorsInfoModal({ isOpen, onClose }: IndicatorsInfoModalProp
                         </div>
 
                         {/* 6. Bollinger %B */}
-                        <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full">
+                        <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full relative">
                             <div className="flex items-center gap-2 mb-2">
+                                <span className="absolute top-4 right-4 text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">Price</span>
                                 <span className="flex items-center justify-center w-6 h-6 rounded bg-pink-500/20 text-pink-400 text-xs font-bold shrink-0">6</span>
                                 <h3 className="font-semibold text-zinc-200">Bollinger %B (布林通道振幅)</h3>
                             </div>
@@ -169,8 +175,9 @@ export function IndicatorsInfoModal({ isOpen, onClose }: IndicatorsInfoModalProp
                         </div>
 
                         {/* 7. CVD */}
-                        <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full md:col-span-2">
+                        <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full md:col-span-2 relative">
                             <div className="flex items-center gap-2 mb-2">
+                                <span className="absolute top-4 right-4 text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">Momentum</span>
                                 <span className="flex items-center justify-center w-6 h-6 rounded bg-yellow-500/20 text-yellow-500 text-xs font-bold shrink-0">7</span>
                                 <h3 className="font-semibold text-zinc-200">CVD (累積成交量差值)</h3>
                             </div>
@@ -196,7 +203,7 @@ export function IndicatorsInfoModal({ isOpen, onClose }: IndicatorsInfoModalProp
 
                     </div>
 
-                    <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full md:col-span-2">
+                    <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full md:col-span-2 relative">
                         <div className="flex items-center gap-2 mb-2">
                             <span className="flex items-center justify-center w-6 h-6 rounded bg-zinc-500/20 text-zinc-400 text-xs font-bold shrink-0">9</span>
                             <h3 className="font-semibold text-zinc-200">Market Pulse (綜合情緒指數)</h3>

@@ -771,23 +771,28 @@ class IndicatorEngine:
             # ===== BULLISH confluence =====
             bull_score = 0
             bull_reasons = []
+            bull_groups = set()
             
             if z_val <= P['z_bull'] and not lsur_dulled:
                 bull_score += 1
                 bull_reasons.append('Z')
+                bull_groups.add('Sentiment')
             
             if cvd_now is not None and cvd_prev is not None and (cvd_now - cvd_prev) > 0:
                 bull_score += 1
                 bull_reasons.append('CVD↑')
+                bull_groups.add('Momentum')
             
             # OI × Price: bullish when price↑+OI↑ (new longs) or price↓+OI急降 (deleverage bottom)
             if price_chg_pct is not None and oi_chg_pct is not None:
                 if price_chg_pct > price_thresh and oi_chg_pct > 0:
                     bull_score += 1
                     bull_reasons.append('OI↑P↑')
+                    bull_groups.add('Momentum')
                 elif price_chg_pct < -price_thresh and oi_chg_pct < -5.0:
                     bull_score += 1
                     bull_reasons.append('OI去槓')
+                    bull_groups.add('Momentum')
             
             if funding_now is not None and funding_now < P['fr_bull']:
                 discount = cvd_slope_extreme
@@ -802,41 +807,50 @@ class IndicatorEngine:
                 else:
                     bull_score += 1.0 if not discount else 0.5
                     bull_reasons.append('FR-')
+                bull_groups.add('Sentiment')
             
             if rsi_now is not None and rsi_now < P['rsi_bull']:
                 bull_score += 1
                 bull_reasons.append(f'RSI{int(rsi_now)}')
+                bull_groups.add('Price')
             
             if ema_fast_now is not None and price_close is not None:
                 ema_dist = (price_close - ema_fast_now) / ema_fast_now * 100
                 if ema_dist < -P['ema_pct']:
                     bull_score += 1
                     bull_reasons.append('EMA↑')
+                    bull_groups.add('Price')
             
             if bb_now is not None and bb_now < P['bb_bull']:
                 bull_score += 1
                 bull_reasons.append('BB↑')
+                bull_groups.add('Price')
             
             # ===== BEARISH confluence =====
             bear_score = 0
             bear_reasons = []
+            bear_groups = set()
             
             if z_val >= P['z_bear'] and not lsur_dulled:
                 bear_score += 1
                 bear_reasons.append('Z')
+                bear_groups.add('Sentiment')
             
             if cvd_now is not None and cvd_prev is not None and (cvd_now - cvd_prev) < 0:
                 bear_score += 1
                 bear_reasons.append('CVD↓')
+                bear_groups.add('Momentum')
             
             # OI × Price: bearish when price↓+OI↑ (new shorts) or price↑+OI急降 (just short squeeze)
             if price_chg_pct is not None and oi_chg_pct is not None:
                 if price_chg_pct < -price_thresh and oi_chg_pct > 0:
                     bear_score += 1
                     bear_reasons.append('OI↑P↓')
+                    bear_groups.add('Momentum')
                 elif price_chg_pct > price_thresh and oi_chg_pct < -5.0:
                     bear_score += 1
                     bear_reasons.append('OI去槓')
+                    bear_groups.add('Momentum')
             
             if funding_now is not None and funding_now > P['fr_bear']:
                 discount = cvd_slope_extreme
@@ -851,26 +865,33 @@ class IndicatorEngine:
                 else:
                     bear_score += 1.0 if not discount else 0.5
                     bear_reasons.append('FR+')
+                bear_groups.add('Sentiment')
             
             if rsi_now is not None and rsi_now > P['rsi_bear']:
                 bear_score += 1
                 bear_reasons.append(f'RSI{int(rsi_now)}')
+                bear_groups.add('Price')
             
             if ema_fast_now is not None and price_close is not None:
                 ema_dist = (price_close - ema_fast_now) / ema_fast_now * 100
                 if ema_dist > P['ema_pct']:
                     bear_score += 1
                     bear_reasons.append('EMA↓')
+                    bear_groups.add('Price')
             
             if bb_now is not None and bb_now > P['bb_bear']:
                 bear_score += 1
                 bear_reasons.append('BB↓')
+                bear_groups.add('Price')
             
             # --- Regime tag for signal text ---
             regime_tag = 'T' if regime['regime'] == 'trending' else 'R'
             
-            # --- Emit signal if score >= threshold (cooldown applies; directional protection can be toggled) ---
-            if bull_score >= bull_threshold and (i - last_bull_idx) >= COOLDOWN:
+            # --- Emit signal if score >= threshold AND from >= 2 distinct groups ---
+            is_bull_valid = bull_score >= bull_threshold and len(bull_groups) >= 2
+            is_bear_valid = bear_score >= bear_threshold and len(bear_groups) >= 2
+
+            if is_bull_valid and (i - last_bull_idx) >= COOLDOWN:
                 # No-Long filter: block bullish signals in downtrend regime
                 if APPLY_DIRECTIONAL_PROTECTION and regime['no_long']:
                     pass  # Signal blocked by regime filter
@@ -880,12 +901,12 @@ class IndicatorEngine:
                         "position": "belowBar",
                         "color": "#22c55e",
                         "shape": "arrowUp",
-                        "text": f"⚡{bull_score}/7 [{regime_tag}] {'+'.join(bull_reasons)}",
+                        "text": f"⚡({len(bull_groups)}G) {bull_score}/7 [{regime_tag}] {'+'.join(bull_reasons)}",
                         "score": bull_score,
                         "direction": "bullish"
                     })
                     last_bull_idx = i
-            elif bear_score >= bear_threshold and (i - last_bear_idx) >= COOLDOWN:
+            elif is_bear_valid and (i - last_bear_idx) >= COOLDOWN:
                 # No-Short filter: block bearish signals in uptrend regime
                 if APPLY_DIRECTIONAL_PROTECTION and regime['no_short']:
                     pass  # Signal blocked by regime filter
@@ -895,7 +916,7 @@ class IndicatorEngine:
                         "position": "aboveBar",
                         "color": "#ef4444",
                         "shape": "arrowDown",
-                        "text": f"⚡{bear_score}/7 [{regime_tag}] {'+'.join(bear_reasons)}",
+                        "text": f"⚡({len(bear_groups)}G) {bear_score}/7 [{regime_tag}] {'+'.join(bear_reasons)}",
                         "score": bear_score,
                         "direction": "bearish"
                     })
