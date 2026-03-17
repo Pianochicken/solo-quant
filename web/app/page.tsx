@@ -41,7 +41,7 @@ export default function Dashboard() {
   const [signalConfig, setSignalConfig] = useState({
     rangingThreshold: 3,
     trendingThreshold: 4,
-    enableProtection: true
+    enableProtection: false
   });
 
   // Track if this is the initial load for the current timeframe

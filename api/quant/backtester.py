@@ -4,7 +4,7 @@ from typing import List, Dict
 from api.quant.grid_bot import GridBot
 
 class Backtester:
-    def __init__(self, bot: GridBot, data: List[Dict], sentiment_data: List[Dict] = None, regime_data: Dict = None, enable_protection: bool = True):
+    def __init__(self, bot: GridBot, data: List[Dict], sentiment_data: List[Dict] = None, regime_data: Dict = None, enable_protection: bool = False):
         self.bot = bot
         self.data = data # List of {'time', 'open', 'high', 'low', 'close'}
         # sentiment_data: List of {'time', 'value'} (LSUR Z-Score)

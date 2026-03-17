@@ -96,7 +96,7 @@ export default function BacktestPage() {
                 is_ai_mode: isAiMode,
                 ranging_threshold: 3,
                 trending_threshold: 4,
-                enable_protection: true
+                enable_protection: false
             };
             const res = await runBacktest(params);
             setResult(res);

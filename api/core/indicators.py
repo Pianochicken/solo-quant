@@ -608,7 +608,7 @@ class IndicatorEngine:
         oi_aligned: List[Dict] = None,
         ranging_threshold: int = 3,
         trending_threshold: int = 4,
-        enable_protection: bool = True,
+        enable_protection: bool = False,
     ) -> List[Dict]:
         """
         Multi-Indicator Confluence Signal System v5: Regime-Adaptive.

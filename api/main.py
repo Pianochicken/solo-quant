@@ -46,7 +46,7 @@ def get_market_data(
     limit: int = 100, 
     ranging_threshold: int = 3, 
     trending_threshold: int = 4, 
-    enable_protection: bool = True
+    enable_protection: bool = False
 ):
     """
     Get generic market data (Price + Funding + Sentiment).
@@ -456,7 +456,7 @@ class BacktestParams(BaseModel):
     is_ai_mode: bool = False
     ranging_threshold: int = 3
     trending_threshold: int = 4
-    enable_protection: bool = True
+    enable_protection: bool = False
 
 @app.post("/quant/backtest")
 def run_backtest(params: BacktestParams):
