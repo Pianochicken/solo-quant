@@ -45,7 +45,7 @@ def get_market_data(
     timeframe: str = '1d', 
     limit: int = 100, 
     ranging_threshold: int = 3, 
-    trending_threshold: int = 4, 
+    trending_threshold: int = 3, 
     enable_protection: bool = False
 ):
     """
@@ -455,7 +455,7 @@ class BacktestParams(BaseModel):
     duration_days: int = 7 # Default backtest 7 days
     is_ai_mode: bool = False
     ranging_threshold: int = 3
-    trending_threshold: int = 4
+    trending_threshold: int = 3
     enable_protection: bool = False
 
 @app.post("/quant/backtest")

@@ -6,9 +6,10 @@ import { getThresholds } from '@/lib/thresholds';
 interface SentimentPanelProps {
     indicators: IndicatorData | null;
     timeframe?: string;
+    enableProtection?: boolean;
 }
 
-export default function SentimentPanel({ indicators, timeframe = '1h' }: SentimentPanelProps) {
+export default function SentimentPanel({ indicators, timeframe = '1h', enableProtection = false }: SentimentPanelProps) {
     if (!indicators) return null;
 
     const { lsur_z_score } = indicators;
@@ -83,7 +84,7 @@ export default function SentimentPanel({ indicators, timeframe = '1h' }: Sentime
                             </div>
                         </div>
                     </div>
-                    {(regime.no_short || regime.no_long) && (
+                    {enableProtection && (regime.no_short || regime.no_long) && (
                         <div className="mt-2 flex gap-2">
                             {regime.no_short && (
                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-950/50 border border-emerald-800/30 text-emerald-400 text-[10px] font-medium">

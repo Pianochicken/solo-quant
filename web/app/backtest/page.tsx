@@ -95,7 +95,7 @@ export default function BacktestPage() {
                 duration_days: parseInt(duration),
                 is_ai_mode: isAiMode,
                 ranging_threshold: 3,
-                trending_threshold: 4,
+                trending_threshold: 3,
                 enable_protection: false
             };
             const res = await runBacktest(params);

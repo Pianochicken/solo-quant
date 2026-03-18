@@ -607,7 +607,7 @@ class IndicatorEngine:
         timeframe: str = '1h',
         oi_aligned: List[Dict] = None,
         ranging_threshold: int = 3,
-        trending_threshold: int = 4,
+        trending_threshold: int = 3,
         enable_protection: bool = False,
     ) -> List[Dict]:
         """
@@ -682,18 +682,17 @@ class IndicatorEngine:
         
         # === Signal Threshold ===
         # Adjust threshold based on market regime and provided configs
-        regime = IndicatorEngine.calculate_market_regime(
+        regime_history = IndicatorEngine.calculate_market_regime_history(
             price_data=price_data,
             cvd_aligned=cvd_aligned,
         )
-
-        if regime['regime'] == 'trending':
-            base_threshold = trending_threshold
-        else:
-            base_threshold = ranging_threshold
-
-        bull_threshold = base_threshold
-        bear_threshold = base_threshold
+        regime_by_time = {r['time']: r for r in regime_history}
+        
+        # We need the most recent one to return for the frontend Sentiment Panel
+        latest_regime = regime_history[-1] if regime_history else IndicatorEngine.calculate_market_regime(
+            price_data=price_data,
+            cvd_aligned=cvd_aligned,
+        )
         
         # CVD slope for reversal-indicator discount
         cvd_slope_extreme = False
@@ -738,6 +737,20 @@ class IndicatorEngine:
         for i in range(lookback, len(times)):
             t = times[i]
             
+            # --- Dynamic Regime & Thresholds ---
+            current_regime = regime_by_time.get(t, {
+                'regime': 'ranging',
+                'direction': 'neutral',
+                'no_short': False,
+                'no_long': False,
+            })
+            if current_regime.get('regime') == 'trending':
+                bull_threshold = trending_threshold
+                bear_threshold = trending_threshold
+            else:
+                bull_threshold = ranging_threshold
+                bear_threshold = ranging_threshold
+                
             z_val = z_by_time.get(t)
             cvd_now = cvd_by_time.get(t)
             funding_now = funding_by_time.get(t)
@@ -745,8 +758,29 @@ class IndicatorEngine:
             ema_fast_now = ema_fast_by_time.get(t)
             bb_now = bb_by_time.get(t)
             price_bar = price_by_time.get(t)
+            price_close = price_bar['close'] if price_bar else None
             
-            cvd_prev = cvd_by_time.get(times[i - lookback])
+            # --- Price Action (Structural) Validation ---
+            is_bull_pa = True
+            is_bear_pa = True
+            if price_bar and 'open' in price_bar and 'high' in price_bar and 'low' in price_bar:
+                p_o, p_h, p_l, p_c = price_bar['open'], price_bar['high'], price_bar['low'], price_bar['close']
+                total_range = p_h - p_l
+                
+                # Bullish PA: Need either a green body (Close >= Open) or a noticeable lower wick (>30% of range)
+                body_up = p_c >= p_o
+                lower_wick = min(p_o, p_c) - p_l
+                has_lower_wick = (lower_wick / total_range > 0.3) if total_range > 0 else False
+                is_bull_pa = body_up or has_lower_wick
+                
+                # Bearish PA: Need either a red body (Close <= Open) or a noticeable upper wick (>30% of range)
+                body_down = p_c <= p_o
+                upper_wick = p_h - max(p_o, p_c)
+                has_upper_wick = (upper_wick / total_range > 0.3) if total_range > 0 else False
+                is_bear_pa = body_down or has_upper_wick
+            
+            # CVD immediate momentum (1-bar change)
+            cvd_prev = cvd_by_time.get(times[i - 1])
             
             # OI × Price divergence (method 2: N-bar change rate)
             oi_lookback = P['oi_lookback']
@@ -821,19 +855,19 @@ class IndicatorEngine:
                     t_bull_env_reasons.append('FR-')
                 t_bull_env_groups.add('Sentiment')
             
-            if rsi_now is not None and rsi_now < P['rsi_bull']:
+            if rsi_now is not None and rsi_now < P['rsi_bull'] and is_bull_pa:
                 t_bull_price_score += 1
                 t_bull_price_reasons.append(f'RSI{int(rsi_now)}')
                 t_bull_price_groups.add('Price')
             
-            if ema_fast_now is not None and price_close is not None:
+            if ema_fast_now is not None and price_close is not None and is_bull_pa:
                 ema_dist = (price_close - ema_fast_now) / ema_fast_now * 100
                 if ema_dist < -P['ema_pct']:
                     t_bull_price_score += 1
                     t_bull_price_reasons.append('EMA↑')
                     t_bull_price_groups.add('Price')
             
-            if bb_now is not None and bb_now < P['bb_bull']:
+            if bb_now is not None and bb_now < P['bb_bull'] and is_bull_pa:
                 t_bull_price_score += 1
                 t_bull_price_reasons.append('BB↑')
                 t_bull_price_groups.add('Price')
@@ -880,19 +914,19 @@ class IndicatorEngine:
                     t_bear_env_reasons.append('FR+')
                 t_bear_env_groups.add('Sentiment')
             
-            if rsi_now is not None and rsi_now > P['rsi_bear']:
+            if rsi_now is not None and rsi_now > P['rsi_bear'] and is_bear_pa:
                 t_bear_price_score += 1
                 t_bear_price_reasons.append(f'RSI{int(rsi_now)}')
                 t_bear_price_groups.add('Price')
             
-            if ema_fast_now is not None and price_close is not None:
+            if ema_fast_now is not None and price_close is not None and is_bear_pa:
                 ema_dist = (price_close - ema_fast_now) / ema_fast_now * 100
                 if ema_dist > P['ema_pct']:
                     t_bear_price_score += 1
                     t_bear_price_reasons.append('EMA↓')
                     t_bear_price_groups.add('Price')
             
-            if bb_now is not None and bb_now > P['bb_bear']:
+            if bb_now is not None and bb_now > P['bb_bear'] and is_bear_pa:
                 t_bear_price_score += 1
                 t_bear_price_reasons.append('BB↓')
                 t_bear_price_groups.add('Price')
@@ -903,6 +937,8 @@ class IndicatorEngine:
                 bull_setup_env_score = t_bull_env_score
                 bull_setup_env_reasons = list(t_bull_env_reasons)
                 bull_setup_env_groups = set(t_bull_env_groups)
+                # Mutual cancellation: A strong bullish environment instantly cancels out any lingering bearish setup
+                bear_setup_timer = 0
             elif bull_setup_timer > 0:
                 bull_setup_timer -= 1
 
@@ -911,6 +947,8 @@ class IndicatorEngine:
                 bear_setup_env_score = t_bear_env_score
                 bear_setup_env_reasons = list(t_bear_env_reasons)
                 bear_setup_env_groups = set(t_bear_env_groups)
+                # Mutual cancellation: A strong bearish environment instantly cancels out any lingering bullish setup
+                bull_setup_timer = 0
             elif bear_setup_timer > 0:
                 bear_setup_timer -= 1
                 
@@ -932,7 +970,7 @@ class IndicatorEngine:
                 bear_reasons = bear_setup_env_reasons + t_bear_price_reasons
 
             # --- Regime tag for signal text ---
-            regime_tag = 'T' if regime['regime'] == 'trending' else 'R'
+            regime_tag = 'T' if current_regime.get('regime') == 'trending' else 'R'
             
             # --- Emit signal if score >= threshold AND from >= 2 distinct groups ---
             is_bull_valid = bull_score >= bull_threshold and len(bull_groups) >= 2
@@ -940,7 +978,7 @@ class IndicatorEngine:
 
             if is_bull_valid and (i - last_bull_idx) >= COOLDOWN:
                 # No-Long filter: block bullish signals in downtrend regime
-                if APPLY_DIRECTIONAL_PROTECTION and regime['no_long']:
+                if APPLY_DIRECTIONAL_PROTECTION and current_regime.get('no_long', False):
                     pass  # Signal blocked by regime filter
                 else:
                     markers.append({
@@ -955,7 +993,7 @@ class IndicatorEngine:
                     last_bull_idx = i
             elif is_bear_valid and (i - last_bear_idx) >= COOLDOWN:
                 # No-Short filter: block bearish signals in uptrend regime
-                if APPLY_DIRECTIONAL_PROTECTION and regime['no_short']:
+                if APPLY_DIRECTIONAL_PROTECTION and current_regime.get('no_short', False):
                     pass  # Signal blocked by regime filter
                 else:
                     markers.append({
@@ -969,7 +1007,7 @@ class IndicatorEngine:
                     })
                     last_bear_idx = i
         
-        return markers, regime
+        return markers, latest_regime
 
     @staticmethod
     def calculate_composite_score(
@@ -1029,7 +1067,7 @@ class IndicatorEngine:
             
             # --- 2. CVD Momentum (20%) ---
             cvd_now = cvd_by_time.get(t)
-            cvd_prev = cvd_by_time.get(times[i - lookback])
+            cvd_prev = cvd_by_time.get(times[i - 1])
             s_cvd = 0.5
             if cvd_now is not None and cvd_prev is not None:
                 # Approximate normalization: if CVD has moved significantly
