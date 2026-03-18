@@ -724,6 +724,17 @@ class IndicatorEngine:
         last_bull_idx = -100
         last_bear_idx = -100
         
+        SETUP_WINDOW = 3
+        bull_setup_timer = 0
+        bull_setup_env_score = 0
+        bull_setup_env_reasons = []
+        bull_setup_env_groups = set()
+        
+        bear_setup_timer = 0
+        bear_setup_env_score = 0
+        bear_setup_env_reasons = []
+        bear_setup_env_groups = set()
+        
         for i in range(lookback, len(times)):
             t = times[i]
             
@@ -769,121 +780,157 @@ class IndicatorEngine:
                     lsur_dulled = True  # Z says buy but price going down
             
             # ===== BULLISH confluence =====
-            bull_score = 0
-            bull_reasons = []
-            bull_groups = set()
+            t_bull_env_score = 0
+            t_bull_env_reasons = []
+            t_bull_env_groups = set()
+            t_bull_price_score = 0
+            t_bull_price_reasons = []
+            t_bull_price_groups = set()
             
             if z_val <= P['z_bull'] and not lsur_dulled:
-                bull_score += 1
-                bull_reasons.append('Z')
-                bull_groups.add('Sentiment')
+                t_bull_env_score += 1
+                t_bull_env_reasons.append('Z')
+                t_bull_env_groups.add('Sentiment')
             
             if cvd_now is not None and cvd_prev is not None and (cvd_now - cvd_prev) > 0:
-                bull_score += 1
-                bull_reasons.append('CVD↑')
-                bull_groups.add('Momentum')
+                t_bull_env_score += 1
+                t_bull_env_reasons.append('CVD↑')
+                t_bull_env_groups.add('Momentum')
             
-            # OI × Price: bullish when price↑+OI↑ (new longs) or price↓+OI急降 (deleverage bottom)
             if price_chg_pct is not None and oi_chg_pct is not None:
                 if price_chg_pct > price_thresh and oi_chg_pct > 0:
-                    bull_score += 1
-                    bull_reasons.append('OI↑P↑')
-                    bull_groups.add('Momentum')
+                    t_bull_env_score += 1
+                    t_bull_env_reasons.append('OI↑P↑')
+                    t_bull_env_groups.add('Momentum')
                 elif price_chg_pct < -price_thresh and oi_chg_pct < -5.0:
-                    bull_score += 1
-                    bull_reasons.append('OI去槓')
-                    bull_groups.add('Momentum')
+                    t_bull_env_score += 1
+                    t_bull_env_reasons.append('OI去槓')
+                    t_bull_env_groups.add('Momentum')
             
             if funding_now is not None and funding_now < P['fr_bull']:
                 discount = cvd_slope_extreme
-                # OI-Weighted Funding Rate Logic
                 if oi_chg_pct is not None:
                     if oi_chg_pct > 0:
-                        bull_score += 1.0 if not discount else 0.5
-                        bull_reasons.append('FR-(OI↑)')
+                        t_bull_env_score += 1.0 if not discount else 0.5
+                        t_bull_env_reasons.append('FR-(OI↑)')
                     else:
-                        bull_score += 0.5 if not discount else 0.25 # Reduced signal if OI is dropping
-                        bull_reasons.append('FR-(OI↓)')
+                        t_bull_env_score += 0.5 if not discount else 0.25
+                        t_bull_env_reasons.append('FR-(OI↓)')
                 else:
-                    bull_score += 1.0 if not discount else 0.5
-                    bull_reasons.append('FR-')
-                bull_groups.add('Sentiment')
+                    t_bull_env_score += 1.0 if not discount else 0.5
+                    t_bull_env_reasons.append('FR-')
+                t_bull_env_groups.add('Sentiment')
             
             if rsi_now is not None and rsi_now < P['rsi_bull']:
-                bull_score += 1
-                bull_reasons.append(f'RSI{int(rsi_now)}')
-                bull_groups.add('Price')
+                t_bull_price_score += 1
+                t_bull_price_reasons.append(f'RSI{int(rsi_now)}')
+                t_bull_price_groups.add('Price')
             
             if ema_fast_now is not None and price_close is not None:
                 ema_dist = (price_close - ema_fast_now) / ema_fast_now * 100
                 if ema_dist < -P['ema_pct']:
-                    bull_score += 1
-                    bull_reasons.append('EMA↑')
-                    bull_groups.add('Price')
+                    t_bull_price_score += 1
+                    t_bull_price_reasons.append('EMA↑')
+                    t_bull_price_groups.add('Price')
             
             if bb_now is not None and bb_now < P['bb_bull']:
-                bull_score += 1
-                bull_reasons.append('BB↑')
-                bull_groups.add('Price')
+                t_bull_price_score += 1
+                t_bull_price_reasons.append('BB↑')
+                t_bull_price_groups.add('Price')
             
             # ===== BEARISH confluence =====
-            bear_score = 0
-            bear_reasons = []
-            bear_groups = set()
+            t_bear_env_score = 0
+            t_bear_env_reasons = []
+            t_bear_env_groups = set()
+            t_bear_price_score = 0
+            t_bear_price_reasons = []
+            t_bear_price_groups = set()
             
             if z_val >= P['z_bear'] and not lsur_dulled:
-                bear_score += 1
-                bear_reasons.append('Z')
-                bear_groups.add('Sentiment')
+                t_bear_env_score += 1
+                t_bear_env_reasons.append('Z')
+                t_bear_env_groups.add('Sentiment')
             
             if cvd_now is not None and cvd_prev is not None and (cvd_now - cvd_prev) < 0:
-                bear_score += 1
-                bear_reasons.append('CVD↓')
-                bear_groups.add('Momentum')
+                t_bear_env_score += 1
+                t_bear_env_reasons.append('CVD↓')
+                t_bear_env_groups.add('Momentum')
             
-            # OI × Price: bearish when price↓+OI↑ (new shorts) or price↑+OI急降 (just short squeeze)
             if price_chg_pct is not None and oi_chg_pct is not None:
                 if price_chg_pct < -price_thresh and oi_chg_pct > 0:
-                    bear_score += 1
-                    bear_reasons.append('OI↑P↓')
-                    bear_groups.add('Momentum')
+                    t_bear_env_score += 1
+                    t_bear_env_reasons.append('OI↑P↓')
+                    t_bear_env_groups.add('Momentum')
                 elif price_chg_pct > price_thresh and oi_chg_pct < -5.0:
-                    bear_score += 1
-                    bear_reasons.append('OI去槓')
-                    bear_groups.add('Momentum')
+                    t_bear_env_score += 1
+                    t_bear_env_reasons.append('OI去槓')
+                    t_bear_env_groups.add('Momentum')
             
             if funding_now is not None and funding_now > P['fr_bear']:
                 discount = cvd_slope_extreme
-                # OI-Weighted Funding Rate Logic
                 if oi_chg_pct is not None:
                     if oi_chg_pct > 0:
-                        bear_score += 1.0 if not discount else 0.5
-                        bear_reasons.append('FR+(OI↑)')
+                        t_bear_env_score += 1.0 if not discount else 0.5
+                        t_bear_env_reasons.append('FR+(OI↑)')
                     else:
-                        bear_score += 0.5 if not discount else 0.25 # Reduced signal if OI is dropping
-                        bear_reasons.append('FR+(OI↓)')
+                        t_bear_env_score += 0.5 if not discount else 0.25
+                        t_bear_env_reasons.append('FR+(OI↓)')
                 else:
-                    bear_score += 1.0 if not discount else 0.5
-                    bear_reasons.append('FR+')
-                bear_groups.add('Sentiment')
+                    t_bear_env_score += 1.0 if not discount else 0.5
+                    t_bear_env_reasons.append('FR+')
+                t_bear_env_groups.add('Sentiment')
             
             if rsi_now is not None and rsi_now > P['rsi_bear']:
-                bear_score += 1
-                bear_reasons.append(f'RSI{int(rsi_now)}')
-                bear_groups.add('Price')
+                t_bear_price_score += 1
+                t_bear_price_reasons.append(f'RSI{int(rsi_now)}')
+                t_bear_price_groups.add('Price')
             
             if ema_fast_now is not None and price_close is not None:
                 ema_dist = (price_close - ema_fast_now) / ema_fast_now * 100
                 if ema_dist > P['ema_pct']:
-                    bear_score += 1
-                    bear_reasons.append('EMA↓')
-                    bear_groups.add('Price')
+                    t_bear_price_score += 1
+                    t_bear_price_reasons.append('EMA↓')
+                    t_bear_price_groups.add('Price')
             
             if bb_now is not None and bb_now > P['bb_bear']:
-                bear_score += 1
-                bear_reasons.append('BB↓')
-                bear_groups.add('Price')
+                t_bear_price_score += 1
+                t_bear_price_reasons.append('BB↓')
+                t_bear_price_groups.add('Price')
             
+            # --- State Machine Update (Setup window) ---
+            if t_bull_env_score >= 1.0:
+                bull_setup_timer = SETUP_WINDOW
+                bull_setup_env_score = t_bull_env_score
+                bull_setup_env_reasons = list(t_bull_env_reasons)
+                bull_setup_env_groups = set(t_bull_env_groups)
+            elif bull_setup_timer > 0:
+                bull_setup_timer -= 1
+
+            if t_bear_env_score >= 1.0:
+                bear_setup_timer = SETUP_WINDOW
+                bear_setup_env_score = t_bear_env_score
+                bear_setup_env_reasons = list(t_bear_env_reasons)
+                bear_setup_env_groups = set(t_bear_env_groups)
+            elif bear_setup_timer > 0:
+                bear_setup_timer -= 1
+                
+            # --- Confluence Unification ---
+            bull_score = 0
+            bull_reasons = []
+            bull_groups = set()
+            if bull_setup_timer > 0 and t_bull_price_score >= 1.0:
+                bull_score = bull_setup_env_score + t_bull_price_score
+                bull_groups = bull_setup_env_groups.union(t_bull_price_groups)
+                bull_reasons = bull_setup_env_reasons + t_bull_price_reasons
+
+            bear_score = 0
+            bear_reasons = []
+            bear_groups = set()
+            if bear_setup_timer > 0 and t_bear_price_score >= 1.0:
+                bear_score = bear_setup_env_score + t_bear_price_score
+                bear_groups = bear_setup_env_groups.union(t_bear_price_groups)
+                bear_reasons = bear_setup_env_reasons + t_bear_price_reasons
+
             # --- Regime tag for signal text ---
             regime_tag = 'T' if regime['regime'] == 'trending' else 'R'
             

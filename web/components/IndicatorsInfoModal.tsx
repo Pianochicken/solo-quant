@@ -27,9 +27,17 @@ export function IndicatorsInfoModal({ isOpen, onClose }: IndicatorsInfoModalProp
 
                 {/* Content */}
                 <div className="p-6 space-y-6">
-                    <p className="text-sm text-zinc-400 leading-relaxed">
-                        此系統採用「多指標匯合（Confluence）」邏輯。為了解決「共線性誤判」（避免只因為價格急跌就累積滿分），目前的指標被歸類為「價格(Price)」、「情緒(Sentiment)」與「動能(Momentum)」三個維度。要觸發 ⚡ 訊號，除了總分需達標外，<strong>這些分數必須來自至少 2 個不同的維度分類</strong>。您可以透過右上角的「訊號設定」來控制不同行情的觸發門檻與保護機制。
-                    </p>
+                    <div className="space-y-3">
+                        <p className="text-sm text-zinc-400 leading-relaxed">
+                            此系統升級為「兩階段狀態機（State Machine）」獵殺流動性邏輯。為了解決「共線性誤判」（避免只因為價格急跌就累積滿分），目前的指標被歸類為「價格(Price)」、「情緒(Sentiment)」與「動能(Momentum)」三個維度。
+                        </p>
+                        <div className="bg-amber-500/10 border border-amber-500/20 p-3 rounded-lg text-sm text-amber-200 leading-relaxed">
+                            <span className="font-bold flex items-center gap-2 mb-1"><Zap className="w-4 h-4" /> 觸發條件升級：Setup $\rightarrow$ Trigger</span>
+                            要觸發 ⚡ 訊號不再要求所有條件在「同一時間點」發生，而是模擬真人交易員的觀察過程：<br/>
+                            1. <strong>醞釀期 (Setup)：</strong> 當「情緒」或「動能」維度出現極端分數時，系統進入「備戰狀態」並開始 3 根 K 線的倒數。<br/>
+                            2. <strong>觸發期 (Trigger)：</strong> 在倒數期間內，如果「價格」維度出現反應（如：插針收回、RSI超賣轉折），使得<strong>總分與維度數量（須 $\ge 2$ 個維度）達標</strong>，才會正式開火亮出 ⚡ 訊號。
+                        </div>
+                    </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 
