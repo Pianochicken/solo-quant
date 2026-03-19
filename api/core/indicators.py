@@ -335,6 +335,9 @@ class IndicatorEngine:
             'regime': 'ranging',
             'direction': 'neutral',
             'adx': 0.0,
+            'bb_width_ratio': 0.0,
+            'cvd_slope': 0.0,
+            'cvd_consistency': 0.0,
             'no_short': False,
             'no_long': False,
         }
@@ -416,6 +419,7 @@ class IndicatorEngine:
             avg_width = float(bb_width.iloc[-21:-1].mean()) if len(bb_width) > 21 else current_width
             
             bb_trending = current_width > avg_width * 1.5 if avg_width > 0 else False
+            result["bb_width_ratio"] = round(current_width / avg_width, 2) if avg_width > 0 else 0.0
         
         # === Factor 3: CVD Slope ===
         cvd_trending = False
@@ -429,6 +433,8 @@ class IndicatorEngine:
             negative_moves = len(cvd_vals) - 1 - positive_moves
             
             consistency = max(positive_moves, negative_moves) / (len(cvd_vals) - 1)
+            result["cvd_slope"] = round(cvd_slope, 2)
+            result["cvd_consistency"] = round(consistency, 2)
             
             if consistency >= 0.7:  # 70%+ of moves in same direction
                 cvd_trending = True
@@ -534,6 +540,9 @@ class IndicatorEngine:
         
         # === 3. CVD Slope (Rolling) ===
         cvd_trending = np.zeros(len(close), dtype=bool)
+        cvd_slopes = np.zeros(len(close), dtype=float)
+        cvd_consistencies = np.zeros(len(close), dtype=float)
+
         cvd_direction = np.full(len(close), 'neutral', dtype=object)
         
         if cvd_aligned and len(cvd_aligned) > 0:
@@ -556,6 +565,8 @@ class IndicatorEngine:
                 positive_moves = sum(1 for k in range(1, len(window_cvd)) if window_cvd[k] > window_cvd[k-1])
                 negative_moves = len(window_cvd) - 1 - positive_moves
                 consistency = max(positive_moves, negative_moves) / (len(window_cvd) - 1)
+                cvd_slopes[i] = slope
+                cvd_consistencies[i] = consistency
                 
                 if consistency >= 0.7:
                     cvd_trending[i] = True
@@ -586,6 +597,9 @@ class IndicatorEngine:
                 "regime": regime,
                 "direction": direction,
                 "adx": round(float(adx[i]), 1),
+                "bb_width_ratio": round(float(bb_width.iloc[i] / avg_width_shifted.iloc[i]) if avg_width_shifted.iloc[i] > 0 else 0, 2),
+                "cvd_slope": round(float(cvd_slopes[i]), 2) if 'cvd_slopes' in locals() else 0.0,
+                "cvd_consistency": round(float(cvd_consistencies[i]), 2) if 'cvd_consistencies' in locals() else 0.0,
                 "no_short": no_short,
                 "no_long": no_long
             })

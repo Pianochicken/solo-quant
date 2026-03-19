@@ -77,13 +77,40 @@ export default function SentimentPanel({ indicators, timeframe = '1h', enablePro
                                 {regimeLabel}
                             </div>
                         </div>
-                        <div className="text-right">
-                            <div className="text-[10px] text-zinc-600 mb-1">ADX</div>
-                            <div className={`text-lg font-mono font-bold ${regime.adx > 25 ? 'text-purple-400' : 'text-zinc-500'}`}>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2 mt-3 pt-3 border-t border-zinc-800/50">
+                        <div className="text-center group relative">
+                            <div className="text-[10px] text-zinc-600 mb-1 flex justify-center items-center">
+                                ADX
+                                <InfoTooltip text="Average Directional Index (平均趨向指數)。衡量趨勢的「強度」而非方向。數值大於 25 代表市場具有強烈的單邊趨勢動能；小於 25 則為盤整。" />
+                            </div>
+                            <div className={`text-sm font-mono font-bold ${regime.adx > 25 ? 'text-purple-400' : 'text-zinc-500'}`}>
                                 {regime.adx?.toFixed(1) || '—'}
                             </div>
                         </div>
+                        
+                        <div className="text-center group relative">
+                            <div className="text-[10px] text-zinc-600 mb-1 flex justify-center items-center">
+                                BB Width
+                                <InfoTooltip text="Bollinger Bands Width (布林帶寬度擴張率)。計算當前布林帶寬度是否大於過去 20 根 K 線平均寬度的 1.5 倍。用來捕捉波動率從收斂轉為爆發的起漲點。" />
+                            </div>
+                            <div className={`text-sm font-mono font-bold ${regime.bb_width_ratio > 1.5 ? 'text-purple-400' : 'text-zinc-500'}`}>
+                                {regime.bb_width_ratio?.toFixed(2) || '—'}x
+                            </div>
+                        </div>
+
+                        <div className="text-center group relative">
+                            <div className="text-[10px] text-zinc-600 mb-1 flex justify-center items-center">
+                                CVD 斜率
+                                <InfoTooltip text="Cumulative Volume Delta (累積成交量差) 的坡度連續性。計算「過去 10 根 K 線」內，主力資金是否持續同向淨流入/淨流出。一致性大於 70% 視為強烈趨勢資金。" />
+                            </div>
+                            <div className={`text-sm font-mono font-bold ${regime.cvd_consistency >= 0.7 ? 'text-purple-400' : 'text-zinc-500'}`}>
+                                {regime.cvd_consistency !== undefined ? `${(regime.cvd_consistency * 100).toFixed(0)}%` : '—'}
+                            </div>
+                        </div>
                     </div>
+
                     {enableProtection && (regime.no_short || regime.no_long) && (
                         <div className="mt-2 flex gap-2">
                             {regime.no_short && (
