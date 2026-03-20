@@ -30,11 +30,16 @@ Single indicators produce false signals. Only trade when **multiple independent 
 ```
 Each candle →
   Collect 4 indicator values →
+    Apply Dynamic Asset Profile (Adjust thresholds based on asset type: BTC vs ALTs) →
     Check each against threshold →
       Calculate confluence score (0~4) →
         Score ≥ 3 → Emit buy/sell marker
         Score < 3 → No marker
 ```
+
+### Dynamic Asset Profiles (Asset-Specific Tuning)
+Different asset classes exhibit different baseline metrics. For example, Altcoins (HYPE/CC) naturally have higher baseline funding rates and higher volatility compared to Majors (BTC/ETH).
+*   **Rule**: Thresholds must dynamically scale based on the asset. Do not use BTC funding rate thresholds for Memecoins, as it will result in constant false "overheated" signals.
 
 ### Improving Signal Accuracy (Priority Order)
 1. **Tune thresholds**: Tighten/loosen individual trigger conditions (e.g., Z from 1.5 → 2.0)
@@ -194,15 +199,28 @@ No backtest = gambling. Every strategy change must be validated:
 
 ---
 
-## 7. Future Improvement Directions
+## 7. Software Development & Engineering Principles
 
-Potential indicators/features to improve signal accuracy:
+### 7.1 Framework & Architecture Guidelines
+- **FastAPI (Backend)**: 
+  - **Async First**: Use `async`/`await` for all I/O operations (exchange API requests).
+  - **Data Validation**: Strictly type all API inputs and outputs using **Pydantic** models.
+  - **Separation of Concerns**: Keep route handlers (`main.py`) thin. Delegate pure business logic and math to `core/` and `quant/` modules.
+- **Next.js & React (Frontend)**:
+  - **Component Isolation**: Chart components (`AdvancedChart.tsx`) should be pure and accept data as props. Keep state management inside top-level pages or custom `lib/` hooks.
+  - **Type Safety**: Maintain strict TypeScript interfaces matching the Python Pydantic models (e.g., `SignalConfig`, `BacktestParams`).
+- **Data Processing Edge**:
+  - **Vectorization over Iteration**: *Never* use `for` loops or `.iterrows()` for indicator calculations. Always use vectorized Pandas/Numpy operations (and architect towards Polars) to ensure backtests finish in milliseconds, not minutes.
 
-| Indicator/Feature | Purpose | Priority |
-|------------------|---------|----------|
-| **Liquidation Heatmap** | Find liquidation clusters → predict price magnets | High |
-| **On-chain whale transfers** | Detect large holder movements | Medium |
-| **Cross-market correlation** | BTC vs ALT coupling/divergence | Medium |
-| **Volatility Percentile** | Detect low-vol compression (pre-breakout) | Medium |
-| **Order Flow (tape reading)** | Tick-by-tick analysis (needs WebSocket) | Low (resource intensive) |
-| **Fear & Greed Index** | Quantified overall market sentiment | Low |
+### 7.2 Testing & Validation Methodology
+- **Unit Testing (Pytest)**:
+  - Mathematical integrity is critical. All functions in `indicators.py` must be tested against isolated, mock data arrays where the expected output is strictly known.
+- **Quant Backtesting Integrity**:
+  - **Prevent Overfitting**: Do not blindly tune thresholds just to make the historical chart look good. Always validate parameter changes on "out-of-sample" (unseen) timeframes.
+  - **Cost Realism**: Backtest EV (Expected Value) *must* factor in exchange trading fees (e.g., 0.05% taker) and realistic slippage. A strategy profitable without fees is often a losing strategy in production.
+- **System Resilience**:
+  - Third-party exchange APIs *will* timeout or rate-limit. All external calls in `fetcher.py` must have robust `try/except` fallbacks and retry mechanisms.
+
+### 7.3 Version Control Workflow
+- **Conventional Commits**: Strictly use standard prefix tags (`feat:`, `fix:`, `refactor:`, `test:`, `quant:`).
+- **Atomic Commits**: Separate UI layout changes from core quantitative logic modifications to maintain a clean git history and easy rollbacks (like our recent `KeyError` fix).
