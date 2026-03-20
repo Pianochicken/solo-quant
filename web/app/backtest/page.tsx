@@ -20,6 +20,7 @@ export default function BacktestPage() {
 
     // AI Mode
     const [isAiMode, setIsAiMode] = useState(false);
+    const [useDynamicProfiles, setUseDynamicProfiles] = useState(true);
     const [aiLoading, setAiLoading] = useState(false);
 
     const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -96,7 +97,8 @@ export default function BacktestPage() {
                 is_ai_mode: isAiMode,
                 ranging_threshold: 3,
                 trending_threshold: 3,
-                enable_protection: false
+                enable_protection: false,
+                use_dynamic_profiles: useDynamicProfiles
             };
             const res = await runBacktest(params);
             setResult(res);
@@ -150,6 +152,21 @@ export default function BacktestPage() {
                     </div>
 
                     <div className="space-y-4">
+                        <label className="flex items-start gap-2 cursor-pointer group mb-4">
+                            <div className="relative flex items-center pt-1">
+                                <input 
+                                    type="checkbox" 
+                                    checked={useDynamicProfiles}
+                                    onChange={(e) => setUseDynamicProfiles(e.target.checked)}
+                                    className="peer sr-only"
+                                />
+                                <div className="w-8 h-4 bg-zinc-800 rounded-full peer peer-checked:bg-purple-600 transition-colors"></div>
+                                <div className="absolute left-1 top-1.5 w-2 h-2 bg-zinc-400 rounded-full transition-all peer-checked:translate-x-4 peer-checked:bg-white"></div>
+                            </div>
+                            <div className="text-xs text-zinc-300 font-medium">
+                                動態幣種參數 (Dynamic Profiles)
+                            </div>
+                        </label>
                         <div>
                             <label className="block text-xs text-zinc-500 mb-1">Symbol</label>
                             <select
@@ -160,6 +177,8 @@ export default function BacktestPage() {
                                 <option value="BTC/USDT">BTC/USDT</option>
                                 <option value="ETH/USDT">ETH/USDT</option>
                                 <option value="SOL/USDT">SOL/USDT</option>
+                                <option value="HYPE/USDT">HYPE/USDT</option>
+                                <option value="CC/USDT">CC/USDT</option>
                             </select>
                         </div>
 

@@ -81,6 +81,25 @@ export function SignalSettingsModal({ isOpen, onClose, currentConfig, onSave }: 
                             </div>
                         </label>
                     </div>
+
+                    <div className="pt-4 border-t border-zinc-800">
+                        <label className="flex gap-3 cursor-pointer items-start">
+                            <div className="mt-1">
+                                <input 
+                                    type="checkbox" 
+                                    checked={config.useDynamicProfiles}
+                                    onChange={(e) => setConfig({...config, useDynamicProfiles: e.target.checked})}
+                                    className="w-4 h-4 rounded border-zinc-700 bg-zinc-900 text-purple-500 focus:ring-purple-500 focus:ring-offset-zinc-900"
+                                />
+                            </div>
+                            <div>
+                                <span className="block text-sm font-medium text-zinc-300">Enable Dynamic Asset Profiles 動態幣種指標參數</span>
+                                <span className="block text-xs text-zinc-500 mt-1 leading-relaxed">
+                                    開啟後，AI 會自動根據當前選擇幣種（如 BTC, SOL, HYPE...）的特性與波幅來動態放寬或收緊 RSI、資金費率等觸發門檻，顯著降低高波動山寨幣的假訊號。
+                                </span>
+                            </div>
+                        </label>
+                    </div>
                 </div>
 
                 <div className="p-4 border-t border-zinc-800 flex justify-end gap-3 rounded-b-2xl bg-zinc-950/50">

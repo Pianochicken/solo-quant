@@ -46,7 +46,8 @@ def get_market_data(
     limit: int = 100, 
     ranging_threshold: int = 3, 
     trending_threshold: int = 3, 
-    enable_protection: bool = False
+    enable_protection: bool = False,
+    use_dynamic_profiles: bool = True
 ):
     """
     Get generic market data (Price + Funding + Sentiment).
@@ -251,6 +252,8 @@ def get_market_data(
             ranging_threshold=ranging_threshold,
             trending_threshold=trending_threshold,
             enable_protection=enable_protection,
+            symbol=formatted_symbol,
+            use_dynamic_profiles=use_dynamic_profiles,
         )
         
         # 7 & 8. Composite Score (Market Pulse) v5 & History
@@ -264,6 +267,8 @@ def get_market_data(
             bb_pctb_aligned=bb_pctb,
             oi_aligned=open_interest,
             timeframe=timeframe,
+            symbol=formatted_symbol,
+            use_dynamic_profiles=use_dynamic_profiles,
         )
         composite_score = composite_score_history[-1]['value'] if composite_score_history else 50.0
 
@@ -457,6 +462,7 @@ class BacktestParams(BaseModel):
     ranging_threshold: int = 3
     trending_threshold: int = 3
     enable_protection: bool = False
+    use_dynamic_profiles: bool = True
 
 @app.post("/quant/backtest")
 def run_backtest(params: BacktestParams):

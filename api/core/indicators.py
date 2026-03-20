@@ -623,6 +623,8 @@ class IndicatorEngine:
         ranging_threshold: int = 3,
         trending_threshold: int = 3,
         enable_protection: bool = False,
+        symbol: str = 'BTC/USDT',
+        use_dynamic_profiles: bool = True,
     ) -> List[Dict]:
         """
         Multi-Indicator Confluence Signal System v5: Regime-Adaptive.
@@ -690,7 +692,28 @@ class IndicatorEngine:
                 'price_thresh': 1.5,
             },
         }
-        P = PROFILES.get(timeframe, PROFILES['1h'])
+        P = PROFILES.get(timeframe, PROFILES['1h']).copy()
+        
+        # --- Feature Toggle for Easy Revert ---
+        if use_dynamic_profiles:
+            # Asset Class Dynamic Overrides (Major, Midcap, Meme/Alt)
+            is_midcap = any(s in symbol.upper() for s in ['SOL', 'ETH'])
+            is_alt = any(s in symbol.upper() for s in ['HYPE', 'CC'])
+            
+            if is_midcap:
+                # Widen funding rate thresholds because midcaps have higher baseline yields
+                P['fr_bull'] *= 1.5
+                P['fr_bear'] *= 1.5
+                P['rsi_bull'] -= 5
+                P['rsi_bear'] += 5
+            elif is_alt:
+                # Massive widening for alts
+                P['fr_bull'] *= 2.5
+                P['fr_bear'] *= 2.5
+                P['rsi_bull'] -= 10
+                P['rsi_bear'] += 10
+                P['price_thresh'] *= 2.0  # Alts need bigger price moves to confirm
+        
         COOLDOWN = P['cooldown']
         APPLY_DIRECTIONAL_PROTECTION = enable_protection
         
@@ -1033,7 +1056,9 @@ class IndicatorEngine:
         ema_fast_aligned: List[Dict] = None,
         bb_pctb_aligned: List[Dict] = None,
         oi_aligned: List[Dict] = None,
-        timeframe: str = '1h'
+        timeframe: str = '1h',
+        symbol: str = 'BTC/USDT',
+        use_dynamic_profiles: bool = True
     ) -> List[Dict]:
         """
         Calculates the Market Pulse (Composite Score) from 0 to 100 continuously.
@@ -1051,7 +1076,19 @@ class IndicatorEngine:
             '4h':  {'rsi': (30, 70), 'fr': (-0.003, 0.008), 'bb': (0, 1.0), 'z': (-1.2, 1.2), 'ema': 2.5},
             '1d':  {'rsi': (35, 65), 'fr': (-0.002, 0.006), 'bb': (0, 1.0), 'z': (-1.0, 1.0), 'ema': 4.0},
         }
-        P = PROFILES.get(timeframe, PROFILES['1h'])
+        P = PROFILES.get(timeframe, PROFILES['1h']).copy()
+
+        if use_dynamic_profiles:
+            is_midcap = any(s in symbol.upper() for s in ['SOL', 'ETH'])
+            is_alt = any(s in symbol.upper() for s in ['HYPE', 'CC'])
+            
+            if is_midcap:
+                P['fr'] = (P['fr'][0]*1.5, P['fr'][1]*1.5)
+                P['rsi'] = (P['rsi'][0]-5, P['rsi'][1]+5)
+            elif is_alt:
+                P['fr'] = (P['fr'][0]*2.5, P['fr'][1]*2.5)
+                P['rsi'] = (P['rsi'][0]-10, P['rsi'][1]+10)
+                P['ema'] *= 2.0
 
         # Build lookup dicts
         z_by_time = {item['time']: item['value'] for item in lsur_z_aligned}

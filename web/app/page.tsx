@@ -41,7 +41,8 @@ export default function Dashboard() {
   const [signalConfig, setSignalConfig] = useState({
     rangingThreshold: 3,
     trendingThreshold: 3,
-    enableProtection: false
+    enableProtection: false,
+    useDynamicProfiles: true
   });
 
   // Track if this is the initial load for the current timeframe
@@ -224,19 +225,18 @@ export default function Dashboard() {
               Backtester
             </Link>
 
-            <div className="flex items-center gap-2 bg-zinc-900 rounded-lg p-1 border border-zinc-800">
-              {['BTC/USDT', 'ETH/USDT', 'SOL/USDT'].map(s => (
-                <button
-                  key={s}
-                  onClick={() => { setSymbol(s); }}
-                  className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${symbol === s
-                    ? 'bg-zinc-800 text-white shadow-sm'
-                    : 'text-zinc-500 hover:text-zinc-300'
-                    }`}
-                >
-                  {s.split('/')[0]}
-                </button>
-              ))}
+            <div className="flex items-center">
+              <select
+                value={symbol}
+                onChange={e => setSymbol(e.target.value)}
+                className="bg-zinc-900 border border-zinc-800 text-sm font-medium text-white rounded-lg px-3 py-2 outline-none focus:border-zinc-700 transition-colors hover:bg-zinc-800"
+              >
+                <option value="BTC/USDT">BTC/USDT</option>
+                <option value="ETH/USDT">ETH/USDT</option>
+                <option value="SOL/USDT">SOL/USDT</option>
+                <option value="HYPE/USDT">HYPE/USDT</option>
+                <option value="CC/USDT">CC/USDT</option>
+              </select>
             </div>
 
             {lastUpdated && (
