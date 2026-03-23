@@ -119,7 +119,8 @@ export default function Dashboard() {
   const handleClearCache = async () => {
     try {
       setIsClearingCache(true);
-      await fetch('http://localhost:8000/clear-cache', { method: 'POST' });
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
+      await fetch(`${apiUrl}/clear-cache`, { method: 'POST' });
       // Force unmount/remount behavior or just refetch directly
       setData(null);
       setLoading(true);

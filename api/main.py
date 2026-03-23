@@ -4,10 +4,14 @@ from api.core.fetcher import DataFetcher
 
 app = FastAPI(title="SoloQuant API")
 
-# Enable CORS for Next.js (usually runs on port 3000)
+# Enable CORS for Next.js (usually runs on port 3000 locally, can add production URLs below)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "https://solo-quant.vercel.app",  # Example Vercel app
+        "*"  # Accept from everywhere or restrict it to strict domains later
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

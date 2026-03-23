@@ -45,7 +45,7 @@ export interface MarketData {
     indicators: IndicatorData;
 }
 
-const API_BASE = 'http://127.0.0.1:8000';
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
 
 export async function getMarketData(symbol: string, timeframe: string = '1h', limit: number = 100, config?: SignalConfig): Promise<MarketData> {
     // Convert slash to dash for URL safety if needed.

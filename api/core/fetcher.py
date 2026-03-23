@@ -2,7 +2,7 @@ import ccxt
 import pandas as pd
 import time
 import concurrent.futures
-from typing import Tuple, Dict
+from typing import Tuple, Dict, List
 
 class DataFetcher:
     """

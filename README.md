@@ -78,7 +78,7 @@
     npm install
     ```
 
-### Running the Application
+### Running the Application (Local Development)
 
 ```bash
 ./run_fullstack.sh
@@ -86,6 +86,22 @@
 
 - **Frontend**: http://localhost:3000
 - **Backend API Docs**: http://localhost:8000/docs
+
+### 🐳 Running with Docker (Production / Cloud Deployment)
+
+The project is fully containerized for easy deployment to AWS/GCP or local testing.
+
+1. **Build and start the containers**
+   ```bash
+   docker-compose up -d --build
+   ```
+2. **Access the services**
+   - Frontend: `http://localhost:3000`
+   - Backend API: `http://localhost:8000`
+3. **Stop the containers**
+   ```bash
+   docker-compose down
+   ```
 
 ## 📂 Project Structure
 

@@ -1,0 +1,25 @@
+services:
+  fastapi:
+    build:
+      context: .
+      dockerfile: ./api/Dockerfile
+    container_name: solo-quant-api
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+
+  nextjs:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: solo-quant-web
+    ports:
+      - "3000:3000"
+    environment:
+      # In local Docker, Next.js client-side still fetches from localhost:8000 (if host network) or explicitly via container port mapping
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - fastapi
+    restart: unless-stopped
