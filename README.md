@@ -6,8 +6,9 @@
 
 ### 📊 Real-time Dashboard
 - **Professional K-Line Charts**: Interactive candlestick charts with overlaid indicators using `lightweight-charts`.
-- **Multi-Timeframe Support**: 15m / 1h / 4h / 1D with instant switching (Stale-While-Revalidate cache).
+- **Multi-Timeframe Support**: 15m / 1h / 4h / 1D with instant switching.
 - **Indicator Overlays**: EMA50/200, RSI(14), Funding Rate, CVD, Open Interest.
+- **Local Data Persistence**: PostgreSQL-backed history caching for unified minute-level precision and offline resilience.
 
 ### 🎯 Multi-Indicator Confluence Signal System (v4)
 7 indicators scored in parallel to generate high-confidence buy/sell signals:
@@ -39,9 +40,10 @@
 
 ## 🛠️ Tech Stack
 
-### Backend (Python / FastAPI)
+### Backend (Python / FastAPI / PostgreSQL)
 - **FastAPI**: High-performance async web framework.
-- **CCXT**: Universal crypto exchange API connector (OKX).
+- **PostgreSQL & SQLAlchemy**: Relational data persistence storing historical OHLCV and secondary metrics.
+- **CCXT**: Universal crypto exchange API connector (OKX & Binance).
 - **Pandas & NumPy**: Quantitative analysis and indicator calculations.
 - **Concurrent Futures**: Parallel API data fetching for low latency.
 
@@ -56,6 +58,7 @@
 ### Prerequisites
 - Python 3.9+
 - Node.js 18+
+- Docker & Docker Compose (Required for PostgreSQL Database)
 
 ### Installation
 
@@ -109,6 +112,7 @@ The project is fully containerized for easy deployment to AWS/GCP or local testi
 solo-quant/
 ├── api/                 # FastAPI Backend
 │   ├── core/            # Core logic (Fetcher, Indicators, Execution)
+│   ├── db/              # Data persistence (Models, Database config, CRUD)
 │   ├── quant/           # Quant strategies & Backtester
 │   └── main.py          # API Gateway & Data Orchestration
 ├── web/                 # Next.js Frontend

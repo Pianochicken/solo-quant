@@ -1,13 +1,29 @@
 services:
+  db:
+    image: postgres:15-alpine
+    container_name: solo-quant-db
+    environment:
+      POSTGRES_USER: quant_user
+      POSTGRES_PASSWORD: quant_password
+      POSTGRES_DB: quant_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
   fastapi:
     build:
       context: .
       dockerfile: ./api/Dockerfile
     container_name: solo-quant-api
+    depends_on:
+      - db
     ports:
       - "8000:8000"
     environment:
       - PYTHONUNBUFFERED=1
+      - DATABASE_URL=postgresql://quant_user:quant_password@db:5432/quant_db
     restart: unless-stopped
 
   nextjs:
@@ -23,3 +39,6 @@ services:
     depends_on:
       - fastapi
     restart: unless-stopped
+
+volumes:
+  postgres_data:

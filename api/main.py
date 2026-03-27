@@ -1,6 +1,11 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from api.core.fetcher import DataFetcher
+from api.db.database import engine, Base
+import api.db.models  # Import to register models with Base
+
+# Create tables if they don't exist yet
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="SoloQuant API")
 
@@ -112,21 +117,21 @@ def get_market_data(
         import pandas as pd
         
         # 1. Prepare Price DataFrame
+        # --- Extended History Merging ---
+        def merge_history(high_res, daily):
+            combined = (high_res or []) + (daily or [])
+            if not combined: return []
+            df = pd.DataFrame(combined)
+            df['time'] = df['time'].astype(int)
+            # Drop duplicates keeping high-res (which is appended first)
+            df.drop_duplicates(subset=['time'], keep='first', inplace=True)
+            df.sort_values('time', inplace=True)
+            return df.to_dict('records')
+
         if data['price']:
             df_price = pd.DataFrame(data['price'])
             df_price['time'] = df_price['time'].astype(int)
             df_price.sort_values('time', inplace=True)
-            
-            # --- Extended History Merging ---
-            def merge_history(high_res, daily):
-                combined = (high_res or []) + (daily or [])
-                if not combined: return []
-                df = pd.DataFrame(combined)
-                df['time'] = df['time'].astype(int)
-                # Drop duplicates keeping high-res (which is appended first)
-                df.drop_duplicates(subset=['time'], keep='first', inplace=True)
-                df.sort_values('time', inplace=True)
-                return df.to_dict('records')
 
             ls_ratio_history = merge_history(ls_ratio_history_raw, ls_ratio_daily)
             taker_volume = merge_history(taker_volume_raw, taker_volume_daily)
@@ -210,8 +215,13 @@ def get_market_data(
                 cvd_aligned = [] # Fallback
 
         else:
-            open_interest = open_interest_raw
-            funding_aligned = data['funding']
+            open_interest = []
+            if open_interest_raw:
+                open_interest = open_interest_raw
+            funding_aligned = data.get('funding', [])
+            
+            # Fix UnboundLocalError by properly merging if missing price data
+            ls_ratio_history = merge_history(ls_ratio_history_raw, ls_ratio_daily) if 'ls_ratio_history_raw' in locals() else []
             ls_aligned_history_val = ls_ratio_history
             cvd_aligned = [] # Fallback
 
@@ -387,7 +397,8 @@ def preview_grid(params: GridParams):
         # Calculate theoretical orders at current price
         # Need current price and sentiment
         formatted_symbol = params.symbol.replace('-', '/')
-        ticker = fetcher.exchange.fetch_ticker(formatted_symbol)
+        fetcher = get_fetcher()
+        ticker = fetcher.binance.fetch_ticker(formatted_symbol)
         current_price = ticker['last']
         
         # Fetch Sentiment for Smart Guard
@@ -422,7 +433,8 @@ def start_grid(params: GridParams):
         )
         
         formatted_symbol = params.symbol.replace('-', '/')
-        ticker = fetcher.exchange.fetch_ticker(formatted_symbol)
+        fetcher = get_fetcher()
+        ticker = fetcher.binance.fetch_ticker(formatted_symbol)
         current_price = ticker['last']
         
         # Fetch Sentiment for Smart Guard
