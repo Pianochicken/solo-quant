@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { GridParams, previewGrid, startGrid, getSmartGridParams } from '@/lib/api';
 import { Play, Calculator, AlertTriangle, CheckCircle, Brain, RefreshCw, Activity } from 'lucide-react';
+import { getPricePrecision } from '@/lib/utils';
 
 interface GridPanelProps {
     symbol: string;
@@ -47,8 +48,9 @@ export const GridPanel = ({ symbol, currentPrice, onPreview, onOrders }: GridPan
         setAiLoading(true);
         try {
             const params = await getSmartGridParams(symbol);
-            setLowerPrice(params.lower_price.toFixed(1));
-            setUpperPrice(params.upper_price.toFixed(1));
+            const { precision } = getPricePrecision(currentPrice, symbol);
+            setLowerPrice(params.lower_price.toFixed(precision));
+            setUpperPrice(params.upper_price.toFixed(precision));
             setGridCount(params.grid_count.toString());
             setSentiment({ score: params.sentiment_score, signal: params.signal });
             setLogs(prev => [`AI: Loaded Smart Params (Sentiment: ${params.sentiment_score.toFixed(2)})`, ...prev]);
@@ -115,7 +117,8 @@ export const GridPanel = ({ symbol, currentPrice, onPreview, onOrders }: GridPan
         const upper = getUpper();
         const count = parseInt(gridCount);
         if (lower && upper && count && count > 0) {
-            return ((upper - lower) / count).toFixed(2);
+            const { precision } = getPricePrecision(currentPrice, symbol);
+            return ((upper - lower) / count).toFixed(precision);
         }
         return '--';
     })();
@@ -171,7 +174,7 @@ export const GridPanel = ({ symbol, currentPrice, onPreview, onOrders }: GridPan
                                 }`}
                             value={lowerPrice}
                             onChange={(e) => setLowerPrice(e.target.value)}
-                            placeholder={(currentPrice * 0.95).toFixed(1)}
+                            placeholder={(currentPrice * 0.95).toFixed(getPricePrecision(currentPrice, symbol).precision)}
                             disabled={isAiMode} // Disable manual input in AI mode
                         />
                     </div>
@@ -188,7 +191,7 @@ export const GridPanel = ({ symbol, currentPrice, onPreview, onOrders }: GridPan
                                 }`}
                             value={upperPrice}
                             onChange={(e) => setUpperPrice(e.target.value)}
-                            placeholder={(currentPrice * 1.05).toFixed(1)}
+                            placeholder={(currentPrice * 1.05).toFixed(getPricePrecision(currentPrice, symbol).precision)}
                             disabled={isAiMode}
                         />
                     </div>

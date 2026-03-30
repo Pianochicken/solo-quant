@@ -1,11 +1,29 @@
 import pandas as pd
 import numpy as np
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 class IndicatorEngine:
-    """
-    Processes raw market data into quantitative trading indicators.
-    """
+    """Processes raw market data into quantitative trading indicators."""
+
+    @staticmethod
+    def _get_price_precision(price: float, symbol: Optional[str] = None) -> int:
+        if symbol:
+            s = symbol.upper()
+            if 'CC/USDT' in s or 'CC-USDT' in s:
+                return 5
+
+        p = abs(float(price)) if price is not None else 0.0
+        if p <= 0:
+            return 2
+        if p < 0.001:
+            return 7
+        if p < 0.1:
+            return 5
+        if p < 1:
+            return 4
+        if p < 10:
+            return 3
+        return 2
     
     @staticmethod
     def calculate_lsur_z_score(lsur_history: List[Dict], window: int = 90) -> float:
@@ -154,7 +172,12 @@ class IndicatorEngine:
         return round(percentile, 1)
 
     @staticmethod
-    def calculate_ema_trend(price_data: List[Dict], fast_period: int = 50, slow_period: int = 200) -> Dict:
+    def calculate_ema_trend(
+        price_data: List[Dict],
+        fast_period: int = 50,
+        slow_period: int = 200,
+        symbol: Optional[str] = None,
+    ) -> Dict:
         """
         Calculate dual EMA trend filter from price close data.
         
@@ -195,9 +218,12 @@ class IndicatorEngine:
             trend_state = 'neutral'
         
         # Build output series (only where slow EMA is valid — after slow_period bars)
+        # Use symbol/price-aware precision so low-priced assets (e.g. CC/USDT)
+        # keep enough decimal detail for smooth EMA calculation/display.
+        precision = IndicatorEngine._get_price_precision(price_now, symbol)
         valid_df = df.iloc[slow_period - 1:]
-        ema_fast_series = [{'time': int(r['time']), 'value': round(r['ema_fast'], 2)} for _, r in valid_df.iterrows()]
-        ema_slow_series = [{'time': int(r['time']), 'value': round(r['ema_slow'], 2)} for _, r in valid_df.iterrows()]
+        ema_fast_series = [{'time': int(r['time']), 'value': round(r['ema_fast'], precision)} for _, r in valid_df.iterrows()]
+        ema_slow_series = [{'time': int(r['time']), 'value': round(r['ema_slow'], precision)} for _, r in valid_df.iterrows()]
         
         return {
             'trend_state': trend_state,

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { createChart, ColorType, IChartApi, CandlestickSeries, HistogramSeries, ISeriesApi } from 'lightweight-charts';
+import { getPricePrecision } from '@/lib/utils';
 
 interface SyncedChartProps {
     priceData: {
@@ -66,12 +67,16 @@ export const SyncedChart = ({ priceData, fundingData, colors, gridLines = [] }: 
             },
         });
 
+        const currentPrice = priceData.length ? priceData[priceData.length - 1].close : 0;
+        const { precision, minMove } = getPricePrecision(currentPrice);
+
         const candleSeries = mainChart.addSeries(CandlestickSeries, {
             upColor: '#26a69a',
             downColor: '#ef5350',
             borderVisible: false,
             wickUpColor: '#26a69a',
             wickDownColor: '#ef5350',
+            priceFormat: { type: 'price', precision, minMove },
         });
 
         // --- Create Sub Chart ---
@@ -140,6 +145,12 @@ export const SyncedChart = ({ priceData, fundingData, colors, gridLines = [] }: 
     useEffect(() => {
         if (!candleSeriesRef.current || !fundingSeriesRef.current) return;
         if (priceData.length === 0) return;
+
+        const currentPrice = priceData[priceData.length - 1].close;
+        const { precision, minMove } = getPricePrecision(currentPrice);
+        candleSeriesRef.current.applyOptions({
+            priceFormat: { type: 'price', precision, minMove },
+        });
 
         // Update Candle Data
         candleSeriesRef.current.setData(priceData as any);

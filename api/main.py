@@ -239,7 +239,7 @@ def get_market_data(
         oi_percentile = IndicatorEngine.calculate_oi_percentile(daily_oi_for_percentile)
         
         # 5.5. EMA Trend Filter (50/200 from price data)
-        ema_trend = IndicatorEngine.calculate_ema_trend(data['price'])
+        ema_trend = IndicatorEngine.calculate_ema_trend(data['price'], symbol=formatted_symbol)
         trend_state = ema_trend['trend_state']
         
         # 5.6. RSI (14-period)

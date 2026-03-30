@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { createChart, ColorType, IChartApi, CandlestickSeries } from 'lightweight-charts';
+import { getPricePrecision } from '@/lib/utils';
 
 interface ChartProps {
     data: {
@@ -35,12 +36,16 @@ export const CandleChart = ({ data }: ChartProps) => {
             },
         });
 
+        const currentPrice = data.length ? data[data.length - 1].close : 0;
+        const { precision, minMove } = getPricePrecision(currentPrice);
+
         const candleSeries = chart.addSeries(CandlestickSeries, {
             upColor: '#26a69a',
             downColor: '#ef5350',
             borderVisible: false,
             wickUpColor: '#26a69a',
             wickDownColor: '#ef5350',
+            priceFormat: { type: 'price', precision, minMove },
         });
 
         // Cast data to any to bypass strict 'Time' type checking for simple unix timestamps

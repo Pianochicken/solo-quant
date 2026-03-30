@@ -3,6 +3,7 @@ import React, { useEffect, useRef } from 'react';
 import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickSeries, HistogramSeries, LineSeries, Time, CrosshairMode, createSeriesMarkers } from 'lightweight-charts';
 import { InfoTooltip } from './InfoTooltip';
 import { getThresholds } from '@/lib/thresholds';
+import { getPricePrecision } from '@/lib/utils';
 
 interface AdvancedChartProps {
     symbol: string;
@@ -99,8 +100,14 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
             timeScale: { visible: true, timeVisible: true, secondsVisible: false },
         });
         chartRef.current = chart;
+
+        const priceData = data?.price || [];
+        const currentPrice = priceData.length ? priceData[priceData.length - 1].close : 0;
+        const { precision, minMove } = getPricePrecision(currentPrice, symbol);
+        
         mainSeriesRef.current = chart.addSeries(CandlestickSeries, {
             upColor: '#26a69a', downColor: '#ef5350', borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+            priceFormat: { type: 'price', precision, minMove },
         });
 
         // EMA Lines on Price Chart
@@ -236,6 +243,18 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
             charts.forEach(c => c.remove());
         };
     }, []);
+
+    useEffect(() => {
+        if (!mainSeriesRef.current) return;
+
+        const priceData = data?.price || [];
+        const currentPrice = priceData.length ? priceData[priceData.length - 1].close : 0;
+        const { precision, minMove } = getPricePrecision(currentPrice, symbol);
+
+        mainSeriesRef.current.applyOptions({
+            priceFormat: { type: 'price', precision, minMove },
+        });
+    }, [symbol, data?.price]);
 
     // 2. DATA UPDATE
     useEffect(() => {
