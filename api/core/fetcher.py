@@ -30,16 +30,42 @@ class DataFetcher:
         Fetches OHLCV (Spot) and Funding Rate (Perp) History.
         """
         ohlcv_symbol = symbol
-        funding_symbol = f"{symbol}:USDT" if '/' in symbol and ':' not in symbol else symbol
+        funding_symbol = f"{symbol.split('/')[0]}-USDT-SWAP" if '/' in symbol else f"{symbol.split('-')[0]}-USDT-SWAP"
         
         with SessionLocal() as db:
             db_ohlcv = crud.get_market_data(db, symbol=ohlcv_symbol, timeframe=timeframe, exchange="okx", limit=limit)
             
             is_full_fetch = len(db_ohlcv) < limit
-            # Only fetch delta if DB has enough data, otherwise fetch deeply backward
-            target_limit_ohlcv = max(limit, 300) if is_full_fetch else 10
-            target_limit_funding = max(limit * 3, 300) if is_full_fetch else 10
-
+            
+            # Calculate missing candles to fill any time gaps
+            missed_candles = 10
+            if db_ohlcv:
+                latest_ts = db_ohlcv[-1].timestamp.timestamp()
+                first_ts = db_ohlcv[0].timestamp.timestamp()
+                now_ts = time.time()
+                
+                tf_sec = 60
+                tf_l = timeframe.lower()
+                if 'm' in tf_l: tf_sec = int(tf_l.replace('m', '')) * 60
+                elif 'h' in tf_l: tf_sec = int(tf_l.replace('h', '')) * 3600
+                elif 'd' in tf_l: tf_sec = int(tf_l.replace('d', '')) * 86400
+                elif 'w' in tf_l: tf_sec = int(tf_l.replace('w', '')) * 86400 * 7
+                
+                diff = now_ts - latest_ts
+                span = latest_ts - first_ts
+                expected_span = (len(db_ohlcv) - 1) * tf_sec
+                
+                # If there's a gap in the timeline (actual span > expected span), fetch the full limit again to patch it
+                if span > expected_span + tf_sec:
+                    is_full_fetch = True
+                    missed_candles = limit
+                elif diff > 0:
+                    calc_missed = int((diff // tf_sec) + 2)
+                    missed_candles = max(10, min(calc_missed, limit))
+            
+            # Only fetch delta if DB has enough data, otherwise fetch deeply backward                                                                                       
+            target_limit_ohlcv = max(limit, 300) if is_full_fetch else missed_candles
+            target_limit_funding = max(limit * 3, 300) if is_full_fetch else missed_candles * 3
             def fetch_paginated(fetch_func, target_symbol, target_limit, is_ohlcv=True):
                 collected = []
                 max_per_req = 100 if not is_ohlcv else 300
@@ -136,7 +162,30 @@ class DataFetcher:
         
         with SessionLocal() as db:
             db_okx = crud.get_market_data(db, symbol=db_symbol, timeframe=period, exchange="okx", limit=limit)
-            limit_to_fetch = min(limit, 20) if len(db_okx) >= limit else max(limit, 100)
+            
+            missed_candles = 20
+            if db_okx:
+                latest_ts = db_okx[-1].timestamp.timestamp()
+                first_ts = db_okx[0].timestamp.timestamp()
+                now_ts = time.time()
+                
+                tf_sec = 300
+                tf_l = period.lower()
+                if 'm' in tf_l: tf_sec = int(tf_l.replace('m', '')) * 60
+                elif 'h' in tf_l: tf_sec = int(tf_l.replace('h', '')) * 3600
+                elif 'd' in tf_l: tf_sec = int(tf_l.replace('d', '')) * 86400
+                
+                diff = now_ts - latest_ts
+                span = latest_ts - first_ts
+                expected_span = (len(db_okx) - 1) * tf_sec
+                
+                if span > expected_span + tf_sec:
+                    missed_candles = max(limit, 100)
+                elif diff > 0:
+                    calc_missed = int((diff // tf_sec) + 2)
+                    missed_candles = max(20, min(calc_missed, limit))
+            
+            limit_to_fetch = missed_candles if len(db_okx) >= limit else max(limit, 100)
 
             def fetch_okx():
                 okx_period = '5m'
@@ -238,12 +287,35 @@ class DataFetcher:
     def fetch_open_interest(self, symbol: str, limit: int = 90, timeframe: str = '1h') -> list:
         ccy = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[0]
         binance_symbol = f"{ccy}/USDT:USDT"
-        okx_symbol = f"{symbol}:USDT" if '/' in symbol and ':' not in symbol else symbol
+        okx_symbol = f"{symbol.split('/')[0]}-USDT-SWAP" if '/' in symbol else f"{symbol.split('-')[0]}-USDT-SWAP"
         db_symbol = symbol 
         
         with SessionLocal() as db:
             db_okx = crud.get_market_data(db, symbol=db_symbol, timeframe=timeframe, exchange="okx", limit=limit)
-            limit_to_fetch = min(limit, 20) if len(db_okx) >= limit else max(limit, 90)
+            
+            missed_candles = 20
+            if db_okx:
+                latest_ts = db_okx[-1].timestamp.timestamp()
+                first_ts = db_okx[0].timestamp.timestamp()
+                now_ts = time.time()
+                
+                tf_sec = 3600
+                tf_l = timeframe.lower()
+                if 'm' in tf_l: tf_sec = int(tf_l.replace('m', '')) * 60
+                elif 'h' in tf_l: tf_sec = int(tf_l.replace('h', '')) * 3600
+                elif 'd' in tf_l: tf_sec = int(tf_l.replace('d', '')) * 86400
+                
+                diff = now_ts - latest_ts
+                span = latest_ts - first_ts
+                expected_span = (len(db_okx) - 1) * tf_sec
+                
+                if span > expected_span + tf_sec:
+                    missed_candles = max(limit, 100)
+                elif diff > 0:
+                    calc_missed = int((diff // tf_sec) + 2)
+                    missed_candles = max(20, min(calc_missed, limit))
+            
+            limit_to_fetch = missed_candles if len(db_okx) >= limit else max(limit, 90)
 
             def fetch_okx():
                 okx_tf = '5m'
@@ -369,7 +441,30 @@ class DataFetcher:
         
         with SessionLocal() as db:
             db_okx = crud.get_market_data(db, symbol=db_symbol, timeframe=period, exchange="okx", limit=limit)
-            limit_to_fetch = min(limit, 20) if len(db_okx) >= limit else max(limit, 100)
+            
+            missed_candles = 20
+            if db_okx:
+                latest_ts = db_okx[-1].timestamp.timestamp()
+                first_ts = db_okx[0].timestamp.timestamp()
+                now_ts = time.time()
+                
+                tf_sec = 300
+                tf_l = period.lower()
+                if 'm' in tf_l: tf_sec = int(tf_l.replace('m', '')) * 60
+                elif 'h' in tf_l: tf_sec = int(tf_l.replace('h', '')) * 3600
+                elif 'd' in tf_l: tf_sec = int(tf_l.replace('d', '')) * 86400
+                
+                diff = now_ts - latest_ts
+                span = latest_ts - first_ts
+                expected_span = (len(db_okx) - 1) * tf_sec
+                
+                if span > expected_span + tf_sec:
+                    missed_candles = max(limit, 100)
+                elif diff > 0:
+                    calc_missed = int((diff // tf_sec) + 2)
+                    missed_candles = max(20, min(calc_missed, limit))
+            
+            limit_to_fetch = missed_candles if len(db_okx) >= limit else max(limit, 100)
 
             def fetch_okx():
                 okx_period = '5m'
