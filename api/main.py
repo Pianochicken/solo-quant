@@ -331,35 +331,62 @@ from api.core.execution import ExecutionHandler
 executor = ExecutionHandler(get_fetcher().exchange, dry_run=True)
 
 @app.get("/quant/smart-params/{symbol}")
-def get_smart_grid_params(symbol: str):
+def get_smart_grid_params(symbol: str, duration_days: int = 0):
     """
-    Returns AI-suggested Grid Parameters based on Liquidity Walls & Sentiment.
+    Returns AI-suggested Grid Parameters based on Liquidity Walls (Live) 
+    or Historical Volatility (Backtest).
     """
     formatted_symbol = symbol.replace('-', '/')
     try:
         fetcher = get_fetcher()
-        # 1. Fetch needed data
-        price_data = fetcher.fetch_market_data(formatted_symbol, limit=1)
-        current_price = price_data['price'][-1]['close']
         
-        orderbook = fetcher.fetch_order_book_depth(formatted_symbol, limit=400)
-        ls_ratio_history = fetcher.fetch_long_short_ratio(formatted_symbol, limit=100)
-        
-        # 2. Analyze Indicators
-        walls = IndicatorEngine.calculate_liquidity_density(orderbook, current_price)
-        z_score = IndicatorEngine.calculate_lsur_z_score(ls_ratio_history)
-        
-        # 3. Determine Smart Range
-        # Lower = First major Support Wall (Bid)
-        # Upper = First major Resistance Wall (Ask)
-        # Fallback: +/- 5% if no walls found close by
-        
-        lower_price = walls['bid_walls'][0]['price'] if walls['bid_walls'] else current_price * 0.95
-        upper_price = walls['ask_walls'][0]['price'] if walls['ask_walls'] else current_price * 1.05
-        
-        # Ensure range is valid
-        if lower_price >= current_price: lower_price = current_price * 0.98
-        if upper_price <= current_price: upper_price = current_price * 1.02
+        if duration_days > 0:
+            import time
+            # Backtest Mode: Establish range from the starting point in the past
+            end_time = int(time.time() * 1000)
+            start_time = end_time - (duration_days * 24 * 3600 * 1000)
+            
+            history = fetcher.fetch_history(formatted_symbol, start_time, end_time, '1h')
+            if not history:
+                raise HTTPException(status_code=404, detail="No historical data found for duration")
+            
+            start_price = history[0]['close']
+            current_price = history[-1]['close']
+            
+            # Volatility mapping logic based on duration and asset class
+            vol_factor = 0.03 if duration_days <= 3 else (0.06 if duration_days <= 7 else 0.125)
+            if 'BTC' not in symbol and 'ETH' not in symbol:
+                vol_factor *= 1.5 # Altcoins generally fluctuate more
+                
+            # Range encompassing both the historical start price and the current price
+            min_price = min(start_price, current_price)
+            max_price = max(start_price, current_price)
+                
+            lower_price = min_price * (1 - vol_factor)
+            upper_price = max_price * (1 + vol_factor)
+            z_score = 0.0 # Sentiment uncalculated for that specific exact split second
+            
+        else:
+            # 1. Fetch needed data (Live Mode)
+            price_data = fetcher.fetch_market_data(formatted_symbol, limit=1)
+            current_price = price_data['price'][-1]['close']
+            
+            orderbook = fetcher.fetch_order_book_depth(formatted_symbol, limit=400)
+            ls_ratio_history = fetcher.fetch_long_short_ratio(formatted_symbol, limit=100)
+            
+            # 2. Analyze Indicators
+            walls = IndicatorEngine.calculate_liquidity_density(orderbook, current_price)
+            z_score = IndicatorEngine.calculate_lsur_z_score(ls_ratio_history)
+            
+            # 3. Determine Smart Range
+            # Lower = First major Support Wall (Bid)
+            # Upper = First major Resistance Wall (Ask)
+            lower_price = walls['bid_walls'][0]['price'] if walls['bid_walls'] else current_price * 0.95
+            upper_price = walls['ask_walls'][0]['price'] if walls['ask_walls'] else current_price * 1.05
+            
+            # Ensure range is valid
+            if lower_price >= current_price: lower_price = current_price * 0.98
+            if upper_price <= current_price: upper_price = current_price * 1.02
         
         return {
             "symbol": formatted_symbol,
@@ -591,8 +618,9 @@ def run_backtest(params: BacktestParams):
                 "pnl_percent": pnl_percent,
                 "total_trades": len(result['trades'])
             },
+            "ai_metrics": result.get("ai_metrics", {}),
             "equity_curve": result['equity'],
-            "trades": result['trades'][-50:] # Limit to last 50 for UI
+            "trades": result['trades'] # Return all trades for full details
         }
         
     except Exception as e:

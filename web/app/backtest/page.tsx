@@ -6,6 +6,7 @@ import { ArrowLeft, Play, Calculator, Activity, TrendingUp, DollarSign, Brain, R
 import { createChart, ColorType, AreaSeries } from 'lightweight-charts';
 import { InfoTooltip } from '@/components/InfoTooltip';
 import Link from 'next/link';
+import { getPricePrecision } from '@/lib/utils';
 
 export default function BacktestPage() {
     const [symbol, setSymbol] = useState('BTC/USDT');
@@ -19,7 +20,7 @@ export default function BacktestPage() {
     const [result, setResult] = useState<BacktestResult | null>(null);
 
     // AI Mode
-    const [isAiMode, setIsAiMode] = useState(false);
+    const [isAiMode, setIsAiMode] = useState(true);
     const [useDynamicProfiles, setUseDynamicProfiles] = useState(true);
     const [aiLoading, setAiLoading] = useState(false);
 
@@ -64,9 +65,10 @@ export default function BacktestPage() {
     const fetchSmartParams = async () => {
         setAiLoading(true);
         try {
-            const params = await getSmartGridParams(symbol);
-            setLowerPrice(params.lower_price.toFixed(1));
-            setUpperPrice(params.upper_price.toFixed(1));
+            const params = await getSmartGridParams(symbol, parseInt(duration));
+            const precision = getPricePrecision(params.current_price, symbol).precision;
+            setLowerPrice(params.lower_price.toFixed(precision));
+            setUpperPrice(params.upper_price.toFixed(precision));
             setGridCount(params.grid_count.toString());
         } catch (e: any) {
             console.error(e);
@@ -84,6 +86,13 @@ export default function BacktestPage() {
         }
     };
 
+    // Auto-update AI params if duration changes while AI mode is active
+    useEffect(() => {
+        if (isAiMode) {
+            fetchSmartParams();
+        }
+    }, [duration, symbol]);
+
     const handleRun = async () => {
         setLoading(true);
         try {
@@ -97,7 +106,7 @@ export default function BacktestPage() {
                 is_ai_mode: isAiMode,
                 ranging_threshold: 3,
                 trending_threshold: 3,
-                enable_protection: false,
+                enable_protection: isAiMode,
                 use_dynamic_profiles: useDynamicProfiles
             };
             const res = await runBacktest(params);
@@ -158,7 +167,8 @@ export default function BacktestPage() {
                                     type="checkbox" 
                                     checked={useDynamicProfiles}
                                     onChange={(e) => setUseDynamicProfiles(e.target.checked)}
-                                    className="peer sr-only"
+                                    disabled={aiLoading}
+                                    className="peer sr-only disabled:opacity-50"
                                 />
                                 <div className="w-8 h-4 bg-zinc-800 rounded-full peer peer-checked:bg-purple-600 transition-colors"></div>
                                 <div className="absolute left-1 top-1.5 w-2 h-2 bg-zinc-400 rounded-full transition-all peer-checked:translate-x-4 peer-checked:bg-white"></div>
@@ -172,7 +182,8 @@ export default function BacktestPage() {
                             <select
                                 value={symbol}
                                 onChange={e => setSymbol(e.target.value)}
-                                className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 transition-colors outline-none"
+                                disabled={aiLoading}
+                                className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 transition-colors outline-none disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                                 <option value="BTC/USDT">BTC/USDT</option>
                                 <option value="ETH/USDT">ETH/USDT</option>
@@ -188,25 +199,25 @@ export default function BacktestPage() {
                                     Lower Price
                                     {isAiMode && <span className="text-purple-400">Auto</span>}
                                 </label>
-                                <input disabled={isAiMode} value={lowerPrice} onChange={e => setLowerPrice(e.target.value)} type="number" className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 outline-none disabled:opacity-50" />
+                                <input disabled={isAiMode || aiLoading} value={lowerPrice} onChange={e => setLowerPrice(e.target.value)} type="number" className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 outline-none disabled:opacity-50 disabled:cursor-not-allowed" />
                             </div>
                             <div>
                                 <label className="flex justify-between text-xs text-zinc-500 mb-1">
                                     Upper Price
                                     {isAiMode && <span className="text-purple-400">Auto</span>}
                                 </label>
-                                <input disabled={isAiMode} value={upperPrice} onChange={e => setUpperPrice(e.target.value)} type="number" className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 outline-none disabled:opacity-50" />
+                                <input disabled={isAiMode || aiLoading} value={upperPrice} onChange={e => setUpperPrice(e.target.value)} type="number" className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 outline-none disabled:opacity-50 disabled:cursor-not-allowed" />
                             </div>
                         </div>
 
                         <div className="grid grid-cols-2 gap-4">
                             <div>
                                 <label className="block text-xs text-zinc-500 mb-1">Grid Count</label>
-                                <input value={gridCount} onChange={e => setGridCount(e.target.value)} type="number" className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 outline-none" />
+                                <input disabled={aiLoading} value={gridCount} onChange={e => setGridCount(e.target.value)} type="number" className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 outline-none disabled:opacity-50 disabled:cursor-not-allowed" />
                             </div>
                             <div>
                                 <label className="block text-xs text-zinc-500 mb-1">Investment</label>
-                                <input value={investment} onChange={e => setInvestment(e.target.value)} type="number" className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 outline-none" />
+                                <input disabled={aiLoading} value={investment} onChange={e => setInvestment(e.target.value)} type="number" className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 outline-none disabled:opacity-50 disabled:cursor-not-allowed" />
                             </div>
                         </div>
 
@@ -215,7 +226,8 @@ export default function BacktestPage() {
                             <select
                                 value={duration}
                                 onChange={e => setDuration(e.target.value)}
-                                className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 transition-colors outline-none"
+                                disabled={aiLoading}
+                                className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 transition-colors outline-none disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                                 <option value="3">Last 3 Days</option>
                                 <option value="7">Last 7 Days</option>
@@ -225,11 +237,11 @@ export default function BacktestPage() {
 
                         <button
                             onClick={handleRun}
-                            disabled={loading}
-                            className="w-full mt-4 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white font-bold py-3 rounded-lg shadow-lg flex items-center justify-center gap-2 transition-all"
+                            disabled={loading || aiLoading}
+                            className="w-full mt-4 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-3 rounded-lg shadow-lg flex items-center justify-center gap-2 transition-all"
                         >
-                            {loading ? <Activity className="animate-spin w-5 h-5" /> : <Play className="w-5 h-5" />}
-                            {loading ? "Running Simulation..." : "Run Backtest"}
+                            {loading ? <Activity className="animate-spin w-5 h-5" /> : aiLoading ? <RefreshCw className="animate-spin w-5 h-5" /> : <Play className="w-5 h-5" />}
+                            {loading ? "Running Simulation..." : aiLoading ? "Fetching AI Parameters..." : "Run Backtest"}
                         </button>
                     </div>
                 </div>
@@ -250,11 +262,27 @@ export default function BacktestPage() {
                                 {result ? `${result.metrics.pnl_percent.toFixed(2)}%` : '--'}
                             </div>
                         </div>
-                        <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl">
-                            <span className="text-zinc-500 text-xs uppercase flex items-center gap-1"><Activity className="w-3 h-3" /> Total Trades</span>
-                            <div className="text-2xl font-mono font-bold mt-2 text-zinc-100">
-                                {result ? result.metrics.total_trades : '--'}
+                        <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl flex flex-col justify-between">
+                            <div>
+                                <span className="text-zinc-500 text-xs uppercase flex items-center gap-1"><Activity className="w-3 h-3" /> Total Trades</span>
+                                <div className="text-2xl font-mono font-bold mt-2 text-zinc-100">
+                                    {result ? result.metrics.total_trades : '--'}
+                                </div>
                             </div>
+                            {result?.ai_metrics && (
+                                <div className="mt-2 flex gap-2">
+                                    {result.ai_metrics.protected_buys > 0 && (
+                                        <span className="text-[10px] bg-blue-900/30 text-blue-400 px-2 py-0.5 rounded border border-blue-800" title="防摔刀 (Catching Knives) 攔截">
+                                            PAUSED {result.ai_metrics.protected_buys} BUYS
+                                        </span>
+                                    )}
+                                    {result.ai_metrics.protected_sells > 0 && (
+                                        <span className="text-[10px] bg-amber-900/30 text-amber-400 px-2 py-0.5 rounded border border-amber-800" title="防賣飛 (Selling Early) 攔截">
+                                            PAUSED {result.ai_metrics.protected_sells} SELLS
+                                        </span>
+                                    )}
+                                </div>
+                            )}
                         </div>
                     </div>
 
@@ -268,6 +296,62 @@ export default function BacktestPage() {
                             </div>
                         )}
                     </div>
+                    
+                    {/* Trade History (Max 50) */}
+                    {result && result.trades && result.trades.length > 0 && (
+                        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex flex-col h-min-[250px]">
+                            <h3 className="text-zinc-400 text-sm font-medium flex justify-between items-center mb-4">
+                                <span>Trade History ({result.trades.length})</span>
+                            </h3>
+                            <div className="overflow-auto max-h-[400px]">
+                                <table className="w-full text-left border-collapse text-sm text-zinc-300 font-mono">
+                                    <thead>
+                                        <tr className="text-zinc-500 border-b border-zinc-800 text-xs uppercase tracking-wider sticky top-0 bg-zinc-900 z-10">
+                                            <th className="py-2">Time</th>
+                                            <th className="py-2">Side</th>
+                                            <th className="py-2 text-right">Price</th>
+                                            <th className="py-2 text-right">Amount</th>
+                                            <th className="py-2 text-right">PnL</th>
+                                            <th className="py-2 text-right">Wallet Total</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {result.trades.map((trade: any, i: number) => {
+                                            const pricePrecision = getPricePrecision(trade.price, symbol).precision;
+                                            const isSell = trade.side === 'sell';
+                                            const pnlValue = trade.realized_pnl || 0;
+                                            
+                                            // Handle dynamically small tokens or regular cryptos for amount Display
+                                            const amtDisplay = trade.amount < 0.0001 ? Number(trade.amount).toFixed(8) : Number(trade.amount).toFixed(4);
+
+                                            return (
+                                                <tr key={i} className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors">
+                                                    <td className="py-2 text-zinc-400 whitespace-nowrap">
+                                                        {new Date(trade.time * 1000).toLocaleString(undefined, {
+                                                            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+                                                        })}
+                                                    </td>
+                                                    <td className="py-2 w-12">
+                                                        <span className={`px-2 py-0.5 rounded text-[10px] w-min min-w-[40px] text-center inline-block uppercase border ${
+                                                            trade.side === 'buy' ? 'border-emerald-900 bg-emerald-900/20 text-emerald-500' : 'border-red-900 bg-red-900/20 text-red-500'
+                                                        }`}>
+                                                            {trade.side}
+                                                        </span>
+                                                    </td>
+                                                    <td className="py-2 text-right text-zinc-100">${Number(trade.price).toFixed(pricePrecision)}</td>
+                                                    <td className="py-2 text-right text-zinc-400">{amtDisplay}</td>
+                                                    <td className={`py-2 text-right ${isSell && pnlValue > 0 ? 'text-emerald-400' : isSell && pnlValue < 0 ? 'text-red-400' : 'text-zinc-600'}`}>
+                                                        {isSell ? (pnlValue > 0 ? '+' : '') + pnlValue.toFixed(2) : '-'}
+                                                    </td>
+                                                    <td className="py-2 text-right text-zinc-100 font-bold">${Number(trade.equity).toFixed(2)}</td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
         </main>

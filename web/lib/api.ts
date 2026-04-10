@@ -125,6 +125,10 @@ export interface BacktestResult {
         pnl_percent: number;
         total_trades: number;
     };
+    ai_metrics?: {
+        protected_buys: number;
+        protected_sells: number;
+    };
     equity_curve: { time: number; value: number }[];
     trades: any[];
 }
@@ -148,8 +152,9 @@ export interface SmartGridParams {
     signal: string;
 }
 
-export async function getSmartGridParams(symbol: string): Promise<SmartGridParams> {
-    const res = await fetch(`${API_BASE}/quant/smart-params/${symbol.replace('/', '-')}`);
+export async function getSmartGridParams(symbol: string, durationDays: number = 0): Promise<SmartGridParams> {
+    const query = durationDays > 0 ? `?duration_days=${durationDays}` : '';
+    const res = await fetch(`${API_BASE}/quant/smart-params/${symbol.replace('/', '-')}${query}`);
     if (!res.ok) throw new Error('Smart Params Failed');
     return res.json();
 }

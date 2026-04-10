@@ -33,9 +33,13 @@ class Backtester:
         if not self.data:
             return {}
 
-        # 1. Initialization
+        self.protected_buys = 0
+        self.protected_sells = 0
+
+        # ... existing initialisation ...
         start_price = self.data[0]['close']
-        self._initialize_grid(start_price)
+        start_time = self.data[0]['time']
+        self._initialize_grid(start_price, start_time)
         
         # 2. Loop
         for candle in self.data:
@@ -51,10 +55,14 @@ class Backtester:
         return {
             "trades": self.trades,
             "equity": self.equity_curve,
-            "final_balance": self.equity_curve[-1]['value'] if self.equity_curve else 0
+            "final_balance": self.equity_curve[-1]['value'] if self.equity_curve else 0,
+            "ai_metrics": {
+                "protected_buys": self.protected_buys,
+                "protected_sells": self.protected_sells
+            }
         }
 
-    def _initialize_grid(self, current_price):
+    def _initialize_grid(self, current_price, time):
         """
         Buy initial inventory for grids ABOVE current price.
         """
@@ -88,6 +96,17 @@ class Backtester:
         self.balance -= initial_buy_cost
         self.inventory += len(sell_grids) * amount_per_grid
         self.amount_per_grid = amount_per_grid
+        
+        # Record initial grid inventory purchase if any
+        if self.inventory > 0:
+            self.trades.append({
+                "time": time,
+                "side": 'buy',
+                "price": current_price,
+                "amount": self.inventory,
+                "realized_pnl": 0.0,
+                "equity": self.balance + (self.inventory * current_price)
+            })
         
         # Setup Open Orders
         self.open_orders = []
@@ -125,12 +144,14 @@ class Backtester:
                 if APPLY_DIRECTIONAL_PROTECTION and order['side'] == 'sell' and regime_state.get('no_short', False):
                      # Market is heavily bullish. HODL inventory instead of selling early.
                      remaining_orders.append(order)
+                     self.protected_sells += 1
                      continue
                      
                 # Buys: We pause buying if the market is trending DOWN strongly (no_long = True)
                 if APPLY_DIRECTIONAL_PROTECTION and order['side'] == 'buy' and regime_state.get('no_long', False):
                      # Catching knives. Wait for trend to break before buying more grids.
                      remaining_orders.append(order)
+                     self.protected_buys += 1
                      continue
                 
                 # Legacy basic sentiment guard fallback if no regime data
@@ -168,18 +189,29 @@ class Backtester:
         price = order['price']
         cost = price * order['amount']
         
+        realized_pnl = 0.0
+        
         if order['side'] == 'buy':
             self.balance -= cost
             self.inventory += order['amount']
         else:
             self.balance += cost
             self.inventory -= order['amount']
+            # Compute Grid Profit for Sell Orders
+            idx = self._find_nearest_grid_index(price)
+            if idx > 0:
+                buy_price = self.bot.grids[idx - 1]
+                realized_pnl = (price - buy_price) * order['amount']
+                
+        current_equity = self.balance + (self.inventory * price)
             
         self.trades.append({
             "time": time,
             "side": order['side'],
             "price": price,
-            "amount": order['amount']
+            "amount": order['amount'],
+            "realized_pnl": realized_pnl,
+            "equity": current_equity
         })
 
     def _find_nearest_grid_index(self, price):
