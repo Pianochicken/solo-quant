@@ -61,6 +61,10 @@ Different asset classes exhibit different baseline metrics. For example, Altcoin
 5. **Frontend chart**: Add corresponding sub-chart in `AdvancedChart.tsx`
 6. **Add InfoTooltip**: Chinese explanation next to the label for user understanding
 
+### Dirty Data & Look-ahead Bias Prevention (Crucial)
+1. **Never peek into the future**: Absolutely prohibit `shift(-1)` or using future data to calculate indicators before the candle officially closes. All indicators must only calculate using `t` or `t-1` available data.
+2. **Dirty Data Handling**: Crypto APIs frequently return `NaN` or flash crash anomalies. You must explicitly handle missing data (e.g., `ffill()`) and clamp extreme outliers before feeding them into standard deviation models like Z-Score to prevent cascading math failures.
+
 ### Key Indicator Concepts
 - **OI cannot distinguish long vs short**: Every contract has a buyer AND seller. Use LSUR/CVD/FR for direction.
 - **OI percentile uses daily data**: Regardless of chart timeframe, percentile always uses daily OI (sufficient history).
@@ -174,10 +178,12 @@ OI percentile extreme (> 90%)
 > **Important: All rules above are initial hypotheses. Must be refined based on actual P&L data.**
 > Do not over-rely on any fixed strategy without backtesting and live verification.
 
-### Safety Mechanisms
-- `dry_run=True` to simulate, not execute
-- Panic Close button for emergencies
-- Exception handling + auto-retry
+### Safety Mechanisms & Risk Management (Exit Strategy)
+- `dry_run=True` to simulate, not execute.
+- **Panic Close** button for active emergency liquidation.
+- **Explicit Stop Loss (SL) & Take Profit (TP)**: Never rely solely on grid oscillation to exit. If the market regime fundamentally shifts against your position (e.g., Z-Score reversal), cut losses via a hard ATR-based stop or a reverse confluence signal.
+- **Dynamic Position Sizing**: Do not deploy 100% of capital indiscriminately. Scale down position size automatically when market volatility (ATR) or OI Percentile reaches extreme risk levels.
+- **Exception Handling & Auto-retry** for network/API failures.
 
 ---
 
@@ -186,16 +192,18 @@ OI percentile extreme (> 90%)
 No backtest = gambling. Every strategy change must be validated:
 
 ### Key Metrics
-- **Win Rate**: % of signals with correct direction
-- **Expected Value (EV)**: Average P&L per trade
-- **Max Drawdown**: Worst-case loss from peak
-- **Sharpe Ratio**: Risk-adjusted return
+- **Win Rate**: % of signals with correct direction.
+- **Total Trades**: Statistical significance. An 80% win rate on 5 trades is luck; 60% on 500 trades is structural alpha.
+- **Expected Value (EV)**: Average P&L per trade. *Must* factor in realistic exchange trading fees (e.g., 0.05% taker + predicted slippage).
+- **Max Drawdown**: Worst-case loss from peak to trough.
+- **Sharpe/Sortino Ratio**: Risk-adjusted return calculation.
 
-### Workflow
+### Workflow & Live-Backtest Parity
 1. Modify indicators/thresholds
 2. Run backtest (`scripts/tests/` or Backtester page)
-3. Compare win rate and EV before vs after
-4. Only deploy to live when data supports it
+3. Compare win rate, total trades, and EV before vs after
+4. **Live-Parity Check**: Before deploying, verify that the Backtest execution loop mirrors the Live execution loop (Event-driven Tick/Candle ingestion) exactly to prevent state desync.
+5. Only deploy to live when the statistical data solidly supports it.
 
 ---
 
@@ -221,6 +229,10 @@ No backtest = gambling. Every strategy change must be validated:
 - **System Resilience**:
   - Third-party exchange APIs *will* timeout or rate-limit. All external calls in `fetcher.py` must have robust `try/except` fallbacks and retry mechanisms.
 
-### 7.3 Version Control Workflow
+### 7.3 Observability & Production Logging
+- **Structured Logging**: Do not just rely on front-end charts or `print()`. Log critical trading decisions, order executions, and API failures in a structured format (JSON JSON/logger) for retroactive algorithmic debugging.
+- **Alerting Mechanisms**: Implement proactive hooks (like Telegram/Discord webhooks) for critical system lifecycle events: "Grid Started", "Stop Loss Hit", or "API Disconnection".
+
+### 7.4 Version Control Workflow
 - **Conventional Commits**: Strictly use standard prefix tags (`feat:`, `fix:`, `refactor:`, `test:`, `quant:`).
 - **Atomic Commits**: Separate UI layout changes from core quantitative logic modifications to maintain a clean git history and easy rollbacks (like our recent `KeyError` fix).
