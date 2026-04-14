@@ -34,6 +34,7 @@ class DataFetcher:
         
         with SessionLocal() as db:
             db_ohlcv = crud.get_market_data(db, symbol=ohlcv_symbol, timeframe=timeframe, exchange="okx", limit=limit)
+            db_ohlcv = [x for x in db_ohlcv if x.open is not None]
             
             is_full_fetch = len(db_ohlcv) < limit
             
@@ -162,6 +163,7 @@ class DataFetcher:
         
         with SessionLocal() as db:
             db_okx = crud.get_market_data(db, symbol=db_symbol, timeframe=period, exchange="okx", limit=limit)
+            db_okx = [x for x in db_okx if x.taker_buy_vol is not None]
             
             missed_candles = 20
             if db_okx:
@@ -292,6 +294,7 @@ class DataFetcher:
         
         with SessionLocal() as db:
             db_okx = crud.get_market_data(db, symbol=db_symbol, timeframe=timeframe, exchange="okx", limit=limit)
+            db_okx = [x for x in db_okx if x.open_interest is not None]
             
             missed_candles = 20
             if db_okx:
@@ -441,6 +444,7 @@ class DataFetcher:
         
         with SessionLocal() as db:
             db_okx = crud.get_market_data(db, symbol=db_symbol, timeframe=period, exchange="okx", limit=limit)
+            db_okx = [x for x in db_okx if x.long_short_ratio is not None]
             
             missed_candles = 20
             if db_okx:
