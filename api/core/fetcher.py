@@ -29,11 +29,14 @@ class DataFetcher:
         """
         Fetches OHLCV (Spot) and Funding Rate (Perp) History.
         """
-        ohlcv_symbol = symbol
-        funding_symbol = f"{symbol.split('/')[0]}-USDT-SWAP" if '/' in symbol else f"{symbol.split('-')[0]}-USDT-SWAP"
+        # Use swap symbol for fetching OHLCV to ensure maximum history (often listed before spot)
+        db_symbol = symbol
+        swap_symbol = f"{symbol.split('/')[0]}-USDT-SWAP" if '/' in symbol else f"{symbol.split('-')[0]}-USDT-SWAP"
+        fetch_symbol = swap_symbol
+        funding_symbol = swap_symbol
         
         with SessionLocal() as db:
-            db_ohlcv = crud.get_market_data(db, symbol=ohlcv_symbol, timeframe=timeframe, exchange="okx", limit=limit)
+            db_ohlcv = crud.get_market_data(db, symbol=db_symbol, timeframe=timeframe, exchange="okx", limit=limit)
             db_ohlcv = [x for x in db_ohlcv if x.open is not None]
             
             is_full_fetch = len(db_ohlcv) < limit
@@ -92,20 +95,20 @@ class DataFetcher:
                 return collected[-target_limit:]
 
             try:
-                ohlcv_batch = fetch_paginated(self.exchange.fetch_ohlcv, ohlcv_symbol, target_limit_ohlcv, is_ohlcv=True)
+                ohlcv_batch = fetch_paginated(self.exchange.fetch_ohlcv, fetch_symbol, target_limit_ohlcv, is_ohlcv=True)
                 if ohlcv_batch:
                     records = []
                     for x in ohlcv_batch:
                         records.append({
                             'timestamp': self._ms_to_dt(x[0]),
                             'exchange': 'okx',
-                            'symbol': ohlcv_symbol,
+                            'symbol': db_symbol,
                             'timeframe': timeframe,
                             'open': x[1], 'high': x[2], 'low': x[3], 'close': x[4], 'volume': x[5]
                         })
                     crud.upsert_market_data(db, records)
             except Exception as e:
-                print(f"Error fetching OHLCV for {ohlcv_symbol}: {e}")
+                print(f"Error fetching OHLCV for {fetch_symbol}: {e}")
 
             try:
                 funding_batch = fetch_paginated(self.exchange.fetch_funding_rate_history, funding_symbol, target_limit_funding, is_ohlcv=False)
@@ -122,7 +125,7 @@ class DataFetcher:
             except Exception as e:
                 print(f"Error fetching Funding for {funding_symbol}: {e}")
 
-            final_ohlcv = crud.get_market_data(db, symbol=ohlcv_symbol, timeframe=timeframe, exchange="okx", limit=limit)
+            final_ohlcv = crud.get_market_data(db, symbol=db_symbol, timeframe=timeframe, exchange="okx", limit=limit)
             price_data = []
             for x in final_ohlcv:
                 if x.open is not None:
@@ -162,13 +165,13 @@ class DataFetcher:
         db_symbol = symbol 
         
         with SessionLocal() as db:
-            db_okx = crud.get_market_data(db, symbol=db_symbol, timeframe=period, exchange="okx", limit=limit)
-            db_okx = [x for x in db_okx if x.taker_buy_vol is not None]
+            db_bin = crud.get_market_data(db, symbol=db_symbol, timeframe=period, exchange="binance", limit=limit)
+            db_bin = [x for x in db_bin if x.taker_buy_vol is not None]
             
             missed_candles = 20
-            if db_okx:
-                latest_ts = db_okx[-1].timestamp.timestamp()
-                first_ts = db_okx[0].timestamp.timestamp()
+            if db_bin:
+                latest_ts = db_bin[-1].timestamp.timestamp()
+                first_ts = db_bin[0].timestamp.timestamp()
                 now_ts = time.time()
                 
                 tf_sec = 300
@@ -179,7 +182,7 @@ class DataFetcher:
                 
                 diff = now_ts - latest_ts
                 span = latest_ts - first_ts
-                expected_span = (len(db_okx) - 1) * tf_sec
+                expected_span = (len(db_bin) - 1) * tf_sec
                 
                 if span > expected_span + tf_sec:
                     missed_candles = max(limit, 100)
@@ -187,46 +190,7 @@ class DataFetcher:
                     calc_missed = int((diff // tf_sec) + 2)
                     missed_candles = max(20, min(calc_missed, limit))
             
-            limit_to_fetch = missed_candles if len(db_okx) >= limit else max(limit, 100)
-
-            def fetch_okx():
-                okx_period = '5m'
-                p_lower = period.lower()
-                if p_lower in ['1h', '2h', '4h', '6h', '8h', '12h']: okx_period = '1H'
-                elif p_lower in ['1d', '2d', '3d', '1w', '1m']: okx_period = '1D'
-                    
-                if not hasattr(self.okx, 'publicGetRubikStatTakerVolume'): return
-                max_pages = min((limit_to_fetch + 99) // 100, 5)
-                end_ts = None
-                records = []
-                for page in range(max_pages):
-                    params = {'ccy': ccy, 'instType': 'CONTRACTS', 'period': okx_period}
-                    if end_ts is not None: params['end'] = str(end_ts)
-                    try:
-                        res = self.okx.publicGetRubikStatTakerVolume(params)
-                        if res.get('code') != '0': break
-                        data = res.get('data', [])
-                        if not data: break
-                        
-                        for item in data:
-                            records.append({
-                                'timestamp': self._ms_to_dt(int(item[0])),
-                                'exchange': 'okx',
-                                'symbol': db_symbol,
-                                'timeframe': period,
-                                'taker_sell_vol': float(item[1]),
-                                'taker_buy_vol': float(item[2])
-                            })
-                        earliest_ts = min(int(item[0]) for item in data)
-                        if end_ts is not None and earliest_ts >= end_ts: break
-                        end_ts = earliest_ts - 1
-                        if len(data) < 100: break
-                        if page < max_pages - 1: time.sleep(0.2)
-                    except Exception as e: print(f"Error fetching data: {e}"); break
-                
-                if records:
-                    with SessionLocal() as session:
-                        crud.upsert_market_data(session, records)
+            limit_to_fetch = missed_candles if len(db_bin) >= limit else max(limit, 100)
 
             def fetch_binance():
                 binance_period = '5m'
@@ -262,17 +226,13 @@ class DataFetcher:
                     with SessionLocal() as session:
                         crud.upsert_market_data(session, records)
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                executor.submit(fetch_okx)
-                executor.submit(fetch_binance)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                executor.submit(fetch_binance).result()
 
-            okx_data = crud.get_market_data(db, symbol=db_symbol, timeframe=period, exchange="okx", limit=limit)
             bin_data = crud.get_market_data(db, symbol=db_symbol, timeframe=period, exchange="binance", limit=limit)
-
-            df_okx = pd.DataFrame([{ "time": int(x.timestamp.timestamp()), "sell_vol": x.taker_sell_vol or 0, "buy_vol": x.taker_buy_vol or 0 } for x in okx_data])
             df_bin = pd.DataFrame([{ "time": int(x.timestamp.timestamp()), "sell_vol": x.taker_sell_vol or 0, "buy_vol": x.taker_buy_vol or 0 } for x in bin_data])
             
-            merged = pd.concat([df_okx, df_bin])
+            merged = df_bin
             if merged.empty: return []
 
             period_seconds = 300
@@ -558,9 +518,12 @@ class DataFetcher:
         all_ohlcv = []
         current_since = start_time
         
+        # Make sure Backtester also uses Swap markets for continuity
+        swap_symbol = f"{symbol.split('/')[0]}-USDT-SWAP" if '/' in symbol else f"{symbol.split('-')[0]}-USDT-SWAP"
+        
         while current_since < end_time:
             try:
-                batch = self.exchange.fetch_ohlcv(symbol, timeframe, since=current_since, limit=100)
+                batch = self.exchange.fetch_ohlcv(swap_symbol, timeframe, since=current_since, limit=100)
                 if not batch: break
                 all_ohlcv.extend(batch)
                 last_ts = batch[-1][0]
