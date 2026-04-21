@@ -4,7 +4,7 @@ from typing import List, Dict
 from api.quant.grid_bot import GridBot
 
 class Backtester:
-    def __init__(self, bot: GridBot, data: List[Dict], sentiment_data: List[Dict] = None, regime_data: Dict = None, enable_protection: bool = False):
+    def __init__(self, bot: GridBot, data: List[Dict], sentiment_data: List[Dict] = None, regime_data: Dict = None, enable_protection: bool = False, fee_rate: float = 0.0008):
         self.bot = bot
         self.data = data # List of {'time', 'open', 'high', 'low', 'close'}
         # sentiment_data: List of {'time', 'value'} (LSUR Z-Score)
@@ -12,6 +12,8 @@ class Backtester:
         self.sentiment_map = {d['time']: d['value'] for d in sentiment_data} if sentiment_data else {}
         self.regime_map = regime_data if regime_data else {}
         self.enable_protection = enable_protection
+        self.fee_rate = fee_rate
+        self.total_fees_paid = 0.0
         
         self.trades = []
         self.equity_curve = []
@@ -59,7 +61,8 @@ class Backtester:
             "ai_metrics": {
                 "protected_buys": self.protected_buys,
                 "protected_sells": self.protected_sells
-            }
+            },
+            "total_fees_paid": self.total_fees_paid
         }
 
     def _initialize_grid(self, current_price, time):
@@ -93,7 +96,9 @@ class Backtester:
             amount_per_grid *= factor
             initial_buy_cost = self.balance
             
-        self.balance -= initial_buy_cost
+        initial_fee = initial_buy_cost * self.fee_rate
+        self.total_fees_paid += initial_fee
+        self.balance -= (initial_buy_cost + initial_fee)
         self.inventory += len(sell_grids) * amount_per_grid
         self.amount_per_grid = amount_per_grid
         
@@ -104,6 +109,7 @@ class Backtester:
                 "side": 'buy',
                 "price": current_price,
                 "amount": self.inventory,
+                "fee": initial_fee,
                 "realized_pnl": 0.0,
                 "equity": self.balance + (self.inventory * current_price)
             })
@@ -188,20 +194,25 @@ class Backtester:
     def _execute_trade(self, order, time):
         price = order['price']
         cost = price * order['amount']
+        fee = cost * self.fee_rate
+        self.total_fees_paid += fee
         
         realized_pnl = 0.0
         
         if order['side'] == 'buy':
-            self.balance -= cost
+            self.balance -= (cost + fee)
             self.inventory += order['amount']
         else:
-            self.balance += cost
+            self.balance += (cost - fee)
             self.inventory -= order['amount']
             # Compute Grid Profit for Sell Orders
             idx = self._find_nearest_grid_index(price)
             if idx > 0:
                 buy_price = self.bot.grids[idx - 1]
-                realized_pnl = (price - buy_price) * order['amount']
+                raw_profit = (price - buy_price) * order['amount']
+                # Net realized PnL deducts BOTH the sell fee and the previously paid buy fee for this grid slot.
+                buy_fee = (buy_price * order['amount']) * self.fee_rate
+                realized_pnl = raw_profit - fee - buy_fee
                 
         current_equity = self.balance + (self.inventory * price)
             
@@ -210,6 +221,7 @@ class Backtester:
             "side": order['side'],
             "price": price,
             "amount": order['amount'],
+            "fee": fee,
             "realized_pnl": realized_pnl,
             "equity": current_equity
         })

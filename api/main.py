@@ -501,6 +501,7 @@ class BacktestParams(BaseModel):
     grid_count: int
     investment: float
     duration_days: int = 7 # Default backtest 7 days
+    fee_rate: float = 0.0008 # 0.08% default spot fee
     is_ai_mode: bool = False
     ranging_threshold: int = 3
     trending_threshold: int = 3
@@ -600,7 +601,8 @@ def run_backtest(params: BacktestParams):
             history, 
             sentiment_data=sentiment_data, 
             regime_data=regime_data,
-            enable_protection=params.enable_protection
+            enable_protection=params.enable_protection,
+            fee_rate=params.fee_rate
         )
         result = tester.run()
         
@@ -616,7 +618,8 @@ def run_backtest(params: BacktestParams):
                 "final_balance": final,
                 "pnl": pnl,
                 "pnl_percent": pnl_percent,
-                "total_trades": len(result['trades'])
+                "total_trades": len(result['trades']),
+                "total_fees_paid": result.get("total_fees_paid", 0.0)
             },
             "ai_metrics": result.get("ai_metrics", {}),
             "equity_curve": result['equity'],

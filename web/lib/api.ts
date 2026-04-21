@@ -112,10 +112,13 @@ export interface BacktestParams {
     grid_count: number;
     investment: number;
     duration_days: number;
+    fee_rate?: number;
     is_ai_mode?: boolean;
     ranging_threshold?: number;
     trending_threshold?: number;
-    enable_protection?: boolean;    use_dynamic_profiles?: boolean;}
+    enable_protection?: boolean;
+    use_dynamic_profiles?: boolean;
+}
 
 export interface BacktestResult {
     metrics: {
@@ -124,6 +127,7 @@ export interface BacktestResult {
         pnl: number;
         pnl_percent: number;
         total_trades: number;
+        total_fees_paid: number;
     };
     ai_metrics?: {
         protected_buys: number;

@@ -11,6 +11,7 @@ import { getPricePrecision } from '@/lib/utils';
 export default function BacktestPage() {
     const [symbol, setSymbol] = useState('BTC/USDT');
     const [duration, setDuration] = useState('7');
+    const [feeRate, setFeeRate] = useState('0.08'); // 0.08% default
     const [lowerPrice, setLowerPrice] = useState('60000');
     const [upperPrice, setUpperPrice] = useState('70000');
     const [gridCount, setGridCount] = useState('20');
@@ -103,6 +104,7 @@ export default function BacktestPage() {
                 grid_count: parseInt(gridCount),
                 investment: parseFloat(investment),
                 duration_days: parseInt(duration),
+                fee_rate: parseFloat(feeRate) / 100,
                 is_ai_mode: isAiMode,
                 ranging_threshold: 3,
                 trending_threshold: 3,
@@ -221,18 +223,31 @@ export default function BacktestPage() {
                             </div>
                         </div>
 
-                        <div>
-                            <label className="block text-xs text-zinc-500 mb-1">Duration (Days)</label>
-                            <select
-                                value={duration}
-                                onChange={e => setDuration(e.target.value)}
-                                disabled={aiLoading}
-                                className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 transition-colors outline-none disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                                <option value="3">Last 3 Days</option>
-                                <option value="7">Last 7 Days</option>
-                                <option value="30">Last 30 Days</option>
-                            </select>
+                        <div className="grid grid-cols-2 gap-4">
+                            <div>
+                                <label className="block text-xs text-zinc-500 mb-1">Duration (Days)</label>
+                                <select
+                                    value={duration}
+                                    onChange={e => setDuration(e.target.value)}
+                                    disabled={aiLoading}
+                                    className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 transition-colors outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    <option value="3">Last 3 Days</option>
+                                    <option value="7">Last 7 Days</option>
+                                    <option value="30">Last 30 Days</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-xs text-zinc-500 mb-1">Trading Fee (%)</label>
+                                <input
+                                    type="number"
+                                    step="0.01"
+                                    value={feeRate}
+                                    onChange={e => setFeeRate(e.target.value)}
+                                    disabled={aiLoading}
+                                    className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+                                />
+                            </div>
                         </div>
 
                         <button
@@ -249,11 +264,17 @@ export default function BacktestPage() {
                 {/* Results Panel */}
                 <div className="col-span-12 lg:col-span-8 flex flex-col gap-6">
                     {/* Metrics Cards */}
-                    <div className="grid grid-cols-3 gap-4">
+                    <div className="grid grid-cols-4 gap-4">
                         <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl">
                             <span className="text-zinc-500 text-xs uppercase flex items-center gap-1"><DollarSign className="w-3 h-3" /> PnL (Net)</span>
                             <div className={`text-2xl font-mono font-bold mt-2 ${result && result.metrics.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                                 {result ? `$${result.metrics.pnl.toFixed(2)}` : '--'}
+                            </div>
+                        </div>
+                        <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl">
+                            <span className="text-zinc-500 text-xs uppercase flex items-center gap-1"><Calculator className="w-3 h-3" /> Total Fees</span>
+                            <div className="text-xl font-mono font-bold mt-2 text-zinc-100">
+                                {result ? `$${result.metrics.total_fees_paid?.toFixed(4) || '0.0000'}` : '--'}
                             </div>
                         </div>
                         <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl">
@@ -311,6 +332,7 @@ export default function BacktestPage() {
                                             <th className="py-2">Side</th>
                                             <th className="py-2 text-right">Price</th>
                                             <th className="py-2 text-right">Amount</th>
+                                            <th className="py-2 text-right">Fee Paid</th>
                                             <th className="py-2 text-right">PnL</th>
                                             <th className="py-2 text-right">Wallet Total</th>
                                         </tr>
@@ -340,6 +362,7 @@ export default function BacktestPage() {
                                                     </td>
                                                     <td className="py-2 text-right text-zinc-100">${Number(trade.price).toFixed(pricePrecision)}</td>
                                                     <td className="py-2 text-right text-zinc-400">{amtDisplay}</td>
+                                                    <td className="py-2 text-right text-zinc-500">${(trade.fee || 0).toFixed(4)}</td>
                                                     <td className={`py-2 text-right ${isSell && pnlValue > 0 ? 'text-emerald-400' : isSell && pnlValue < 0 ? 'text-red-400' : 'text-zinc-600'}`}>
                                                         {isSell ? (pnlValue > 0 ? '+' : '') + pnlValue.toFixed(2) : '-'}
                                                     </td>
