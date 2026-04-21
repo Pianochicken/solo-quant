@@ -48,7 +48,7 @@ export const InfoTooltip = ({ text }: { text: string }) => {
             </div>
             {visible && createPortal(
                 <div
-                    className="fixed w-[200px] p-2 bg-zinc-800 border border-zinc-700 rounded text-xs text-zinc-200 shadow-xl z-[9999] pointer-events-none"
+                    className="fixed w-[200px] p-2 bg-zinc-800 border border-zinc-700 rounded text-xs text-zinc-200 shadow-xl z-[9999] pointer-events-none whitespace-pre-wrap"
                     style={{
                         top: `${position.top}px`,
                         left: `${position.left}px`,

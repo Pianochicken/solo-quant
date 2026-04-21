@@ -175,8 +175,17 @@ export default function BacktestPage() {
                                 <div className="w-8 h-4 bg-zinc-800 rounded-full peer peer-checked:bg-purple-600 transition-colors"></div>
                                 <div className="absolute left-1 top-1.5 w-2 h-2 bg-zinc-400 rounded-full transition-all peer-checked:translate-x-4 peer-checked:bg-white"></div>
                             </div>
-                            <div className="text-xs text-zinc-300 font-medium">
+                            <div className="text-xs text-zinc-300 font-medium flex items-center">
                                 動態幣種參數 (Dynamic Profiles)
+                                <InfoTooltip text={
+                                    !useDynamicProfiles
+                                    ? "【固定標準參數】\nRSI: 25~75\nFunding: -0.4% ~ +1.0%\nEMA偏離: 標準閾值"
+                                    : symbol.includes('SOL') || symbol.includes('ETH') 
+                                    ? "【Midcap 擴寬參數】\nRSI: 20~80\nFunding: -0.6% ~ +1.5%\nEMA偏離: 加寬 50%" 
+                                    : symbol.includes('HYPE') || symbol.includes('CC') 
+                                    ? "【Alt 極端參數】\nRSI: 15~85\nFunding: -1.0% ~ +2.5%\nEMA偏離: 加倍 100%" 
+                                    : "【Major 標準參數】\nRSI: 25~75\nFunding: -0.4% ~ +1.0%\nEMA偏離: 標準閾值"
+                                } />
                             </div>
                         </label>
                         <div>
