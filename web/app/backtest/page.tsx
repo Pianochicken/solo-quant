@@ -140,7 +140,7 @@ export default function BacktestPage() {
 
             <div className="grid grid-cols-12 gap-8">
                 {/* Configuration Panel */}
-                <div className="col-span-12 lg:col-span-4 bg-zinc-900/50 p-6 rounded-xl border border-zinc-800 h-fit">
+                <div className="col-span-12 lg:col-span-4 bg-zinc-900/50 p-6 rounded-xl border border-zinc-800">
                     <div className="flex justify-between items-center mb-6">
                         <h2 className="text-lg font-bold text-white flex items-center gap-2">
                             <Calculator className="w-5 h-5 text-purple-400" />
@@ -274,62 +274,68 @@ export default function BacktestPage() {
                 <div className="col-span-12 lg:col-span-8 flex flex-col gap-6">
                     {/* Metrics Cards */}
                     <div className="grid grid-cols-4 gap-4">
-                        <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl">
-                            <span className="text-zinc-500 text-xs uppercase flex items-center gap-1"><DollarSign className="w-3 h-3" /> PnL (Net)</span>
-                            <div className={`text-2xl font-mono font-bold mt-2 ${result && result.metrics.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                {result ? `$${result.metrics.pnl.toFixed(2)}` : '--'}
+                        <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl min-h-[120px] flex flex-col justify-between">
+                            <div>
+                                <span className="text-zinc-500 text-xs uppercase flex items-center gap-1"><DollarSign className="w-3 h-3" /> PnL (Net)</span>
+                                <div className={`text-2xl font-mono font-bold mt-2 ${result && result.metrics.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                    {result ? `$${result.metrics.pnl.toFixed(2)}` : '--'}
+                                </div>
                             </div>
                         </div>
-                        <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl">
-                            <span className="text-zinc-500 text-xs uppercase flex items-center gap-1"><Calculator className="w-3 h-3" /> Total Fees</span>
-                            <div className="text-xl font-mono font-bold mt-2 text-zinc-100">
-                                {result ? `$${result.metrics.total_fees_paid?.toFixed(4) || '0.0000'}` : '--'}
+                        <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl min-h-[120px] flex flex-col justify-between">
+                            <div>
+                                <span className="text-zinc-500 text-xs uppercase flex items-center gap-1"><Calculator className="w-3 h-3" /> Total Fees</span>
+                                <div className="text-xl font-mono font-bold mt-2 text-zinc-100">
+                                    {result ? `$${result.metrics.total_fees_paid?.toFixed(4) || '0.0000'}` : '--'}
+                                </div>
                             </div>
                         </div>
-                        <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl">
-                            <span className="text-zinc-500 text-xs uppercase flex items-center gap-1"><TrendingUp className="w-3 h-3" /> Return %</span>
-                            <div className={`text-2xl font-mono font-bold mt-2 ${result && result.metrics.pnl_percent >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                {result ? `${result.metrics.pnl_percent.toFixed(2)}%` : '--'}
+                        <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl min-h-[120px] flex flex-col justify-between">
+                            <div>
+                                <span className="text-zinc-500 text-xs uppercase flex items-center gap-1"><TrendingUp className="w-3 h-3" /> Return %</span>
+                                <div className={`text-2xl font-mono font-bold mt-2 ${result && result.metrics.pnl_percent >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                    {result ? `${result.metrics.pnl_percent.toFixed(2)}%` : '--'}
+                                </div>
                             </div>
                         </div>
-                        <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl flex flex-col justify-between">
+                        <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl min-h-[120px] flex flex-col justify-between">
                             <div>
                                 <span className="text-zinc-500 text-xs uppercase flex items-center gap-1"><Activity className="w-3 h-3" /> Total Trades</span>
                                 <div className="text-2xl font-mono font-bold mt-2 text-zinc-100">
                                     {result ? result.metrics.total_trades : '--'}
                                 </div>
                             </div>
-                            {result?.ai_metrics && (
-                                <div className="mt-2 flex gap-2">
-                                    {result.ai_metrics.protected_buys > 0 && (
-                                        <span className="text-[10px] bg-blue-900/30 text-blue-400 px-2 py-0.5 rounded border border-blue-800" title="防摔刀 (Catching Knives) 攔截">
-                                            PAUSED {result.ai_metrics.protected_buys} BUYS
-                                        </span>
-                                    )}
-                                    {result.ai_metrics.protected_sells > 0 && (
-                                        <span className="text-[10px] bg-amber-900/30 text-amber-400 px-2 py-0.5 rounded border border-amber-800" title="防賣飛 (Selling Early) 攔截">
-                                            PAUSED {result.ai_metrics.protected_sells} SELLS
-                                        </span>
-                                    )}
-                                </div>
-                            )}
+                            <div className="mt-2 flex gap-1 flex-wrap min-h-[22px]">
+                                {(result?.ai_metrics?.protected_buys ?? 0) > 0 && (
+                                    <span className="text-[10px] bg-blue-900/30 text-blue-400 px-2 py-0.5 rounded border border-blue-800" title="防摔刀 (Catching Knives) 攔截">
+                                        PAUSED {result!.ai_metrics!.protected_buys}
+                                    </span>
+                                )}
+                                {(result?.ai_metrics?.protected_sells ?? 0) > 0 && (
+                                    <span className="text-[10px] bg-amber-900/30 text-amber-400 px-2 py-0.5 rounded border border-amber-800" title="防賣飛 (Selling Early) 攔截">
+                                        PAUSED {result!.ai_metrics!.protected_sells}
+                                    </span>
+                                )}
+                            </div>
                         </div>
                     </div>
 
                     {/* Chart */}
-                    <div className="flex-1 bg-zinc-900 border border-zinc-800 rounded-xl p-4 min-h-[400px] flex flex-col">
+                    <div className="flex-1 bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex flex-col relative">
                         <h3 className="text-zinc-400 text-sm font-medium mb-4">Equity Curve</h3>
-                        <div ref={chartContainerRef} className="flex-1 w-full" />
+                        <div ref={chartContainerRef} className="flex-1 w-full min-h-[400px] relative" />
                         {!result && !loading && (
-                            <div className="flex h-full items-center justify-center text-zinc-600 italic">
+                            <div className="absolute inset-0 flex items-center justify-center text-zinc-600 italic pointer-events-none">
                                 Run a simulation to view results.
                             </div>
                         )}
                     </div>
-                    
-                    {/* Trade History (Max 50) */}
-                    {result && result.trades && result.trades.length > 0 && (
-                        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex flex-col h-min-[250px]">
+                </div>
+            </div>
+
+            {/* Trade History */}
+            {result && result.trades && result.trades.length > 0 && (
+                <div className="mt-8 bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex flex-col h-min-[250px]">
                             <h3 className="text-zinc-400 text-sm font-medium flex justify-between items-center mb-4">
                                 <span>Trade History ({result.trades.length})</span>
                             </h3>
@@ -384,8 +390,6 @@ export default function BacktestPage() {
                             </div>
                         </div>
                     )}
-                </div>
-            </div>
         </main>
     )
 }
