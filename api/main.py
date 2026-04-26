@@ -630,3 +630,228 @@ def run_backtest(params: BacktestParams):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+# --- Signal-Driven Backtesting API (v2) ---
+from api.quant.signal_backtester import SignalBacktester
+from api.quant.signal_strategy import SignalStrategyConfig
+
+class SignalBacktestParams(BaseModel):
+    symbol: str = 'BTC/USDT'
+    investment: float = 10000.0
+    duration_days: int = 30
+    timeframe: str = '1h'
+    # Risk & Position Management
+    risk_per_trade_pct: float = 2.0
+    take_profit_pct: float = 4.0
+    stop_loss_pct: float = 2.0
+    trailing_stop_pct: float = 1.5
+    trailing_activation_pct: float = 1.0
+    max_positions: int = 3
+    fee_rate: float = 0.0008
+    allow_short: bool = True
+    reverse_on_signal: bool = True
+    # Confluence Signal Tuning
+    ranging_threshold: int = 3
+    trending_threshold: int = 3
+    enable_protection: bool = True
+    use_dynamic_profiles: bool = True
+
+@app.post("/quant/signal-backtest")
+def run_signal_backtest(params: SignalBacktestParams):
+    """
+    Run a Signal-driven backtest using confluence signals as entry triggers,
+    with TP/SL/Trailing Stop position management.
+    Supports both Long and Short positions.
+    """
+    try:
+        formatted_symbol = params.symbol.replace('-', '/')
+        fetcher = get_fetcher()
+
+        # 1. Fetch Price History
+        end_time = int(time.time() * 1000)
+        start_time = end_time - (params.duration_days * 24 * 60 * 60 * 1000)
+
+        history = fetcher.fetch_history(formatted_symbol, start_time, end_time, params.timeframe)
+
+        if not history:
+            raise HTTPException(status_code=404, detail="No historical data found")
+
+        # 2. Fetch & Align All Indicator Data (reusing existing pipeline)
+        import pandas as pd
+        import numpy as np
+
+        hours_needed = params.duration_days * 24
+        tf_map = {
+            '15m': '5m', '1h': '1H', '4h': '1H', '1d': '1D',
+        }
+        indicator_period = tf_map.get(params.timeframe, '1H')
+
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+            future_ls = pool.submit(fetcher.fetch_long_short_ratio, formatted_symbol, period=indicator_period, limit=hours_needed + 100)
+            future_ls_daily = pool.submit(fetcher.fetch_long_short_ratio, formatted_symbol, period='1D', limit=100)
+            future_taker = pool.submit(fetcher.fetch_taker_volume, formatted_symbol, period=indicator_period, limit=hours_needed + 100)
+            future_taker_daily = pool.submit(fetcher.fetch_taker_volume, formatted_symbol, period='1D', limit=100)
+            future_oi = pool.submit(fetcher.fetch_open_interest, formatted_symbol, timeframe=indicator_period, limit=hours_needed + 100)
+            future_oi_daily = pool.submit(fetcher.fetch_open_interest, formatted_symbol, timeframe='1D', limit=100)
+
+            ls_ratio_raw = future_ls.result()
+            ls_ratio_daily = future_ls_daily.result()
+            taker_vol_raw = future_taker.result()
+            taker_vol_daily = future_taker_daily.result()
+            oi_raw = future_oi.result()
+            oi_daily = future_oi_daily.result()
+
+        # --- Merge high-res + daily history ---
+        def merge_history(high_res, daily):
+            combined = (high_res or []) + (daily or [])
+            if not combined:
+                return []
+            df = pd.DataFrame(combined)
+            df['time'] = df['time'].astype(int)
+            df.drop_duplicates(subset=['time'], keep='first', inplace=True)
+            df.sort_values('time', inplace=True)
+            return df.to_dict('records')
+
+        df_price = pd.DataFrame(history)
+        df_price['time'] = df_price['time'].astype(int)
+        df_price.sort_values('time', inplace=True)
+
+        ls_ratio_history = merge_history(ls_ratio_raw, ls_ratio_daily)
+
+        # Align LSUR
+        if ls_ratio_history:
+            df_ls = pd.DataFrame(ls_ratio_history)
+            df_ls['time'] = df_ls['time'].astype(int)
+            df_ls.sort_values('time', inplace=True)
+            merged_ls = pd.merge_asof(df_price[['time']], df_ls[['time', 'value']], on='time', direction='backward')
+            merged_ls['value'] = merged_ls['value'].ffill().fillna(0)
+            ls_aligned = merged_ls[['time', 'value']].to_dict('records')
+        else:
+            ls_aligned = []
+
+        lsur_z_aligned = IndicatorEngine.calculate_lsur_z_score_history(ls_aligned)
+
+        # Align OI
+        combined_oi = merge_history(oi_raw, oi_daily)
+        if combined_oi:
+            df_oi = pd.DataFrame(combined_oi)
+            merged_oi = pd.merge_asof(df_price[['time']], df_oi[['time', 'value']], on='time', direction='backward')
+            merged_oi['value'] = merged_oi['value'].ffill().fillna(0)
+            oi_aligned = merged_oi[['time', 'value']].to_dict('records')
+        else:
+            oi_aligned = []
+
+        oi_percentile = IndicatorEngine.calculate_oi_percentile(oi_daily)
+
+        # Align CVD
+        taker_volume = merge_history(taker_vol_raw, taker_vol_daily)
+        if taker_volume:
+            price_start = df_price['time'].min()
+            price_end = df_price['time'].max()
+            filtered_taker = [t for t in taker_volume if price_start <= t['time'] <= price_end]
+            cvd_raw = IndicatorEngine.calculate_cvd_history(filtered_taker)
+            if cvd_raw:
+                df_cvd = pd.DataFrame(cvd_raw)
+                df_cvd['time'] = df_cvd['time'].astype(int)
+                df_cvd.sort_values('time', inplace=True)
+                merged_cvd = pd.merge_asof(df_price[['time']], df_cvd[['time', 'value']], on='time', direction='backward')
+                merged_cvd['value'] = merged_cvd['value'].ffill().fillna(0)
+                cvd_aligned = merged_cvd[['time', 'value']].to_dict('records')
+            else:
+                cvd_aligned = []
+        else:
+            cvd_aligned = []
+
+        # Align Funding Rate
+        data = fetcher.fetch_market_data(formatted_symbol, params.timeframe, limit=1)
+        funding_raw = data.get('funding', [])
+        if funding_raw:
+            df_funding = pd.DataFrame(funding_raw)
+            df_funding['time'] = df_funding['time'].astype(int)
+            df_funding.sort_values('time', inplace=True)
+            merged_funding = pd.merge_asof(df_price[['time']], df_funding[['time', 'value']], on='time', direction='backward')
+            merged_funding['value'] = merged_funding['value'].ffill().fillna(0)
+            funding_aligned = merged_funding[['time', 'value']].to_dict('records')
+        else:
+            funding_aligned = []
+
+        # EMA, RSI, BB
+        ema_trend = IndicatorEngine.calculate_ema_trend(history, symbol=formatted_symbol)
+        rsi_history = IndicatorEngine.calculate_rsi(history)
+        bb_data = IndicatorEngine.calculate_bollinger_bands(history)
+        bb_pctb = bb_data['bb_pctb']
+
+        # 3. Generate Confluence Signals
+        confluence_markers, market_regime = IndicatorEngine.calculate_confluence_signals(
+            price_data=history,
+            lsur_z_aligned=lsur_z_aligned,
+            cvd_aligned=cvd_aligned,
+            oi_percentile=oi_percentile,
+            funding_aligned=funding_aligned,
+            trend_state=ema_trend['trend_state'],
+            rsi_aligned=rsi_history,
+            ema_fast_aligned=ema_trend['ema_fast'],
+            bb_pctb_aligned=bb_pctb,
+            timeframe=params.timeframe,
+            oi_aligned=oi_aligned,
+            ranging_threshold=params.ranging_threshold,
+            trending_threshold=params.trending_threshold,
+            enable_protection=params.enable_protection,
+            symbol=formatted_symbol,
+            use_dynamic_profiles=params.use_dynamic_profiles,
+        )
+
+        # 4. Build Config & Run Signal Backtester
+        config = SignalStrategyConfig(
+            symbol=formatted_symbol,
+            investment=params.investment,
+            risk_per_trade_pct=params.risk_per_trade_pct,
+            take_profit_pct=params.take_profit_pct,
+            stop_loss_pct=params.stop_loss_pct,
+            trailing_stop_pct=params.trailing_stop_pct,
+            trailing_activation_pct=params.trailing_activation_pct,
+            max_positions=params.max_positions,
+            fee_rate=params.fee_rate,
+            allow_short=params.allow_short,
+            reverse_on_signal=params.reverse_on_signal,
+        )
+        config.validate()
+
+        tester = SignalBacktester(config, history, confluence_markers)
+        result = tester.run()
+
+        # 5. Build Response
+        initial = params.investment
+        final = result['final_balance']
+        pnl = final - initial
+        pnl_percent = (pnl / initial) * 100
+
+        return {
+            "metrics": {
+                "initial_balance": initial,
+                "final_balance": round(final, 2),
+                "pnl": round(pnl, 2),
+                "pnl_percent": round(pnl_percent, 2),
+                "total_trades": result['metrics']['total_trades'],
+                "win_rate": result['metrics']['win_rate'],
+                "winning_trades": result['metrics']['winning_trades'],
+                "losing_trades": result['metrics']['losing_trades'],
+                "avg_win_pct": result['metrics']['avg_win_pct'],
+                "avg_loss_pct": result['metrics']['avg_loss_pct'],
+                "profit_factor": result['metrics']['profit_factor'],
+                "max_drawdown_pct": result['metrics']['max_drawdown_pct'],
+                "sharpe_ratio": result['metrics']['sharpe_ratio'],
+                "total_fees_paid": result['total_fees_paid'],
+            },
+            "equity_curve": result['equity'],
+            "trades": result['trades'],
+            "signals_used": confluence_markers,
+            "positions": result['positions'],
+            "price_data": history,
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
