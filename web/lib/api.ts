@@ -162,3 +162,95 @@ export async function getSmartGridParams(symbol: string, durationDays: number = 
     if (!res.ok) throw new Error('Smart Params Failed');
     return res.json();
 }
+
+// --- Signal-Driven Strategy API (v2) ---
+
+export interface SignalBacktestParams {
+    symbol: string;
+    investment: number;
+    duration_days: number;
+    timeframe: string;
+    risk_per_trade_pct: number;
+    take_profit_pct: number;
+    stop_loss_pct: number;
+    trailing_stop_pct: number;
+    trailing_activation_pct: number;
+    max_positions: number;
+    fee_rate: number;
+    allow_short: boolean;
+    reverse_on_signal: boolean;
+    ranging_threshold: number;
+    trending_threshold: number;
+    enable_protection: boolean;
+    use_dynamic_profiles: boolean;
+}
+
+export interface SignalBacktestMetrics {
+    initial_balance: number;
+    final_balance: number;
+    pnl: number;
+    pnl_percent: number;
+    total_trades: number;
+    win_rate: number;
+    winning_trades: number;
+    losing_trades: number;
+    avg_win_pct: number;
+    avg_loss_pct: number;
+    profit_factor: number;
+    max_drawdown_pct: number;
+    sharpe_ratio: number;
+    total_fees_paid: number;
+}
+
+export interface SignalTrade {
+    time: number;
+    side: string;       // 'open_long' | 'open_short' | 'close_long' | 'close_short'
+    price: number;
+    amount: number;
+    fee: number;
+    realized_pnl: number;
+    exit_reason: string; // 'tp' | 'sl' | 'trailing' | 'signal_reverse' | 'backtest_end' | ''
+    position_id: string;
+    equity: number;
+}
+
+export interface SignalPosition {
+    id: string;
+    side: string;
+    entry_price: number;
+    entry_time: number;
+    size: number;
+    cost: number;
+    take_profit: number;
+    stop_loss: number;
+    trailing_active: boolean;
+    trailing_stop_price: number;
+    exit_price: number;
+    exit_time: number;
+    exit_reason: string;
+    realized_pnl: number;
+    fees_paid: number;
+    is_closed: boolean;
+}
+
+export interface SignalBacktestResult {
+    metrics: SignalBacktestMetrics;
+    equity_curve: { time: number; value: number }[];
+    trades: SignalTrade[];
+    signals_used: any[];
+    positions: SignalPosition[];
+    price_data: { time: number; open: number; high: number; low: number; close: number }[];
+}
+
+export async function runSignalBacktest(params: SignalBacktestParams): Promise<SignalBacktestResult> {
+    const res = await fetch(`${API_BASE}/quant/signal-backtest`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+    });
+    if (!res.ok) {
+        const detail = await res.text();
+        throw new Error(`Signal Backtest Failed: ${detail}`);
+    }
+    return res.json();
+}
