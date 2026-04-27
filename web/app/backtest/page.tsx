@@ -41,6 +41,7 @@ export default function BacktestPage() {
     // AI Mode (grid only)
     const [isAiMode, setIsAiMode] = useState(true);
     const [useDynamicProfiles, setUseDynamicProfiles] = useState(true);
+    const [enableProtection, setEnableProtection] = useState(false); // Default to false to match main page
     const [aiLoading, setAiLoading] = useState(false);
 
     // Unified result accessors
@@ -197,7 +198,7 @@ export default function BacktestPage() {
                     reverse_on_signal: reverseOnSignal,
                     ranging_threshold: 3,
                     trending_threshold: 3,
-                    enable_protection: true,
+                    enable_protection: enableProtection,
                     use_dynamic_profiles: useDynamicProfiles,
                 };
                 const res = await runSignalBacktest(params);
@@ -280,6 +281,20 @@ export default function BacktestPage() {
                                 <InfoTooltip text={!useDynamicProfiles ? "【固定標準參數】\nRSI: 25~75\nFunding: -0.4% ~ +1.0%\nEMA偏離: 標準閾值" : symbol.includes('SOL') || symbol.includes('ETH') ? "【Midcap 擴寬參數】\nRSI: 20~80\nFunding: -0.6% ~ +1.5%\nEMA偏離: 加寬 50%" : symbol.includes('HYPE') || symbol.includes('CC') ? "【Alt 極端參數】\nRSI: 15~85\nFunding: -1.0% ~ +2.5%\nEMA偏離: 加倍 100%" : "【Major 標準參數】\nRSI: 25~75\nFunding: -0.4% ~ +1.0%\nEMA偏離: 標準閾值"} />
                             </div>
                         </label>
+                        
+                        {strategyMode === 'signal' && (
+                            <label className="flex items-start gap-2 cursor-pointer group mb-2">
+                                <div className="relative flex items-center pt-1">
+                                    <input type="checkbox" checked={enableProtection} onChange={(e) => setEnableProtection(e.target.checked)} className="peer sr-only" />
+                                    <div className="w-8 h-4 bg-zinc-800 rounded-full peer peer-checked:bg-purple-600 transition-colors"></div>
+                                    <div className="absolute left-1 top-1.5 w-2 h-2 bg-zinc-400 rounded-full transition-all peer-checked:translate-x-4 peer-checked:bg-white"></div>
+                                </div>
+                                <div className="text-xs text-zinc-300 font-medium flex items-center">
+                                    開啟趨勢過濾 (Regime Filter)
+                                    <InfoTooltip text="關閉可測試全部訊號（符合主頁預設值）。開啟則會過濾掉逆勢操作。" />
+                                </div>
+                            </label>
+                        )}
 
                         {/* Common: Symbol */}
                         <div>
