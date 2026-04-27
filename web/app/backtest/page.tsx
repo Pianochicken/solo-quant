@@ -50,6 +50,9 @@ export default function BacktestPage() {
 
     const chartContainerRef = useRef<HTMLDivElement>(null);
 
+    // Timezone offset (seconds) so charts display local time instead of UTC
+    const tzOffsetSec = new Date().getTimezoneOffset() * -60;
+
     // Chart Effect
     useEffect(() => {
         if (!equityCurve.length || !chartContainerRef.current) return;
@@ -73,7 +76,7 @@ export default function BacktestPage() {
 
         const sortedEquity = [...equityCurve]
             .sort((a, b) => a.time - b.time)
-            .map(item => ({ ...item, time: item.time as any }));
+            .map(item => ({ ...item, time: (item.time + tzOffsetSec) as any }));
         areaSeries.setData(sortedEquity);
         chart.timeScale().fitContent();
 
@@ -106,7 +109,7 @@ export default function BacktestPage() {
 
         const sorted = [...signalResult.price_data]
             .sort((a, b) => a.time - b.time)
-            .map(c => ({ time: c.time as any, open: c.open, high: c.high, low: c.low, close: c.close }));
+            .map(c => ({ time: (c.time + tzOffsetSec) as any, open: c.open, high: c.high, low: c.low, close: c.close }));
         candleSeries.setData(sorted);
 
         // Build markers from trades
@@ -126,7 +129,7 @@ export default function BacktestPage() {
                     ? (isLong ? 'BUY' : 'SHORT')
                     : (reasonEmoji[t.exit_reason] || 'CLOSE');
                 return {
-                    time: t.time as any,
+                    time: (t.time + tzOffsetSec) as any,
                     position: (isOpen ? (isLong ? 'belowBar' : 'aboveBar') : (isLong ? 'aboveBar' : 'belowBar')) as any,
                     color: markerColors[t.side] || '#a78bfa',
                     shape: (isOpen ? 'arrowUp' : 'arrowDown') as any,
@@ -533,7 +536,7 @@ export default function BacktestPage() {
                                             return (
                                                 <tr key={i} className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors">
                                                     <td className="py-2 text-zinc-400 whitespace-nowrap">
-                                                        {new Date(trade.time * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                                        {new Date(trade.time * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })}
                                                     </td>
                                                     <td className="py-2">
                                                         <span className={`px-1.5 py-0.5 rounded text-[10px] text-center inline-block uppercase border ${badgeColor}`}>
