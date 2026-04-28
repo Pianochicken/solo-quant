@@ -25,6 +25,7 @@ interface AdvancedChartProps {
         rsi_history?: { time: number; value: number }[];
         composite_score?: { time: number; value: number }[];
         funding_history?: { time: number; value: number }[];
+        market_regime_history?: { time: number; regime: string; direction: string }[];
     } | null;
     gridLines?: number[];
 }
@@ -38,6 +39,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
     const oiContainerRef = useRef<HTMLDivElement>(null);
     const fundingContainerRef = useRef<HTMLDivElement>(null);
     const pulseContainerRef = useRef<HTMLDivElement>(null);
+    const regimeContainerRef = useRef<HTMLDivElement>(null);
 
     // Chart Instance Refs
     const chartRef = useRef<IChartApi | null>(null);
@@ -46,6 +48,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
     const oiChartRef = useRef<IChartApi | null>(null);
     const fundingChartRef = useRef<IChartApi | null>(null);
     const pulseChartRef = useRef<IChartApi | null>(null);
+    const regimeChartRef = useRef<IChartApi | null>(null);
 
     // Series Refs
     const mainSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -54,6 +57,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
     const oiSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
     const fundingSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
     const pulseSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+    const regimeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
 
     // Overlay Refs
     const gridLinesRef = useRef<any[]>([]);
@@ -67,13 +71,14 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
     const [oiLegendValue, setOiLegendValue] = React.useState<number | null>(null);
     const [fundingLegendValue, setFundingLegendValue] = React.useState<number | null>(null);
     const [pulseLegendValue, setPulseLegendValue] = React.useState<number | null>(null);
+    const [regimeLegendValue, setRegimeLegendValue] = React.useState<{regime: string, direction: string} | null>(null);
 
     // Marker Tooltip State
     const [hoveredMarker, setHoveredMarker] = React.useState<{ x: number; y: number; text: string; color: string } | null>(null);
 
     // 1. INITIALIZATION
     useEffect(() => {
-        if (!chartContainerRef.current || !rsiContainerRef.current || !cvdContainerRef.current || !oiContainerRef.current || !fundingContainerRef.current || !pulseContainerRef.current) return;
+        if (!chartContainerRef.current || !rsiContainerRef.current || !cvdContainerRef.current || !oiContainerRef.current || !fundingContainerRef.current || !pulseContainerRef.current || !regimeContainerRef.current) return;
 
         // Utility: Abbreviate large numbers
         const abbreviateNumber = (value: number): string => {
@@ -173,7 +178,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
             ...commonOptions,
             width: fundingContainerRef.current.clientWidth,
             height: 100,
-            timeScale: { visible: true, timeVisible: true, secondsVisible: false }, // Bottom-most chart shows time
+            timeScale: { visible: false, timeVisible: true, secondsVisible: false },
             rightPriceScale: { visible: true, minimumWidth: 120, scaleMargins: { top: 0.1, bottom: 0.1 } },
         });
         fundingChartRef.current = fundingChart;
@@ -201,8 +206,28 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
         pulseSeriesRef.current.createPriceLine({ price: 80, color: '#ef4444', lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
         pulseSeriesRef.current.createPriceLine({ price: 20, color: '#10b981', lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
 
+        // --- Regime Chart (Histogram) ---
+        const regimeChart = createChart(regimeContainerRef.current, {
+            ...commonOptions,
+            width: regimeContainerRef.current.clientWidth,
+            height: 60,
+            timeScale: { visible: true, timeVisible: true, secondsVisible: false }, // Bottom-most chart shows time
+            rightPriceScale: { visible: true, minimumWidth: 120, scaleMargins: { top: 0.1, bottom: 0.1 } },
+        });
+        regimeChartRef.current = regimeChart;
+        regimeSeriesRef.current = regimeChart.addSeries(HistogramSeries, {
+            color: '#52525b',
+            priceFormat: { type: 'custom', formatter: () => '' }, // Hide price axis numbers for this boolean chart
+            priceScaleId: '', // Prevents price scale from displaying values
+        });
+        
+        // Hide right price scale since it's just a constant height
+        regimeChart.priceScale('').applyOptions({
+            visible: false,
+        });
+
         // --- Synchronization Loop ---
-        const charts = [chart, rsiChart, cvdChart, oiChart, fundingChart, pulseChart];
+        const charts = [chart, rsiChart, cvdChart, oiChart, fundingChart, pulseChart, regimeChart];
 
         // Sync TimeScales
         charts.forEach((c1, i) => {
@@ -380,6 +405,32 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
             pulseSeriesRef.current.setData(pulseData);
         }
 
+        // Update Regime Chart
+        let regimeData: any[] = [];
+        if (regimeSeriesRef.current && indicators?.market_regime_history) {
+            regimeData = alignData(indicators.market_regime_history, item => {
+                let color = '#f59e0b'; // Amber (Ranging)
+                
+                if (item.regime === 'trending') {
+                    if (item.direction === 'up') {
+                        color = '#10b981'; // Green
+                    } else if (item.direction === 'down') {
+                        color = '#ef4444'; // Red
+                    }
+                }
+                
+                return {
+                    time: item.time as Time,
+                    value: 1, // Constant height for all bars
+                    color: color,
+                    // Store original data for the legend
+                    regime: item.regime,
+                    direction: item.direction
+                };
+            });
+            regimeSeriesRef.current.setData(regimeData);
+        }
+
         // SYNC LEGENDS AND CROSSHAIR Bidirectionally
         const chartsArray = [
             { api: chartRef.current, series: mainSeriesRef.current, data: data.price },
@@ -387,7 +438,8 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
             { api: cvdChartRef.current, series: cvdSeriesRef.current, data: cvdData },
             { api: oiChartRef.current, series: oiSeriesRef.current, data: oiData },
             { api: fundingChartRef.current, series: fundingSeriesRef.current, data: fundingData },
-            { api: pulseChartRef.current, series: pulseSeriesRef.current, data: pulseData }
+            { api: pulseChartRef.current, series: pulseSeriesRef.current, data: pulseData },
+            { api: regimeChartRef.current, series: regimeSeriesRef.current, data: regimeData }
         ];
 
         const syncCrosshairHandler = (sourceChartApi: IChartApi, param: any) => {
@@ -420,6 +472,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
                 setOiLegendValue(null);
                 setFundingLegendValue(null);
                 setPulseLegendValue(null);
+                setRegimeLegendValue(null);
                 return;
             }
 
@@ -435,6 +488,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
                 if (c.api === oiChartRef.current) setOiLegendValue(pointData ? pointData.value : null);
                 if (c.api === fundingChartRef.current) setFundingLegendValue(pointData ? pointData.value : null);
                 if (c.api === pulseChartRef.current) setPulseLegendValue(pointData ? pointData.value : null);
+                if (c.api === regimeChartRef.current) setRegimeLegendValue(pointData ? { regime: pointData.regime, direction: pointData.direction } : null);
 
                 // Sync Crosshair Line
                 if (c.api !== sourceChartApi) {
@@ -585,6 +639,19 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
                     )}
                 </div>
                 <div ref={fundingContainerRef} className="w-full h-full" />
+            </div>
+
+            {/* 7. Regime Chart */}
+            <div className="relative w-full h-[60px] border-t border-zinc-800">
+                <div className="absolute top-1 left-2 z-10 bg-black/50 px-2 py-0.5 rounded text-[10px] text-zinc-400 flex gap-2">
+                    <span className="font-bold text-zinc-300">Market Regime</span><InfoTooltip text="市場趨勢狀態：+1 為強勢多頭 (Uptrend)，-1 為強勢空頭 (Downtrend)，0 為盤整 (Ranging)。趨勢確認時，系統會自動放寬同方向的進場條件。" />
+                    {regimeLegendValue && (
+                        <span className={`font-bold ${regimeLegendValue.regime === 'trending' ? (regimeLegendValue.direction === 'up' ? 'text-emerald-400' : 'text-red-400') : 'text-zinc-400'}`}>
+                            {regimeLegendValue.regime === 'trending' ? (regimeLegendValue.direction === 'up' ? 'Uptrend' : 'Downtrend') : 'Ranging'}
+                        </span>
+                    )}
+                </div>
+                <div ref={regimeContainerRef} className="w-full h-full" />
             </div>
         </div>
     );

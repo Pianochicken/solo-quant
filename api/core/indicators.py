@@ -807,9 +807,25 @@ class IndicatorEngine:
                 'no_short': False,
                 'no_long': False,
             })
+            
+            t_profile = P.copy()
             if current_regime.get('regime') == 'trending':
                 bull_threshold = trending_threshold
                 bear_threshold = trending_threshold
+                
+                # Regime-Adaptive Thresholds: Relax conditions to capture shallow pullbacks/bounces in trends
+                if current_regime.get('direction') == 'up':
+                    # Uptrend: Relax Bullish thresholds (buy the shallow dip)
+                    t_profile['rsi_bull'] += 15       # e.g., 30 -> 45
+                    t_profile['ema_pct'] *= 0.2       # e.g., 1.0 -> 0.2
+                    t_profile['bb_bull'] += 0.20      # e.g., 0.08 -> 0.28
+                    t_profile['fr_bull'] = 0.001      # Neutral funding is enough to buy
+                elif current_regime.get('direction') == 'down':
+                    # Downtrend: Relax Bearish thresholds (short the shallow bounce)
+                    t_profile['rsi_bear'] -= 15       # e.g., 70 -> 55
+                    t_profile['ema_pct'] *= 0.2       # e.g., 1.0 -> 0.2
+                    t_profile['bb_bear'] -= 0.20      # e.g., 0.92 -> 0.72
+                    t_profile['fr_bear'] = -0.001     # Neutral funding is enough to short
             else:
                 bull_threshold = ranging_threshold
                 bear_threshold = ranging_threshold
@@ -846,8 +862,9 @@ class IndicatorEngine:
             cvd_prev = cvd_by_time.get(times[i - 1])
             
             # OI × Price divergence (method 2: N-bar change rate)
-            oi_lookback = P['oi_lookback']
-            price_thresh = P['price_thresh']
+            # OI × Price divergence (method 2: N-bar change rate)
+            oi_lookback = t_profile['oi_lookback']
+            price_thresh = t_profile['price_thresh']
             oi_now = oi_by_time.get(t)
             oi_prev_t = times[i - oi_lookback] if i >= oi_lookback else times[0]
             oi_prev = oi_by_time.get(oi_prev_t)
@@ -871,9 +888,9 @@ class IndicatorEngine:
             # If LSUR Z says bullish (overcrowded shorts) but price is FALLING, skip Z
             lsur_dulled = False
             if z_val is not None and price_chg_pct is not None:
-                if z_val >= P['z_bear'] and price_chg_pct > price_thresh:
+                if z_val >= t_profile['z_bear'] and price_chg_pct > price_thresh:
                     lsur_dulled = True  # Z says sell but price going up
-                elif z_val <= P['z_bull'] and price_chg_pct < -price_thresh:
+                elif z_val <= t_profile['z_bull'] and price_chg_pct < -price_thresh:
                     lsur_dulled = True  # Z says buy but price going down
             
             # ===== BULLISH confluence =====
@@ -884,7 +901,7 @@ class IndicatorEngine:
             t_bull_price_reasons = []
             t_bull_price_groups = set()
             
-            if z_val <= P['z_bull'] and not lsur_dulled:
+            if z_val <= t_profile['z_bull'] and not lsur_dulled:
                 t_bull_env_score += 1
                 t_bull_env_reasons.append('Z')
                 t_bull_env_groups.add('Sentiment')
@@ -904,7 +921,7 @@ class IndicatorEngine:
                     t_bull_env_reasons.append('OI去槓')
                     t_bull_env_groups.add('Momentum')
             
-            if funding_now is not None and funding_now < P['fr_bull']:
+            if funding_now is not None and funding_now < t_profile['fr_bull']:
                 discount = cvd_slope_extreme
                 if oi_chg_pct is not None:
                     if oi_chg_pct > 0:
@@ -918,19 +935,19 @@ class IndicatorEngine:
                     t_bull_env_reasons.append('FR-')
                 t_bull_env_groups.add('Sentiment')
             
-            if rsi_now is not None and rsi_now < P['rsi_bull'] and is_bull_pa:
+            if rsi_now is not None and rsi_now < t_profile['rsi_bull'] and is_bull_pa:
                 t_bull_price_score += 1
                 t_bull_price_reasons.append(f'RSI{int(rsi_now)}')
                 t_bull_price_groups.add('Price')
             
             if ema_fast_now is not None and price_close is not None and is_bull_pa:
                 ema_dist = (price_close - ema_fast_now) / ema_fast_now * 100
-                if ema_dist < -P['ema_pct']:
+                if ema_dist < -t_profile['ema_pct']:
                     t_bull_price_score += 1
                     t_bull_price_reasons.append('EMA↑')
                     t_bull_price_groups.add('Price')
             
-            if bb_now is not None and bb_now < P['bb_bull'] and is_bull_pa:
+            if bb_now is not None and bb_now < t_profile['bb_bull'] and is_bull_pa:
                 t_bull_price_score += 1
                 t_bull_price_reasons.append('BB↑')
                 t_bull_price_groups.add('Price')
@@ -943,7 +960,7 @@ class IndicatorEngine:
             t_bear_price_reasons = []
             t_bear_price_groups = set()
             
-            if z_val >= P['z_bear'] and not lsur_dulled:
+            if z_val >= t_profile['z_bear'] and not lsur_dulled:
                 t_bear_env_score += 1
                 t_bear_env_reasons.append('Z')
                 t_bear_env_groups.add('Sentiment')
@@ -963,7 +980,7 @@ class IndicatorEngine:
                     t_bear_env_reasons.append('OI去槓')
                     t_bear_env_groups.add('Momentum')
             
-            if funding_now is not None and funding_now > P['fr_bear']:
+            if funding_now is not None and funding_now > t_profile['fr_bear']:
                 discount = cvd_slope_extreme
                 if oi_chg_pct is not None:
                     if oi_chg_pct > 0:
@@ -977,19 +994,19 @@ class IndicatorEngine:
                     t_bear_env_reasons.append('FR+')
                 t_bear_env_groups.add('Sentiment')
             
-            if rsi_now is not None and rsi_now > P['rsi_bear'] and is_bear_pa:
+            if rsi_now is not None and rsi_now > t_profile['rsi_bear'] and is_bear_pa:
                 t_bear_price_score += 1
                 t_bear_price_reasons.append(f'RSI{int(rsi_now)}')
                 t_bear_price_groups.add('Price')
             
             if ema_fast_now is not None and price_close is not None and is_bear_pa:
                 ema_dist = (price_close - ema_fast_now) / ema_fast_now * 100
-                if ema_dist > P['ema_pct']:
+                if ema_dist > t_profile['ema_pct']:
                     t_bear_price_score += 1
                     t_bear_price_reasons.append('EMA↓')
                     t_bear_price_groups.add('Price')
             
-            if bb_now is not None and bb_now > P['bb_bear'] and is_bear_pa:
+            if bb_now is not None and bb_now > t_profile['bb_bear'] and is_bear_pa:
                 t_bear_price_score += 1
                 t_bear_price_reasons.append('BB↓')
                 t_bear_price_groups.add('Price')
