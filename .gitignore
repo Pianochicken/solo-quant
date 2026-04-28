@@ -44,6 +44,3 @@ __pycache__
 
 # Ignore downloaded CVD history data
 scripts/data/*.csv
-
-# Ignore history development data
-AI_HANDOFF.md

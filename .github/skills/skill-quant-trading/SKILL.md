@@ -1,238 +1,89 @@
 ---
 name: skill-quant-trading
-description: Guidelines for building a crypto trading platform focused on finding profitable buy/sell signals through multi-indicator confluence analysis.
+description: Guidelines and architectural philosophy for building the Solo-Quant trading platform. Focuses on multi-indicator confluence, dual-engine strategy, and strict quantitative engineering principles.
 ---
 
-# Quantitative Trading Skill — SoloQuant
+# Quantitative Trading Skill — Solo-Quant Core Philosophy
 
-## Core Objective: Finding Profitable Buy/Sell Points
+This document serves as the **Constitution** for AI Agents and developers working on the Solo-Quant platform. It defines the timeless trading philosophies, engineering principles, and data integrity rules. 
 
-Every indicator, architecture choice, and UI decision serves ONE purpose: **enter and exit trades at the right time to profit.** Always make development decisions with this goal in mind.
-
----
-
-## 1. Signal System: Multi-Indicator Confluence
-
-### Core Principle
-Single indicators produce false signals. Only trade when **multiple independent indicators agree on the same direction.** Our system requires **≥ 3 out of 4 indicators to agree** before emitting a signal.
-
-### The Four Indicators
-
-| Indicator | What It Measures | Bullish Condition | Bearish Condition |
-|-----------|-----------------|-------------------|-------------------|
-| **LSUR Z-Score** | Position crowding | Z ≤ -1.5 (crowded shorts → squeeze up) | Z ≥ 1.5 (crowded longs → liquidation) |
-| **CVD Momentum** | Active buy/sell pressure | 3-bar delta > 0 (buying increasing) | 3-bar delta < 0 (selling increasing) |
-| **OI Percentile** | Market leverage level | ≥ 75% (high leverage = fuel for short squeeze) | ≥ 75% (high leverage = fuel for liquidation) |
-| **Funding Rate** | Market sentiment bias | < -0.005% (panic capitulation) | > 0.015% (excessive greed) |
-
-### Signal Logic Flow
-
-```
-Each candle →
-  Collect 4 indicator values →
-    Apply Dynamic Asset Profile (Adjust thresholds based on asset type: BTC vs ALTs) →
-    Check each against threshold →
-      Calculate confluence score (0~4) →
-        Score ≥ 3 → Emit buy/sell marker
-        Score < 3 → No marker
-```
-
-### Dynamic Asset Profiles (Asset-Specific Tuning)
-Different asset classes exhibit different baseline metrics. For example, Altcoins (HYPE/CC) naturally have higher baseline funding rates and higher volatility compared to Majors (BTC/ETH).
-*   **Rule**: Thresholds must dynamically scale based on the asset. Do not use BTC funding rate thresholds for Memecoins, as it will result in constant false "overheated" signals.
-
-### Improving Signal Accuracy (Priority Order)
-1. **Tune thresholds**: Tighten/loosen individual trigger conditions (e.g., Z from 1.5 → 2.0)
-2. **Add new indicators**: Introduce independent data sources (e.g., liquidation data, on-chain metrics), update threshold
-3. **Improve data quality**: Ensure sufficient history, update frequency, no missing values
-4. **Backtest**: Every change must be validated — compare win rate and EV before/after
-
-> **Rule**: Never lower thresholds just because "there aren't enough signals." Fewer good trades > many bad trades.
+> **Rule of Thumb**: This file dictates *HOW* we think and code. For details on *WHAT* the current active codebase contains (e.g., specific indicators used right now, immediate next tasks), always refer to `AI_HANDOFF.md`.
 
 ---
 
-## 2. Indicator Development Standards
+## 1. Trading Strategy Philosophy
 
-### Adding a New Indicator
-1. **Define purpose**: What market dimension does it measure? Is it already covered?
-2. **Confirm data source**: Is the API stable? Enough history? Rate limits?
-3. **Implement calculation**: Add static method in `IndicatorEngine` (`indicators.py`)
-4. **Integrate into confluence**: Add scoring condition in `calculate_confluence_signals()`
-5. **Frontend chart**: Add corresponding sub-chart in `AdvancedChart.tsx`
-6. **Add InfoTooltip**: Chinese explanation next to the label for user understanding
+### 1.1 Multi-Indicator Confluence (共振法則)
+Single indicators inevitably produce false signals. Our system *only* executes trades when multiple, mathematically independent indicators (e.g., Sentiment, Momentum, Structure, Volume) align simultaneously.
+*   **Actionable Rule**: Never trigger a trade based on a single condition. Always use a scoring or weighted logic system to evaluate confluence across different market dimensions.
 
-### Dirty Data & Look-ahead Bias Prevention (Crucial)
-1. **Never peek into the future**: Absolutely prohibit `shift(-1)` or using future data to calculate indicators before the candle officially closes. All indicators must only calculate using `t` or `t-1` available data.
-2. **Dirty Data Handling**: Crypto APIs frequently return `NaN` or flash crash anomalies. You must explicitly handle missing data (e.g., `ffill()`) and clamp extreme outliers before feeding them into standard deviation models like Z-Score to prevent cascading math failures.
+### 1.2 Dual-Engine Architecture (雙引擎架構)
+Markets operate in two distinct regimes: **Ranging (盤整)** and **Trending (趨勢)**. A single logic engine will fail in one of these regimes.
+*   **Mean Reversion Engine**: Designed for ranging markets or deep pullbacks. Buys oversold dips, sells overbought rips.
+*   **Trend Breakout Engine**: Designed for strong, unilateral trends where pullbacks do not occur. Buys breakouts of structural highs combined with momentum surges.
+*   **Regime-Awareness**: The system must actively detect the current regime (e.g., via ADX, Moving Average stacking) and dynamically route signal evaluation to the appropriate engine.
 
-### Key Indicator Concepts
-- **OI cannot distinguish long vs short**: Every contract has a buyer AND seller. Use LSUR/CVD/FR for direction.
-- **OI percentile uses daily data**: Regardless of chart timeframe, percentile always uses daily OI (sufficient history).
-- **CVD shows real money flow**: More direct than OI for detecting one-sided pressure.
-- **Z-Score is mean-reversion**: Greater deviation → higher probability of reversion.
+### 1.3 Dynamic Asset Profiles (自適應閾值)
+Different asset classes (Majors vs. Altcoins vs. Memes) possess fundamentally different volatilities and baselines. 
+*   **Actionable Rule**: Thresholds must be dynamic. The backend architecture must support loading distinct parameter profiles based on the asset being analyzed.
 
 ---
 
-## 3. Chart Visualization: Make Signals Obvious
+## 2. Quantitative Engineering Standards
 
-### Price Chart (Main)
-- Candlesticks + confluence markers (⚡ arrows)
-- Green up arrow = bullish confluence | Red down arrow = bearish confluence
-- Marker text shows which indicators triggered (e.g., `⚡3/4 Z+CVD↑+FR-`)
+### 2.1 Data Integrity & Look-Ahead Bias Prevention (零未來函數)
+The most fatal error in quantitative trading is leaking future data into historical calculations.
+*   **Strict Rule**: Absolutely prohibit `shift(-1)` or any operation that looks forward in time. All indicator calculations and regime detections must be strictly `causal` (using only data at $t$ or $t-n$).
+*   **Implementation**: Always use pandas `.rolling()` windows or strict historical slicing. 
 
-### Sub-Panes
-Each indicator has its own small chart for visual context:
-- **CVD**: Cumulative line (yellow), rising = buyers dominate
-- **OI**: Histogram (green/red), green = OI increase, red = decrease
-- **Funding Rate**: Histogram (green/red), positive = longs pay, negative = shorts pay
+### 2.2 Indicator Warm-Up Parity (暖機對齊原則)
+Path-dependent indicators (like EMA, RSI, CVD) yield different values depending on when the calculation started.
+*   **Strict Rule**: The backtest engine and the live dashboard *must* compute indicators over the exact same historical window (e.g., always fetching a fixed 1000 candles). Never crop the dataset *before* calculating indicators.
 
-### Right Panel (Sentiment Sentinel)
-- LSUR Z-Score current value + status text
-- EMA Trend state (Uptrend / Downtrend / Neutral)
-- RSI (14) current value + status
-- OI Percentile (rolling 90-day rank)
-
-### Design Rules
-- All indicator labels have ⓘ InfoTooltip (Chinese explanation)
-- Color consistency: green = bullish/increase, red = bearish/decrease
-- Format large numbers with `toLocaleString()`
+### 2.3 Dirty Data Handling
+Crypto APIs frequently return anomalies (flash crashes, missing ticks, `NaN` values).
+*   **Actionable Rule**: Explicitly handle missing data (e.g., `ffill()`) and clamp extreme mathematical outliers (especially before feeding data into standard deviation models like Z-Scores) to prevent cascading failures.
 
 ---
 
-## 4. System Architecture
+## 3. System Architecture & Coding Standards
 
-### Three-Layer Separation
-```
-Data Layer (api/core/fetcher.py)
-  ↓ Normalized data
-Strategy Layer (api/core/indicators.py)
-  ↓ Signals + indicator results
-API Layer (api/main.py)
-  ↓ JSON Response
-Frontend (web/components/AdvancedChart.tsx)
-```
+### 3.1 Two Distinct Operating Modes
+The platform supports two fundamentally different tactical approaches:
+1.  **Grid Strategy (網格)**: For capturing spread in ranging, oscillating markets.
+2.  **Signal-Driven Strategy (信號)**: For directional swing trading managed by explicit Stop Loss (SL), Take Profit (TP), and Trailing Stops.
 
-### API Rate Limiting
-- OKX has rate limits (~20 req/2s)
-- Add `time.sleep(0.5)` between paginated requests
-- Cap max pages (CVD: 5, OI: 3)
+### 3.2 Backend: Performance & Typing
+- **FastAPI / Python**: 
+  - Use `async`/`await` for all I/O bound operations (e.g., exchange API requests).
+  - Use **Pydantic** to strictly validate all API inputs/outputs.
+- **Vectorization**: 
+  - Avoid `for` loops and `.iterrows()` for indicator mathematics. Rely entirely on vectorized operations (Pandas/NumPy/Polars) for massive performance gains. *Note: For loops are acceptable in the backtesting simulator loop where chronological state management (e.g., trailing stops) is required.*
 
-### Data Alignment
-All indicator data must be time-aligned with price candles before confluence:
-```python
-pd.merge_asof(price_df, indicator_df, on='time', direction='backward')
-```
+### 3.3 Frontend: Next.js & Lightweight Charts
+- **Timezone Awareness**: Financial charting libraries often default to UTC. Ensure all incoming timestamps are properly parsed and aligned to the user's Local Time before rendering to prevent UI/Backend log mismatches.
+- **Component Isolation**: Chart components must be pure. Complex state (like data fetching) belongs in parent hooks or pages, passing clean data arrays into the charting elements.
 
 ---
 
-## 5. Signal System ↔ Grid Trading Relationship
+## 4. Backtesting & Risk Validation
 
-> **Signal system = Strategic judgment** (Should we trade? What direction?)
-> **Grid trading = Tactical execution** (Once decided, how to capture spread?)
+No algorithm goes to production without rigorous validation.
 
-### Why They Must Be Linked
+### 4.1 Required Metrics
+- **Win Rate & Total Trades**: Statistical significance is mandatory.
+- **Expected Value (EV)**: Must mathematically factor in realistic assumptions.
+- **Max Drawdown**: The ultimate test of strategy survival.
+- **Sharpe/Sortino Ratio**: Risk-adjusted performance.
 
-Grid trading profits from **range-bound oscillation**. During strong trends:
-
-| Market State | Grid Behavior | Risk |
-|-------------|--------------|------|
-| Range-bound | Normal buy low / sell high | ✅ Steady profit |
-| Strong downtrend | Keeps buying (catching knives) | ❌ Accumulates losses |
-| Strong uptrend | Keeps selling (misses rally) | ⚠️ Opportunity cost |
-
-**Confluence signals should act as the grid's gatekeeper** — telling it when to pause and when to run.
-
-### Signal → Grid Operating Rules
-
-```
-Bearish confluence (⚡ bearish, score ≥ 3)
-  → Pause grid or reduce capital → Wait for market to cool
-
-Bullish confluence (⚡ bullish, score ≥ 3)
-  → OK to start/restart grid → Range-bound uptrend is ideal
-
-No signal (neutral)
-  → Grid runs normally
-
-OI percentile extreme (> 90%)
-  → High volatility risk → Consider reducing capital or pausing
-```
-
-### Three Integration Strategies (Simple → Advanced)
-
-**1. Switch Mode (recommended starting point)**
-- Bearish signal → Stop grid
-- No signal / bullish → Run grid
-- Simplest and safest
-
-**2. Adaptive Mode**
-- Bearish → Shift range down + halve capital
-- Bullish → Shift range up + increase allocation
-- Requires more backtesting
-
-**3. Directional Grid (advanced)**
-- Bearish → Keep only sell orders (trend-following short)
-- Bullish → Keep only buy orders (trend-following long)
-- Transitions from pure grid to trend-following
-
-> **Important: All rules above are initial hypotheses. Must be refined based on actual P&L data.**
-> Do not over-rely on any fixed strategy without backtesting and live verification.
-
-### Safety Mechanisms & Risk Management (Exit Strategy)
-- `dry_run=True` to simulate, not execute.
-- **Panic Close** button for active emergency liquidation.
-- **Explicit Stop Loss (SL) & Take Profit (TP)**: Never rely solely on grid oscillation to exit. If the market regime fundamentally shifts against your position (e.g., Z-Score reversal), cut losses via a hard ATR-based stop or a reverse confluence signal.
-- **Dynamic Position Sizing**: Do not deploy 100% of capital indiscriminately. Scale down position size automatically when market volatility (ATR) or OI Percentile reaches extreme risk levels.
-- **Exception Handling & Auto-retry** for network/API failures.
+### 4.2 Cost Realism
+*   **Strict Rule**: A backtest that ignores exchange fees (e.g., Taker fees) and slippage is a fantasy. All profitability metrics must be net of estimated real-world execution costs.
 
 ---
 
-## 6. Backtesting & Verification
-
-No backtest = gambling. Every strategy change must be validated:
-
-### Key Metrics
-- **Win Rate**: % of signals with correct direction.
-- **Total Trades**: Statistical significance. An 80% win rate on 5 trades is luck; 60% on 500 trades is structural alpha.
-- **Expected Value (EV)**: Average P&L per trade. *Must* factor in realistic exchange trading fees (e.g., 0.05% taker + predicted slippage).
-- **Max Drawdown**: Worst-case loss from peak to trough.
-- **Sharpe/Sortino Ratio**: Risk-adjusted return calculation.
-
-### Workflow & Live-Backtest Parity
-1. Modify indicators/thresholds
-2. Run backtest (`scripts/tests/` or Backtester page)
-3. Compare win rate, total trades, and EV before vs after
-4. **Live-Parity Check**: Before deploying, verify that the Backtest execution loop mirrors the Live execution loop (Event-driven Tick/Candle ingestion) exactly to prevent state desync.
-5. Only deploy to live when the statistical data solidly supports it.
-
----
-
-## 7. Software Development & Engineering Principles
-
-### 7.1 Framework & Architecture Guidelines
-- **FastAPI (Backend)**: 
-  - **Async First**: Use `async`/`await` for all I/O operations (exchange API requests).
-  - **Data Validation**: Strictly type all API inputs and outputs using **Pydantic** models.
-  - **Separation of Concerns**: Keep route handlers (`main.py`) thin. Delegate pure business logic and math to `core/` and `quant/` modules.
-- **Next.js & React (Frontend)**:
-  - **Component Isolation**: Chart components (`AdvancedChart.tsx`) should be pure and accept data as props. Keep state management inside top-level pages or custom `lib/` hooks.
-  - **Type Safety**: Maintain strict TypeScript interfaces matching the Python Pydantic models (e.g., `SignalConfig`, `BacktestParams`).
-- **Data Processing Edge**:
-  - **Vectorization over Iteration**: *Never* use `for` loops or `.iterrows()` for indicator calculations. Always use vectorized Pandas/Numpy operations (and architect towards Polars) to ensure backtests finish in milliseconds, not minutes.
-
-### 7.2 Testing & Validation Methodology
-- **Unit Testing (Pytest)**:
-  - Mathematical integrity is critical. All functions in `indicators.py` must be tested against isolated, mock data arrays where the expected output is strictly known.
-- **Quant Backtesting Integrity**:
-  - **Prevent Overfitting**: Do not blindly tune thresholds just to make the historical chart look good. Always validate parameter changes on "out-of-sample" (unseen) timeframes.
-  - **Cost Realism**: Backtest EV (Expected Value) *must* factor in exchange trading fees (e.g., 0.05% taker) and realistic slippage. A strategy profitable without fees is often a losing strategy in production.
-- **System Resilience**:
-  - Third-party exchange APIs *will* timeout or rate-limit. All external calls in `fetcher.py` must have robust `try/except` fallbacks and retry mechanisms.
-
-### 7.3 Observability & Production Logging
-- **Structured Logging**: Do not just rely on front-end charts or `print()`. Log critical trading decisions, order executions, and API failures in a structured format (JSON JSON/logger) for retroactive algorithmic debugging.
-- **Alerting Mechanisms**: Implement proactive hooks (like Telegram/Discord webhooks) for critical system lifecycle events: "Grid Started", "Stop Loss Hit", or "API Disconnection".
-
-### 7.4 Version Control Workflow
-- **Conventional Commits**: Strictly use standard prefix tags (`feat:`, `fix:`, `refactor:`, `test:`, `quant:`).
-- **Atomic Commits**: Separate UI layout changes from core quantitative logic modifications to maintain a clean git history and easy rollbacks (like our recent `KeyError` fix).
+## 5. Standard Operating Procedure (SOP) for Adding New Indicators
+When adding a new indicator to the system, follow this strict lifecycle:
+1. **Mathematical Validation**: Implement the raw math in the backend `core/` module. Validate against edge cases (zero division, NaNs).
+2. **Confluence Integration**: Wire the output into the `calculate_confluence_signals` engine. Determine if it belongs to the Reversion or Breakout track.
+3. **API Serialization**: Expose the necessary arrays via the FastAPI response model.
+4. **UI Representation**: Build the visualization layer in the frontend chart components, ensuring color consistency (e.g., Green = Bullish/Up, Red = Bearish/Down).
