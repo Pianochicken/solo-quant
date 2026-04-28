@@ -20,9 +20,10 @@ This document is the **Context Buffer** for AI Agents. It defines how the system
 The core of the system relies on generating `Bullish` and `Bearish` markers from `IndicatorEngine`, which are then parsed by the `SignalBacktester` to execute trades.
 
 - **Data Flow**: `get_market_data(limit=1000)` fetches OHLCV from DB -> `IndicatorEngine` calculates arrays -> UI renders `AdvancedChart` / Backend runs `SignalBacktester`.
+- **Dual-Engine Logic**: Evaluation combines a **Reversion Engine** (RSI, BB, EMA, Funding) for ranging regimes, and a **Breakout Engine** (Donchian Channels, MACD, CVD) for catching strong trend continuations.
 - **Position Lifecycle**: `api/quant/position.py` manages Stop Loss -> Take Profit -> Trailing Stop (evaluated in this exact order per bar).
 - **Regime-Adaptive Thresholds**: The system detects the current market regime (`trending up`, `trending down`, `ranging`). In a trend, it automatically relaxes the thresholds of Mean-Reversion indicators (like RSI and EMA) to buy shallow dips.
-- **Visuals**: The UI features an `AdvancedChart` with 7 layers: Main Price, RSI, CVD, Open Interest, Funding Rate, Market Pulse, and a **Regime Chart** (Emerald for Uptrend, Red for Downtrend, Amber for Ranging).
+- **Visuals**: The UI features an `AdvancedChart` with 7 layers: Main Price, RSI, CVD, Open Interest, Funding Rate, Market Pulse, and a **Regime Chart** (Emerald for Uptrend, Red for Downtrend, Amber for Ranging). Breakout signals are distinctly visualized (e.g., Rocket 🚀 icon, Blue/Orange colors) separate from reversion signals.
 
 ---
 
@@ -44,28 +45,25 @@ To prevent regressions, **ALL future AI Agents MUST adhere to these rules**:
 ---
 
 ## 4. Current Development Focus (The "Next")
-### Goal: Trend-Following Breakout Engine
+### Goal: Backtest Parameter Tuning & Risk Management Refinement
 
-**Context**: The current 7 indicators (RSI, BB, EMA distance, etc.) are deeply rooted in **Mean Reversion**. Even with adaptive thresholds, they fail to generate buy signals during extreme, non-pullback bull runs (e.g., 66k -> 78k) because they constantly read "overbought".
+**Context**: The Dual-Engine (Reversion + Breakout) is now complete, and the frontend dynamically displays both signal types accurately. However, the default backtesting parameters (Stop Loss, Take Profit, Trail %, Trail Activation %) are too tight for Breakout strategies (which typically require larger ATR / breathing room), causing trades to be prematurely stopped out by normal market noise (whipsaws).
 
 **Execution Focus**:
-1. **New Trend Indicators**: Implement **Donchian Channels** (20-period highest high) and **MACD** in `api/core/indicators.py`.
-2. **Dual-Engine Logic**: Refactor `calculate_confluence_signals`.
-   - Engine A: The existing Reversion logic.
-   - Engine B (New): If `regime == 'trending'` and `direction == 'up'`, and price breaks the Donchian upper band with rising MACD + CVD, immediately yield a Buy signal (bypassing RSI overbought checks).
-   - Mark the signal dict with `strategy_type: 'reversion' | 'breakout'`.
-3. **Frontend Visualization**: Update `AdvancedChart.tsx` to render the Breakout signals with a different icon/shape (e.g., a Rocket 🚀 or a distinct color) to distinguish them from Reversion arrows.
+1. **Parameter Optimization / Preset Profiles**: Determine optimal risk management presets for "Mean-Reversion" vs "Breakout" trades. 
+2. **Backtest Panel Enhancements**: Perhaps introduce risk management presets directly in the UI (e.g., "Conservative" vs "Trend Following") which load distinct SL/TP/Trail ratios.
+3. **Analytics Tuning**: Increase `Trail %` and `Trail Activation` in default tests to validate that Breakout signals effectively capture major trend continuations without early stop-outs.
 
 ---
 
 ## 5. AI Agent Prompt (Copy-Paste to start next session)
 *Copy the prompt below to hand off this exact context to the next AI session:*
 
-> 「請扮演一位資深的量化交易演算法工程師。請先閱讀 `AI_HANDOFF.md` 以了解專案架構與避坑規則。
+> 「請扮演一位資深的量化交易演算法工程師。請先閱讀 `AI_HANDOFF.md` 以了解專案架構。
 > 
-> 我們目前的進度在第 4 節『Trend-Following Breakout Engine』。目前系統在強勢多頭中缺乏進場點，因為現有指標完全偏向均值回歸。
+> 我們目前的進度在第 4 節『Backtest Parameter Tuning & Risk Management Refinement』。我們的雙引擎 (Dual-Engine) 信號機制已順利上線，但在執行回測時，預設的 trailing stop loss 過於緊繃，導致 Breakout 的訊號經常在小幅洗盤時被提早洗出場。
+> 
 > 請執行以下任務：
-> 1. 在 `api/core/indicators.py` 中實作唐奇安通道 (Donchian Channel) 與 MACD 指標。
-> 2. 在信號判定迴圈中加入獨立的『順勢突破 (Breakout)』引擎：在 Uptrend Regime 中，只要價格突破 20T 高點且 MACD 動能向上，即產生類型為 `breakout` 的 Buy 訊號。
-> 3. 請確保這些指標計算沒有未來函數 (Look-ahead bias)，並能通過現有的 pytest 單元測試。
-> 4. 在前端圖表 (`AdvancedChart.tsx`) 中，將這些新的『突破信號』與原本的『抄底信號』用不同樣式區分開來（例如使用不同形狀或顏色）。」
+> 1. 請檢查並調整 `SignalBacktester` 或前端 UI 預設帶入的風控參數（例如：放寬 Breakout 的 SL 和 Trail %）。
+> 2. （如果適用）在前端面板加入『快速載入風控預設 (Presets)』的選項，例如分成『保守回歸』與『擁抱順勢』。
+> 3. 確認每一次調整後，都保持回測引擎的 `Position Lifecycle` 順序正確 (SL -> TP -> Trailing Stop)，並在圖表上驗證策略的存活率與盈虧比。」

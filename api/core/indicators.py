@@ -302,6 +302,51 @@ class IndicatorEngine:
         }
 
     @staticmethod
+    def calculate_donchian_channel(price_data: List[Dict], period: int = 20) -> List[Dict]:
+        """
+        Calculate Donchian Channel (Highest High and Lowest Low over 'period' bars prior to current bar).
+        Returns: [{'time': ..., 'upper': ..., 'lower': ..., 'middle': ...}, ...]
+        """
+        if not price_data or len(price_data) < period:
+            return []
+        
+        df = pd.DataFrame(price_data)
+        df['time'] = df['time'].astype(int)
+        df.sort_values('time', inplace=True)
+        
+        # rolling().max() over `period`, shifted by 1 to prevent look-ahead bias
+        # (the band for the current bar is based on the max/min of the previous `period` bars)
+        df['upper'] = df['high'].rolling(window=period).max().shift(1)
+        df['lower'] = df['low'].rolling(window=period).min().shift(1)
+        df['middle'] = (df['upper'] + df['lower']) / 2.0
+        
+        # backfill first few points
+        df.bfill(inplace=True)
+        
+        return [{'time': int(r['time']), 'upper': float(r['upper']), 'lower': float(r['lower']), 'middle': float(r['middle'])} for _, r in df.iterrows()]
+
+    @staticmethod
+    def calculate_macd(price_data: List[Dict], fast: int = 12, slow: int = 26, signal: int = 9) -> List[Dict]:
+        """
+        Calculate MACD.
+        Returns: [{'time': ..., 'macd': ..., 'signal': ..., 'hist': ...}, ...]
+        """
+        if not price_data or len(price_data) < slow + signal:
+            return []
+        
+        df = pd.DataFrame(price_data)
+        df['time'] = df['time'].astype(int)
+        df.sort_values('time', inplace=True)
+        
+        df['ema_fast'] = df['close'].ewm(span=fast, adjust=False).mean()
+        df['ema_slow'] = df['close'].ewm(span=slow, adjust=False).mean()
+        df['macd'] = df['ema_fast'] - df['ema_slow']
+        df['signal'] = df['macd'].ewm(span=signal, adjust=False).mean()
+        df['hist'] = df['macd'] - df['signal']
+        
+        return [{'time': int(r['time']), 'macd': float(r['macd']), 'signal': float(r['signal']), 'hist': float(r['hist'])} for _, r in df.iterrows()]
+
+    @staticmethod
     def calculate_oi_percentile_series(oi_aligned: List[Dict], window: int = 90) -> List[Dict]:
         """
         Calculate rolling OI percentile for each bar.
@@ -643,6 +688,8 @@ class IndicatorEngine:
         rsi_aligned: List[Dict] = None,
         ema_fast_aligned: List[Dict] = None,
         bb_pctb_aligned: List[Dict] = None,
+        donchian_aligned: List[Dict] = None,
+        macd_aligned: List[Dict] = None,
         lookback: int = 3,
         timeframe: str = '1h',
         oi_aligned: List[Dict] = None,
@@ -774,6 +821,8 @@ class IndicatorEngine:
         rsi_by_time = {item['time']: item['value'] for item in (rsi_aligned or [])}
         ema_fast_by_time = {item['time']: item['value'] for item in (ema_fast_aligned or [])}
         bb_by_time = {item['time']: item['value'] for item in (bb_pctb_aligned or [])}
+        donchian_by_time = {item['time']: item for item in (donchian_aligned or [])}
+        macd_by_time = {item['time']: item for item in (macd_aligned or [])}
         
         # OI lookup by time (for OI change rate calculation)
         oi_by_time = {item['time']: item['value'] for item in (oi_aligned or [])}
@@ -1052,39 +1101,98 @@ class IndicatorEngine:
             # --- Regime tag for signal text ---
             regime_tag = 'T' if current_regime.get('regime') == 'trending' else 'R'
             
+            # === BREAKOUT ENGINE (Trend-Following) ===
+            is_breakout_bull = False
+            bull_breakout_reasons = []
+            is_breakout_bear = False
+            bear_breakout_reasons = []
+            
+            # Only trigger breakout in trending regimes
+            if current_regime.get('regime') == 'trending':
+                donchian_now = donchian_by_time.get(t)
+                macd_now = macd_by_time.get(t)
+                macd_prev = macd_by_time.get(times[i - 1])
+                
+                if donchian_now and macd_now and macd_prev and price_bar:
+                    # Breakout Buy: Uptrend direction + breaks higher than upper band + MACD momentum rising
+                    if current_regime.get('direction') == 'up' and price_bar['close'] > donchian_now['upper']:
+                        macd_rising = macd_now['hist'] > macd_prev['hist']
+                        cvd_confirm = cvd_now is not None and cvd_prev is not None and (cvd_now - cvd_prev) > 0 # CVD confirmation
+                        # Check macd and optionally cvd
+                        if macd_rising:
+                            is_breakout_bull = True
+                            bull_breakout_reasons.append('MACD_UP')
+                            if cvd_confirm: bull_breakout_reasons.append('CVD↑')
+                            
+                    # Breakout Sell: Downtrend direction + breaks lower than lower band + MACD momentum falling
+                    elif current_regime.get('direction') == 'down' and price_bar['close'] < donchian_now['lower']:
+                        macd_falling = macd_now['hist'] < macd_prev['hist']
+                        cvd_confirm = cvd_now is not None and cvd_prev is not None and (cvd_now - cvd_prev) < 0
+                        if macd_falling:
+                            is_breakout_bear = True
+                            bear_breakout_reasons.append('MACD_DN')
+                            if cvd_confirm: bear_breakout_reasons.append('CVD↓')
+            
             # --- Emit signal if score >= threshold AND from >= 2 distinct groups ---
-            is_bull_valid = bull_score >= bull_threshold and len(bull_groups) >= 2
-            is_bear_valid = bear_score >= bear_threshold and len(bear_groups) >= 2
+            is_bull_valid = (bull_score >= bull_threshold and len(bull_groups) >= 2)
+            is_bear_valid = (bear_score >= bear_threshold and len(bear_groups) >= 2)
 
-            if is_bull_valid and (i - last_bull_idx) >= COOLDOWN:
+            if (is_bull_valid or is_breakout_bull) and (i - last_bull_idx) >= COOLDOWN:
                 # No-Long filter: block bullish signals in downtrend regime
                 if APPLY_DIRECTIONAL_PROTECTION and current_regime.get('no_long', False):
                     pass  # Signal blocked by regime filter
                 else:
-                    markers.append({
-                        "time": t,
-                        "position": "belowBar",
-                        "color": "#22c55e",
-                        "shape": "arrowUp",
-                        "text": f"⚡({len(bull_groups)}G) {bull_score}/7 [{regime_tag}] {'+'.join(bull_reasons)}",
-                        "score": bull_score,
-                        "direction": "bullish"
-                    })
+                    if is_breakout_bull:
+                        markers.append({
+                            "time": t,
+                            "position": "belowBar",
+                            "color": "#0ea5e9", # Distinct color for Breakout (e.g. blueish/cyan)
+                            "shape": "arrowUp",
+                            "text": f"🚀 [BREAKOUT] {'+'.join(bull_breakout_reasons)}",
+                            "score": 7, # Mock high score for breakout
+                            "direction": "bullish",
+                            "strategy_type": "breakout"
+                        })
+                    else:
+                        markers.append({
+                            "time": t,
+                            "position": "belowBar",
+                            "color": "#22c55e",
+                            "shape": "arrowUp",
+                            "text": f"⚡({len(bull_groups)}G) {bull_score}/7 [{regime_tag}] {'+'.join(bull_reasons)}",
+                            "score": bull_score,
+                            "direction": "bullish",
+                            "strategy_type": "reversion"
+                        })
                     last_bull_idx = i
-            elif is_bear_valid and (i - last_bear_idx) >= COOLDOWN:
+                    
+            elif (is_bear_valid or is_breakout_bear) and (i - last_bear_idx) >= COOLDOWN:
                 # No-Short filter: block bearish signals in uptrend regime
                 if APPLY_DIRECTIONAL_PROTECTION and current_regime.get('no_short', False):
                     pass  # Signal blocked by regime filter
                 else:
-                    markers.append({
-                        "time": t,
-                        "position": "aboveBar",
-                        "color": "#ef4444",
-                        "shape": "arrowDown",
-                        "text": f"⚡({len(bear_groups)}G) {bear_score}/7 [{regime_tag}] {'+'.join(bear_reasons)}",
-                        "score": bear_score,
-                        "direction": "bearish"
-                    })
+                    if is_breakout_bear:
+                        markers.append({
+                            "time": t,
+                            "position": "aboveBar",
+                            "color": "#f97316", # Orange/amber for Breakout short
+                            "shape": "arrowDown",
+                            "text": f"🚀 [BREAKDOWN] {'+'.join(bear_breakout_reasons)}",
+                            "score": 7,
+                            "direction": "bearish",
+                            "strategy_type": "breakout"
+                        })
+                    else:
+                        markers.append({
+                            "time": t,
+                            "position": "aboveBar",
+                            "color": "#ef4444",
+                            "shape": "arrowDown",
+                            "text": f"⚡({len(bear_groups)}G) {bear_score}/7 [{regime_tag}] {'+'.join(bear_reasons)}",
+                            "score": bear_score,
+                            "direction": "bearish",
+                            "strategy_type": "reversion"
+                        })
                     last_bear_idx = i
         
         return markers, latest_regime

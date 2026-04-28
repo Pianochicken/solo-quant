@@ -249,6 +249,10 @@ def get_market_data(
         bb_data = IndicatorEngine.calculate_bollinger_bands(data['price'])
         bb_pctb = bb_data['bb_pctb']
         
+        # 5.8. Donchian Channel and MACD for Breakout Strategy
+        donchian = IndicatorEngine.calculate_donchian_channel(data['price'])
+        macd_history = IndicatorEngine.calculate_macd(data['price'])
+
         # 6. Multi-Indicator Confluence Signals v4
         # Timeframe-adaptive thresholds, trend filter, per-bar rolling OI percentile
         confluence_markers, market_regime = IndicatorEngine.calculate_confluence_signals(
@@ -261,6 +265,8 @@ def get_market_data(
             rsi_aligned=rsi_history,
             ema_fast_aligned=ema_trend['ema_fast'],
             bb_pctb_aligned=bb_pctb,
+            donchian_aligned=donchian,
+            macd_aligned=macd_history,
             timeframe=timeframe,
             oi_aligned=open_interest,
             ranging_threshold=ranging_threshold,
