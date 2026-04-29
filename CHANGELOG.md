@@ -5,6 +5,10 @@ This file serves as a historical record to keep `AI_HANDOFF.md` clean and focuse
 
 ---
 
+## [2026-04-29] - Risk Presets UI & Position Lifecycle Validation
+- **Frontend**: Added "Conservative" and "Trend Following" risk preset toggle buttons to the Signal Backtester UI with dynamic active-state styling.
+- **Backend**: Verified and cemented Position exit evaluation priority: Stop Loss strictly triggers before Take Profit and Trailing Stop in the backtest engine context.
+
 ## [2026-04-28] - Dual-Engine Strategy & Breakout Indicators
 - **Backend**: Implemented look-ahead-bias-free Donchian Channel and MACD calculations in `api/core/indicators.py`.
 - **Backend**: Integrated a new "Breakout" logic into the confluence signal engine to catch strong trend continuations (Dual-Engine architecture).

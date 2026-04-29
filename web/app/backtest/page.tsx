@@ -334,7 +334,23 @@ export default function BacktestPage() {
                         {strategyMode === 'signal' && (
                             <>
                                 <div className="border-t border-zinc-800 pt-4 mt-2">
-                                    <p className="text-[10px] uppercase tracking-wider text-purple-400 font-bold mb-3 flex items-center gap-1"><Target className="w-3 h-3" /> Risk & Position</p>
+                                    <div className="flex justify-between items-center mb-3">
+                                        <p className="text-[10px] uppercase tracking-wider text-purple-400 font-bold flex items-center gap-1"><Target className="w-3 h-3" /> Risk & Position</p>
+                                        <div className="flex gap-2">
+                                            <button 
+                                                onClick={() => { setStopLoss('2.0'); setTakeProfit('4.0'); setTrailingStop('1.5'); setTrailingActivation('1.0'); }}
+                                                className={`px-2 py-1 text-[10px] font-bold rounded transition border ${stopLoss === '2.0' && takeProfit === '4.0' && trailingStop === '1.5' && trailingActivation === '1.0' ? 'bg-purple-900/50 text-purple-300 border-purple-500 shadow-[0_0_10px_rgba(168,85,247,0.2)]' : 'bg-zinc-800 text-zinc-400 border-transparent hover:text-white hover:bg-zinc-700'}`}
+                                            >
+                                                保守回歸
+                                            </button>
+                                            <button 
+                                                onClick={() => { setStopLoss('3.0'); setTakeProfit('8.0'); setTrailingStop('2.5'); setTrailingActivation('2.0'); }}
+                                                className={`px-2 py-1 text-[10px] font-bold rounded transition border ${stopLoss === '3.0' && takeProfit === '8.0' && trailingStop === '2.5' && trailingActivation === '2.0' ? 'bg-purple-900/50 text-purple-300 border-purple-500 shadow-[0_0_10px_rgba(168,85,247,0.2)]' : 'bg-zinc-800 text-zinc-400 border-transparent hover:text-white hover:bg-zinc-700'}`}
+                                            >
+                                                擁抱順勢
+                                            </button>
+                                        </div>
+                                    </div>
                                 </div>
                                 <div className="grid grid-cols-2 gap-4">
                                     <div>
