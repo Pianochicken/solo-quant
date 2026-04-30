@@ -63,15 +63,16 @@ class IndicatorEngine:
           - Z > 2.0  → 'bearish' (Overcrowded Longs → likely squeeze down)
           - Z < -2.0 → 'bullish' (Overcrowded Shorts → likely squeeze up)
         """
-        if not lsur_history or len(lsur_history) < window:
+        min_periods = min(14, window)
+        if not lsur_history or len(lsur_history) < min_periods:
             return []
         
         times = [item['time'] for item in lsur_history]
         values = [item['value'] for item in lsur_history]
         series = pd.Series(values)
         
-        rolling_mean = series.rolling(window=window).mean()
-        rolling_std = series.rolling(window=window).std()
+        rolling_mean = series.rolling(window=window, min_periods=min_periods).mean()
+        rolling_std = series.rolling(window=window, min_periods=min_periods).std()
         
         results = []
         for i in range(len(values)):
@@ -928,7 +929,7 @@ class IndicatorEngine:
                 oi_chg_pct = (oi_now - oi_prev) / oi_prev * 100
             
             if z_val is None:
-                continue
+                z_val = 0.0  # Default to neutral value to allow other signals to trigger early on
             
             price_close = price_bar['close'] if price_bar else None
             

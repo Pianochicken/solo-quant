@@ -154,8 +154,9 @@ class DataFetcher:
                         on='timestamp', 
                         direction='backward'
                     )
-                    merged['fundingRate'] = merged['fundingRate'].fillna(0)
-                    funding_data = [{"time": int(row['timestamp'] / 1000), "value": row['fundingRate'] * 100} for _, row in merged.iterrows()]
+                    import numpy as np
+                    merged['fundingRate'] = merged['fundingRate'].replace(np.nan, None)
+                    funding_data = [{"time": int(row['timestamp'] / 1000), "value": row['fundingRate'] * 100 if row['fundingRate'] is not None else None} for _, row in merged.iterrows()]
 
             return {"price": price_data, "funding": funding_data}
 

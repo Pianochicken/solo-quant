@@ -146,7 +146,8 @@ def get_market_data(
                     on='time', 
                     direction='backward'
                 )
-                merged_oi['value'] = merged_oi['value'].ffill().fillna(0)
+                import numpy as np
+                merged_oi['value'] = merged_oi['value'].ffill().replace(np.nan, None)
                 open_interest = merged_oi[['time', 'value']].to_dict('records')
             else:
                 open_interest = []
@@ -163,7 +164,8 @@ def get_market_data(
                     on='time', 
                     direction='backward'
                 )
-                merged_funding['value'] = merged_funding['value'].ffill().fillna(0)
+                import numpy as np
+                merged_funding['value'] = merged_funding['value'].ffill().replace(np.nan, None)
                 funding_aligned = merged_funding[['time', 'value']].to_dict('records')
             else:
                 funding_aligned = []
