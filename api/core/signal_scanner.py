@@ -108,7 +108,7 @@ async def scan_and_notify():
             #    This prevents a flood of historical notifications on first startup
             #    or after a container restart (when _last_notified is empty).
             now_sec = time.time()
-            RECENCY_WINDOW_SEC = 86400  # 1 hour
+            RECENCY_WINDOW_SEC = 3600  # 1 hour
             recent_markers = [m for m in markers if m["time"] >= (now_sec - RECENCY_WINDOW_SEC)]
 
             if not recent_markers:
