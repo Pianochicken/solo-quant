@@ -45,25 +45,66 @@ To prevent regressions, **ALL future AI Agents MUST adhere to these rules**:
 ---
 
 ## 4. Current Development Focus (The "Next")
-### Goal: Backtest Parameter Tuning & Risk Management Refinement
+### Goal: Event-Driven Signal Notification System (Telegram)
 
-**Context**: The Dual-Engine (Reversion + Breakout) is now complete, and the frontend dynamically displays both signal types accurately. However, the default backtesting parameters (Stop Loss, Take Profit, Trail %, Trail Activation %) are too tight for Breakout strategies (which typically require larger ATR / breathing room), causing trades to be prematurely stopped out by normal market noise (whipsaws).
+**Context**: The Dual-Engine (Reversion + Breakout) is complete and the frontend displays both signal types. The next priority is to build a **real-time notification pipeline** so the user receives Telegram alerts the moment a new signal appears, without needing to stare at the dashboard.
 
-**Execution Focus**:
-1. **Parameter Optimization / Preset Profiles**: Determine optimal risk management presets for "Mean-Reversion" vs "Breakout" trades. 
-2. **Backtest Panel Enhancements**: Perhaps introduce risk management presets directly in the UI (e.g., "Conservative" vs "Trend Following") which load distinct SL/TP/Trail ratios.
-3. **Analytics Tuning**: Increase `Trail %` and `Trail Activation` in default tests to validate that Breakout signals effectively capture major trend continuations without early stop-outs.
+**Architecture Decision**: No Kafka/RabbitMQ. The system is a single-user trading desk with signal frequency of a few per hour at most. The entire notification system will be **embedded within the existing FastAPI container** using `APScheduler` + direct Telegram Bot API calls.
+
+### 4.1 Implementation Phases
+
+#### Phase 1: Telegram Bot Notification (Core)
+1. **Create Telegram Bot**: Register a bot via @BotFather, obtain `BOT_TOKEN`.
+2. **Obtain Chat ID**: Send a message to the bot, then fetch `CHAT_ID` via `https://api.telegram.org/bot<TOKEN>/getUpdates`.
+3. **New Module — `api/core/notifier.py`**: Encapsulate `send_telegram_message(text)` using `httpx` (async HTTP POST to Telegram Bot API).
+4. **Environment Variables**: Store `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env`, inject via Docker Compose `environment`. **Never commit tokens to Git.**
+
+#### Phase 2: Scheduled Signal Scanner
+1. **Integrate APScheduler**: Initialize the scheduler inside FastAPI's `lifespan` event (on startup). Register a periodic job that runs every **15 minutes**.
+2. **New Module — `api/core/signal_scanner.py`**: Contains `scan_and_notify()`:
+   - Iterates over all monitored symbols (configurable list, default: all enabled symbols).
+   - Calls the existing `get_market_data()` → `IndicatorEngine.calculate_confluence_signals()` pipeline (respecting the 1000-candle warmup rule).
+   - Compares signal timestamps against `last_notified_time` (stored in-memory or DB) to **deduplicate** — only new signals are dispatched.
+   - Formats the notification message and calls `send_telegram_message()`.
+3. **Message Format**:
+   ```
+   Buy (Reversion):  🟢⬆ [BTC/USDT] Reversion BUY @ $94,500 | 3/7 CVD↑+FR-(OI↑)+BB↑
+   Buy (Breakout):   🟢⬆ [BTC/USDT] Breakout BUY @ $95,200 | 🚀 MACD↑+CVD↑
+   Sell (Reversion):  🔴⬇ [BTC/USDT] Reversion SELL @ $96,100 | 4/7 Z+FR++RSI72+EMA↓
+   Sell (Breakout):   🔴⬇ [BTC/USDT] Breakdown SELL @ $93,800 | 🚀 MACD↓+CVD↓
+   ```
+
+#### Phase 3: Frontend Notification Config Panel
+1. **New API Endpoints**:
+   - `GET /notifications/config` — Returns current notification settings (enabled symbols, on/off state).
+   - `POST /notifications/config` — Updates notification settings.
+2. **Frontend UI**: Add a Notification Settings section (e.g., in a Settings page or a dropdown in the header) where the user can:
+   - Toggle notifications on/off globally.
+   - Select which symbols to monitor (default: all enabled).
+   - (Future) Adjust scan frequency.
+
+#### Phase 4 (Optional / Future): Frontend WebSocket Push
+1. **WebSocket Endpoint**: `ws://localhost:8000/ws/signals` for real-time push to the frontend UI (e.g., toast notifications or a signal feed panel).
+2. This is **not required for Phase 1-3** — the Telegram bot is the primary notification channel.
+
+### 4.2 Gotchas for This Feature
+- **Deduplication is critical**: Without tracking `last_notified_time`, every 15-minute scan would re-send all historical signals. Use a simple in-memory dict keyed by `(symbol, timeframe)` → `last_signal_timestamp`.
+- **Telegram Rate Limits**: ~30 msgs/sec per chat. Not a concern for our volume, but wrap calls in `try/except` for resilience.
+- **Respect Indicator Warmup Parity**: The scanner MUST call `get_market_data(limit=1000)`, identical to the Dashboard. Never shortcut with fewer candles.
 
 ---
 
 ## 5. AI Agent Prompt (Copy-Paste to start next session)
 *Copy the prompt below to hand off this exact context to the next AI session:*
 
-> 「請扮演一位資深的量化交易演算法工程師。請先閱讀 `AI_HANDOFF.md` 以了解專案架構。
+> 「請扮演一位資深的 Python 後端工程師。請先閱讀 `AI_HANDOFF.md` 以了解專案架構與避坑規則。
 > 
-> 我們目前的進度在第 4 節『Backtest Parameter Tuning & Risk Management Refinement』。我們的雙引擎 (Dual-Engine) 信號機制已順利上線，但在執行回測時，預設的 trailing stop loss 過於緊繃，導致 Breakout 的訊號經常在小幅洗盤時被提早洗出場。
+> 我們目前的進度在第 4 節『Event-Driven Signal Notification System』。目標是建立一套 Telegram 通知系統，當新的交易信號出現時，自動推送到我的 Telegram。
 > 
 > 請執行以下任務：
-> 1. 請檢查並調整 `SignalBacktester` 或前端 UI 預設帶入的風控參數（例如：放寬 Breakout 的 SL 和 Trail %）。
-> 2. （如果適用）在前端面板加入『快速載入風控預設 (Presets)』的選項，例如分成『保守回歸』與『擁抱順勢』。
-> 3. 確認每一次調整後，都保持回測引擎的 `Position Lifecycle` 順序正確 (SL -> TP -> Trailing Stop)，並在圖表上驗證策略的存活率與盈虧比。」
+> 1. 建立 `api/core/notifier.py`，封裝 Telegram Bot API 的訊息發送（使用 `httpx` 異步 POST）。Token 和 Chat ID 從環境變數讀取。
+> 2. 建立 `api/core/signal_scanner.py`，實作 `scan_and_notify()` 函式。它必須重用現有的 `get_market_data(limit=1000)` + `IndicatorEngine` 管線來計算信號，並且只通知新出現的信號（透過記錄 `last_notified_time` 來去重）。
+> 3. 在 FastAPI 的 `lifespan` 事件中整合 `APScheduler`，每 15 分鐘自動執行一次掃描。
+> 4. 通知訊息格式範例：`🟢⬆ [BTC/USDT] Breakout BUY @ $95,200 | 🚀 MACD↑+CVD↑`。
+> 5. 更新 `docker-compose.yml` 加入 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_CHAT_ID` 環境變數。
+> 6. 請務必遵循第 3 節的避坑規則，特別是 Indicator Warmup Parity（必須使用 1000 根 K 線暖機）。」
