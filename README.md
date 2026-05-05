@@ -94,14 +94,22 @@
 
 The project is fully containerized for easy deployment to AWS/GCP or local testing.
 
-1. **Build and start the containers**
+1. **Environment Configuration**
+   - Ensure the `.env` file is present in the root directory with at least the following variables if you want to use Telegram notifications:
+     ```bash
+     # Telegram Bot
+     TELEGRAM_BOT_TOKEN=
+     TELEGRAM_CHAT_ID=
+     ```
+
+2. **Build and start the containers**
    ```bash
    docker-compose up -d --build
    ```
-2. **Access the services**
+3. **Access the services**
    - Frontend: `http://localhost:3000`
    - Backend API: `http://localhost:8000`
-3. **Stop the containers**
+4. **Stop the containers**
    ```bash
    docker-compose down
    ```

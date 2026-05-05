@@ -1,13 +1,52 @@
+import asyncio
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel as PydanticBaseModel
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+
 from api.core.fetcher import DataFetcher
 from api.db.database import engine, Base
 import api.db.models  # Import to register models with Base
 
+logger = logging.getLogger(__name__)
+
+# --- Configure root logger so INFO messages from scanner/notifier are visible ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+
 # Create tables if they don't exist yet
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="SoloQuant API")
+# --- APScheduler: Signal Notification Scheduler ---
+scheduler = AsyncIOScheduler()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan: start/stop the APScheduler for periodic signal scanning."""
+    from api.core.signal_scanner import scan_and_notify
+
+    scheduler.add_job(
+        scan_and_notify,
+        trigger=CronTrigger(minute="0,15,30,45"),
+        id="signal_scanner",
+        name="Periodic Signal Scanner",
+        replace_existing=True,
+    )
+    scheduler.start()
+    logger.info("APScheduler started — signal scanner runs at :00, :15, :30, :45 every hour.")
+    yield
+    scheduler.shutdown()
+    logger.info("APScheduler shut down.")
+
+
+app = FastAPI(title="SoloQuant API", lifespan=lifespan)
 
 # Enable CORS for Next.js (usually runs on port 3000 locally, can add production URLs below)
 app.add_middleware(
@@ -45,6 +84,49 @@ def clear_cache():
         _fetcher_instance.cache.clear()
         return {"status": "success", "message": "Cache cleared successfully"}
     return {"status": "info", "message": "Cache was already empty"}
+
+# --- Notification Config Endpoints ---
+from api.core.signal_scanner import get_notification_config, update_notification_config
+from typing import List, Optional
+
+
+class NotificationConfigUpdate(PydanticBaseModel):
+    enabled: Optional[bool] = None
+    monitored_symbols: Optional[List[str]] = None
+
+
+@app.get("/notifications/config")
+def get_notif_config():
+    """Get the current notification settings."""
+    return get_notification_config()
+
+
+@app.post("/notifications/config")
+def update_notif_config(body: NotificationConfigUpdate):
+    """Update notification settings (toggle on/off, select symbols)."""
+    return update_notification_config(
+        enabled=body.enabled,
+        monitored_symbols=body.monitored_symbols,
+    )
+
+
+@app.post("/notifications/test")
+async def test_notification():
+    """Send a test notification to verify Telegram integration."""
+    from api.core.notifier import send_telegram_message
+    success = await send_telegram_message("✅ Solo-Quant test notification — Telegram integration is working!")
+    if success:
+        return {"status": "success", "message": "Test notification sent to Telegram."}
+    return {"status": "error", "message": "Failed to send. Check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID."}
+
+
+@app.post("/notifications/scan-now")
+async def trigger_scan_now():
+    """Manually trigger a signal scan (useful for testing without waiting 15 min)."""
+    from api.core.signal_scanner import scan_and_notify
+    await scan_and_notify()
+    return {"status": "success", "message": "Manual scan completed."}
+
 
 from api.core.indicators import IndicatorEngine
 

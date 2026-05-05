@@ -25,6 +25,16 @@ The core of the system relies on generating `Bullish` and `Bearish` markers from
 - **Regime-Adaptive Thresholds**: The system detects the current market regime (`trending up`, `trending down`, `ranging`). In a trend, it automatically relaxes the thresholds of Mean-Reversion indicators (like RSI and EMA) to buy shallow dips.
 - **Visuals**: The UI features an `AdvancedChart` with 7 layers: Main Price, RSI, CVD, Open Interest, Funding Rate, Market Pulse, and a **Regime Chart** (Emerald for Uptrend, Red for Downtrend, Amber for Ranging). Breakout signals are distinctly visualized (e.g., Rocket 🚀 icon, Blue/Orange colors) separate from reversion signals.
 
+### 2.2 Signal Notification System (Telegram)
+An event-driven notification pipeline embedded within the FastAPI container. No external message brokers (Kafka/RabbitMQ).
+
+- **Modules**: `api/core/notifier.py` (Telegram Bot API via `httpx`) + `api/core/signal_scanner.py` (scan logic + dedup).
+- **Schedule**: `APScheduler` with `CronTrigger(minute="0,15,30,45")` — scans at fixed clock times, 5-second delay between symbols to avoid OKX rate limiting.
+- **Dedup**: In-memory `_last_notified` dict tracks the latest notified signal timestamp per `(symbol, timeframe)`. Combined with a **1-hour recency window** to prevent notification floods on container restart.
+- **Message Format**: `🟢⬆ 2026/05/05 17:00 [BTC/USDT] Reversion BUY @ $94,500 | 3/7 CVD↑+FR-+BB↑`
+- **Config API**: `GET/POST /notifications/config` (toggle on/off, select symbols), `POST /notifications/test`, `POST /notifications/scan-now`.
+- **Env Vars**: `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env` (injected via `docker-compose.yml`). **Never commit tokens to Git.**
+
 ---
 
 ## 3. Crucial Principles & Gotchas (READ BEFORE CODING)
@@ -41,70 +51,51 @@ To prevent regressions, **ALL future AI Agents MUST adhere to these rules**:
    - *Rule*: All UI times must be explicitly parsed as Local Time before injecting into charts or tables.
 4. **Regime Chart Constraints**:
    - *Gotcha*: The `AdvancedChart.tsx` Regime Chart is a *constant height* histogram (value is always 1). It relies purely on the `color` attribute to convey state. Do not attempt to map Y-values for regime states.
+5. **Signal Scanner Warmup Parity**:
+   - *Gotcha*: The signal scanner (`signal_scanner.py`) must call `get_market_data(limit=1000)` — the exact same pipeline as the Dashboard — to ensure indicator warmup is identical.
+   - *Rule*: Never shortcut the scanner with fewer candles or a different code path.
 
 ---
 
 ## 4. Current Development Focus (The "Next")
-### Goal: Event-Driven Signal Notification System (Telegram)
+### Goal: Frontend Notification Config Panel & Backtest Parameter Tuning
 
-**Context**: The Dual-Engine (Reversion + Breakout) is complete and the frontend displays both signal types. The next priority is to build a **real-time notification pipeline** so the user receives Telegram alerts the moment a new signal appears, without needing to stare at the dashboard.
+**Context**: The backend notification system (Telegram) is fully operational (Phase 1 & 2 complete). The next priorities are:
 
-**Architecture Decision**: No Kafka/RabbitMQ. The system is a single-user trading desk with signal frequency of a few per hour at most. The entire notification system will be **embedded within the existing FastAPI container** using `APScheduler` + direct Telegram Bot API calls.
-
-### 4.1 Implementation Phases
-
-#### Phase 1: Telegram Bot Notification (Core)
-1. **Create Telegram Bot**: Register a bot via @BotFather, obtain `BOT_TOKEN`.
-2. **Obtain Chat ID**: Send a message to the bot, then fetch `CHAT_ID` via `https://api.telegram.org/bot<TOKEN>/getUpdates`.
-3. **New Module — `api/core/notifier.py`**: Encapsulate `send_telegram_message(text)` using `httpx` (async HTTP POST to Telegram Bot API).
-4. **Environment Variables**: Store `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env`, inject via Docker Compose `environment`. **Never commit tokens to Git.**
-
-#### Phase 2: Scheduled Signal Scanner
-1. **Integrate APScheduler**: Initialize the scheduler inside FastAPI's `lifespan` event (on startup). Register a periodic job that runs every **15 minutes**.
-2. **New Module — `api/core/signal_scanner.py`**: Contains `scan_and_notify()`:
-   - Iterates over all monitored symbols (configurable list, default: all enabled symbols).
-   - Calls the existing `get_market_data()` → `IndicatorEngine.calculate_confluence_signals()` pipeline (respecting the 1000-candle warmup rule).
-   - Compares signal timestamps against `last_notified_time` (stored in-memory or DB) to **deduplicate** — only new signals are dispatched.
-   - Formats the notification message and calls `send_telegram_message()`.
-3. **Message Format**:
-   ```
-   Buy (Reversion):  🟢⬆ [BTC/USDT] Reversion BUY @ $94,500 | 3/7 CVD↑+FR-(OI↑)+BB↑
-   Buy (Breakout):   🟢⬆ [BTC/USDT] Breakout BUY @ $95,200 | 🚀 MACD↑+CVD↑
-   Sell (Reversion):  🔴⬇ [BTC/USDT] Reversion SELL @ $96,100 | 4/7 Z+FR++RSI72+EMA↓
-   Sell (Breakout):   🔴⬇ [BTC/USDT] Breakdown SELL @ $93,800 | 🚀 MACD↓+CVD↓
-   ```
-
-#### Phase 3: Frontend Notification Config Panel
-1. **New API Endpoints**:
-   - `GET /notifications/config` — Returns current notification settings (enabled symbols, on/off state).
-   - `POST /notifications/config` — Updates notification settings.
-2. **Frontend UI**: Add a Notification Settings section (e.g., in a Settings page or a dropdown in the header) where the user can:
+### 4.1 Frontend Notification Config Panel (Phase 3)
+Build a UI panel so the user can manage notification settings without calling raw API endpoints.
+1. **Frontend UI**: Add a Notification Settings section (e.g., in a Settings page or a dropdown/modal in the header) where the user can:
    - Toggle notifications on/off globally.
    - Select which symbols to monitor (default: all enabled).
-   - (Future) Adjust scan frequency.
+   - View current scan schedule.
+   - Send a test notification.
+2. **Integration**: Connect to existing `GET/POST /notifications/config` and `POST /notifications/test` endpoints.
 
-#### Phase 4 (Optional / Future): Frontend WebSocket Push
-1. **WebSocket Endpoint**: `ws://localhost:8000/ws/signals` for real-time push to the frontend UI (e.g., toast notifications or a signal feed panel).
-2. This is **not required for Phase 1-3** — the Telegram bot is the primary notification channel.
+### 4.2 Backtest Parameter Tuning & Risk Management Refinement
+The default backtesting parameters (SL, TP, Trail %, Trail Activation %) are too tight for Breakout strategies, causing trades to be prematurely stopped out by normal market noise.
+1. **Parameter Optimization / Preset Profiles**: Determine optimal risk management presets for "Mean-Reversion" vs "Breakout" trades.
+2. **Backtest Panel Enhancements**: Introduce risk management presets in the UI (e.g., "Conservative" vs "Trend Following") which load distinct SL/TP/Trail ratios.
 
-### 4.2 Gotchas for This Feature
-- **Deduplication is critical**: Without tracking `last_notified_time`, every 15-minute scan would re-send all historical signals. Use a simple in-memory dict keyed by `(symbol, timeframe)` → `last_signal_timestamp`.
-- **Telegram Rate Limits**: ~30 msgs/sec per chat. Not a concern for our volume, but wrap calls in `try/except` for resilience.
-- **Respect Indicator Warmup Parity**: The scanner MUST call `get_market_data(limit=1000)`, identical to the Dashboard. Never shortcut with fewer candles.
+### 4.3 (Optional / Future): Frontend WebSocket Push
+1. **WebSocket Endpoint**: `ws://localhost:8000/ws/signals` for real-time push to the frontend UI (toast notifications or signal feed panel).
+2. Not required for Phase 3 — Telegram bot is the primary notification channel.
 
 ---
 
 ## 5. AI Agent Prompt (Copy-Paste to start next session)
 *Copy the prompt below to hand off this exact context to the next AI session:*
 
-> 「請扮演一位資深的 Python 後端工程師。請先閱讀 `AI_HANDOFF.md` 以了解專案架構與避坑規則。
+> 「請扮演一位資深的全端工程師。請先閱讀 `AI_HANDOFF.md` 以了解專案架構與避坑規則。
 > 
-> 我們目前的進度在第 4 節『Event-Driven Signal Notification System』。目標是建立一套 Telegram 通知系統，當新的交易信號出現時，自動推送到我的 Telegram。
+> 我們目前的進度在第 4 節。後端的 Telegram 信號通知系統已經完成並上線運作（Phase 1 & 2），接下來需要完成兩個任務：
 > 
-> 請執行以下任務：
-> 1. 建立 `api/core/notifier.py`，封裝 Telegram Bot API 的訊息發送（使用 `httpx` 異步 POST）。Token 和 Chat ID 從環境變數讀取。
-> 2. 建立 `api/core/signal_scanner.py`，實作 `scan_and_notify()` 函式。它必須重用現有的 `get_market_data(limit=1000)` + `IndicatorEngine` 管線來計算信號，並且只通知新出現的信號（透過記錄 `last_notified_time` 來去重）。
-> 3. 在 FastAPI 的 `lifespan` 事件中整合 `APScheduler`，每 15 分鐘自動執行一次掃描。
-> 4. 通知訊息格式範例：`🟢⬆ [BTC/USDT] Breakout BUY @ $95,200 | 🚀 MACD↑+CVD↑`。
-> 5. 更新 `docker-compose.yml` 加入 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_CHAT_ID` 環境變數。
-> 6. 請務必遵循第 3 節的避坑規則，特別是 Indicator Warmup Parity（必須使用 1000 根 K 線暖機）。」
+> **任務一：前端通知設定面板 (Phase 3)**
+> 1. 在前端新增一個 Notification Settings 的 UI 區域（可以是 Settings 頁面或 Header 內的下拉選單）。
+> 2. 串接現有的 `GET/POST /notifications/config` 和 `POST /notifications/test` API。
+> 3. 讓使用者可以開關通知、選擇要監控的幣種、發送測試通知。
+> 
+> **任務二：回測風控參數調校**
+> 1. 檢查 `SignalBacktester` 的預設風控參數，針對 Breakout 策略放寬 SL 和 Trail %。
+> 2. 在前端回測面板加入『快速載入風控預設』選項（例如『保守回歸』與『順勢突破』）。
+> 3. 確認 Position Lifecycle 順序正確 (SL -> TP -> Trailing Stop)。」
+
