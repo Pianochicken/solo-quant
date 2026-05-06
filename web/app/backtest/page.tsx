@@ -51,9 +51,6 @@ export default function BacktestPage() {
 
     const chartContainerRef = useRef<HTMLDivElement>(null);
 
-    // Timezone offset (seconds) so charts display local time instead of UTC
-    const tzOffsetSec = new Date().getTimezoneOffset() * -60;
-
     // Chart Effect
     useEffect(() => {
         if (!equityCurve.length || !chartContainerRef.current) return;
@@ -77,7 +74,7 @@ export default function BacktestPage() {
 
         const sortedEquity = [...equityCurve]
             .sort((a, b) => a.time - b.time)
-            .map(item => ({ ...item, time: (item.time + tzOffsetSec) as any }));
+            .map(item => ({ ...item, time: item.time as any }));
         areaSeries.setData(sortedEquity);
         chart.timeScale().fitContent();
 
@@ -110,7 +107,7 @@ export default function BacktestPage() {
 
         const sorted = [...signalResult.price_data]
             .sort((a, b) => a.time - b.time)
-            .map(c => ({ time: (c.time + tzOffsetSec) as any, open: c.open, high: c.high, low: c.low, close: c.close }));
+            .map(c => ({ ...c, time: c.time as any }));
         candleSeries.setData(sorted);
 
         // Build markers from trades
@@ -130,7 +127,7 @@ export default function BacktestPage() {
                     ? (isLong ? 'BUY' : 'SHORT')
                     : (reasonEmoji[t.exit_reason] || 'CLOSE');
                 return {
-                    time: (t.time + tzOffsetSec) as any,
+                    time: t.time as any,
                     position: (isOpen ? (isLong ? 'belowBar' : 'aboveBar') : (isLong ? 'aboveBar' : 'belowBar')) as any,
                     color: markerColors[t.side] || '#a78bfa',
                     shape: (isOpen ? 'arrowUp' : 'arrowDown') as any,

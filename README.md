@@ -95,12 +95,15 @@
 The project is fully containerized for easy deployment to AWS/GCP or local testing.
 
 1. **Environment Configuration**
-   - Ensure the `.env` file is present in the root directory with at least the following variables if you want to use Telegram notifications:
-     ```bash
-     # Telegram Bot
-     TELEGRAM_BOT_TOKEN=
-     TELEGRAM_CHAT_ID=
-     ```
+    - Ensure the `.env` file is present in the root directory with at least the following variables if you want to use Telegram notifications and custom timezones:
+      ```bash
+      # Telegram Bot
+      TELEGRAM_BOT_TOKEN=<YOUR_TELEGRAM_BOT_TOKEN>
+      TELEGRAM_CHAT_ID=<YOUR_TELEGRAM_CHAT_ID>
+      
+      # Timezone Offset (e.g., 8 for UTC+8). Defaults to 0 (UTC+0).
+      NEXT_PUBLIC_TIMEZONE_OFFSET=<YOUR_TIMEZONE_OFFSET>
+      ```
 
 2. **Build and start the containers**
    ```bash

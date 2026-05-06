@@ -47,12 +47,34 @@ export interface MarketData {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
 
+export function getTimezoneOffsetSec(): number {
+    const envOffset = process.env.NEXT_PUBLIC_TIMEZONE_OFFSET;
+    if (envOffset !== undefined && envOffset !== '') {
+        return parseFloat(envOffset) * 3600;
+    }
+    // Default to browser's local timezone if not explicitly set at build time
+    return new Date().getTimezoneOffset() * -60;
+}
+
+export function shiftTimes(obj: any, offsetSec: number) {
+    if (!obj || typeof obj !== 'object') return;
+    if (Array.isArray(obj)) {
+        for (let i = 0; i < obj.length; i++) {
+            shiftTimes(obj[i], offsetSec);
+        }
+    } else {
+        if ('time' in obj && typeof obj.time === 'number') {
+            obj.time += offsetSec;
+        }
+        for (const key in obj) {
+            if (Object.prototype.hasOwnProperty.call(obj, key)) {
+                shiftTimes(obj[key], offsetSec);
+            }
+        }
+    }
+}
+
 export async function getMarketData(symbol: string, timeframe: string = '1h', limit: number = 100, config?: SignalConfig): Promise<MarketData> {
-    // Convert slash to dash for URL safety if needed.
-    // Our FastAPI backend expects the symbol in the path.
-    // We replace slash with dash just to be safe in URL path, but we need to ensure backend handles it.
-    // Actually, sending 'BTC/USDT' in path component is tricky. let's encode it or replace.
-    // The previous code replaced it with dash.
     const safeSymbol = symbol.replace('/', '-');
 
     try {
@@ -62,7 +84,13 @@ export async function getMarketData(symbol: string, timeframe: string = '1h', li
         }
         const res = await fetch(url);
         if (!res.ok) throw new Error('Failed to fetch market data');
-        return res.json();
+        
+        const data = await res.json();
+        const tzOffsetSec = getTimezoneOffsetSec();
+        if (tzOffsetSec !== 0) {
+            shiftTimes(data, tzOffsetSec);
+        }
+        return data;
     } catch (error) {
         console.error(error);
         throw error;
@@ -252,5 +280,11 @@ export async function runSignalBacktest(params: SignalBacktestParams): Promise<S
         const detail = await res.text();
         throw new Error(`Signal Backtest Failed: ${detail}`);
     }
-    return res.json();
+    
+    const data = await res.json();
+    const tzOffsetSec = getTimezoneOffsetSec();
+    if (tzOffsetSec !== 0) {
+        shiftTimes(data, tzOffsetSec);
+    }
+    return data;
 }

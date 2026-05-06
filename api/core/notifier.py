@@ -76,9 +76,14 @@ def format_signal_message(signal: dict, symbol: str, price: float) -> str:
     text_raw = signal.get("text", "")
     signal_time = signal.get("time", 0)
 
-    # Format signal timestamp (UTC -> local display)
+    # Timezone Offset from environment (e.g. 8 for UTC+8)
+    tz_offset = float(os.getenv("NEXT_PUBLIC_TIMEZONE_OFFSET", "0"))
+
+    # Format signal timestamp (UTC -> custom offset)
     if signal_time:
-        dt = datetime.fromtimestamp(signal_time)
+        import datetime as dt_module
+        dt = datetime.fromtimestamp(signal_time, tz=timezone.utc)
+        dt = dt + dt_module.timedelta(hours=tz_offset)
         time_str = dt.strftime("%Y/%m/%d %H:%M")
     else:
         time_str = "----/--/-- --:--"
