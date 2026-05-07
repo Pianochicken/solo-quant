@@ -1160,7 +1160,7 @@ class IndicatorEngine:
                             "position": "belowBar",
                             "color": "#22c55e",
                             "shape": "arrowUp",
-                            "text": f"⚡({len(bull_groups)}G) {bull_score}/7 [{regime_tag}] {'+'.join(bull_reasons)}",
+                            "text": f"⚡({len(bull_groups)}G) {bull_score:g}/7 [{regime_tag}] {'+'.join(bull_reasons)}",
                             "score": bull_score,
                             "direction": "bullish",
                             "strategy_type": "reversion"
@@ -1189,7 +1189,7 @@ class IndicatorEngine:
                             "position": "aboveBar",
                             "color": "#ef4444",
                             "shape": "arrowDown",
-                            "text": f"⚡({len(bear_groups)}G) {bear_score}/7 [{regime_tag}] {'+'.join(bear_reasons)}",
+                            "text": f"⚡({len(bear_groups)}G) {bear_score:g}/7 [{regime_tag}] {'+'.join(bear_reasons)}",
                             "score": bear_score,
                             "direction": "bearish",
                             "strategy_type": "reversion"

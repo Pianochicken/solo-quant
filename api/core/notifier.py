@@ -113,7 +113,7 @@ def format_signal_message(signal: dict, symbol: str, price: float) -> str:
     else:
         # Extract reasons from text like "⚡(2G) 3/7 [T] CVD↑+FR-+BB↑"
         # We want to show "3/7 CVD↑+FR-+BB↑"
-        reason_str = f"{score}/7 {text_raw.split('] ')[-1]}" if "] " in text_raw else f"{score}/7"
+        reason_str = f"{score:g}/7 {text_raw.split('] ')[-1]}" if "] " in text_raw else f"{score:g}/7"
 
     return f"{emoji} {time_str} [{symbol}] {strategy_label} {action} @ {price_str} | {reason_str}"
 
