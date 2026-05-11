@@ -104,11 +104,11 @@ async def scan_and_notify():
                 logger.info(f"  {symbol}: no markers found, skipping.")
                 continue
 
-            # 2. Recency filter: only consider signals from the last 1 hour.
+            # 2. Recency filter: only consider signals from the last 2 hour.
             #    This prevents a flood of historical notifications on first startup
             #    or after a container restart (when _last_notified is empty).
             now_sec = time.time()
-            RECENCY_WINDOW_SEC = 3600  # 1 hour
+            RECENCY_WINDOW_SEC = 7200  # 2 hours
             recent_markers = [m for m in markers if m["time"] >= (now_sec - RECENCY_WINDOW_SEC)]
 
             if not recent_markers:
