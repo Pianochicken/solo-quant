@@ -29,10 +29,13 @@ class DataFetcher:
         """
         Fetches OHLCV (Spot) and Funding Rate (Perp) History.
         """
-        # Use swap symbol for fetching OHLCV to ensure maximum history (often listed before spot)
+        # Use swap symbol for DB storage
         db_symbol = symbol
-        swap_symbol = f"{symbol.split('/')[0]}-USDT-SWAP" if '/' in symbol else f"{symbol.split('-')[0]}-USDT-SWAP"
-        fetch_symbol = swap_symbol
+        base_asset = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[0]
+        swap_symbol = f"{base_asset}-USDT-SWAP"
+        
+        # Use CCXT Unified Symbol for API fetching to avoid safeMarket ambiguity errors
+        ccxt_symbol = f"{base_asset}/USDT:USDT"
         funding_symbol = swap_symbol
         
         with SessionLocal() as db:
@@ -95,7 +98,7 @@ class DataFetcher:
                 return collected[-target_limit:]
 
             try:
-                ohlcv_batch = fetch_paginated(self.exchange.fetch_ohlcv, fetch_symbol, target_limit_ohlcv, is_ohlcv=True)
+                ohlcv_batch = fetch_paginated(self.exchange.fetch_ohlcv, ccxt_symbol, target_limit_ohlcv, is_ohlcv=True)
                 if ohlcv_batch:
                     records = []
                     for x in ohlcv_batch:
@@ -108,10 +111,10 @@ class DataFetcher:
                         })
                     crud.upsert_market_data(db, records)
             except Exception as e:
-                print(f"Error fetching OHLCV for {fetch_symbol}: {e}")
+                print(f"Error fetching OHLCV for {ccxt_symbol}: {e}")
 
             try:
-                funding_batch = fetch_paginated(self.exchange.fetch_funding_rate_history, funding_symbol, target_limit_funding, is_ohlcv=False)
+                funding_batch = fetch_paginated(self.exchange.fetch_funding_rate_history, ccxt_symbol, target_limit_funding, is_ohlcv=False)
                 if funding_batch:
                     f_records = []
                     for x in funding_batch:
