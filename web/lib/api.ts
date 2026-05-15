@@ -288,3 +288,33 @@ export async function runSignalBacktest(params: SignalBacktestParams): Promise<S
     }
     return data;
 }
+
+// --- Notification Config API ---
+
+export interface NotificationConfig {
+    enabled: boolean;
+    monitored_symbols: string[];
+}
+
+export async function getNotificationConfig(): Promise<NotificationConfig> {
+    const res = await fetch(`${API_BASE}/notifications/config`);
+    if (!res.ok) throw new Error('Failed to fetch notification config');
+    return res.json();
+}
+
+export async function updateNotificationConfig(config: NotificationConfig): Promise<NotificationConfig> {
+    const res = await fetch(`${API_BASE}/notifications/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config)
+    });
+    if (!res.ok) throw new Error('Failed to update notification config');
+    return res.json();
+}
+
+export async function sendTestNotification(): Promise<void> {
+    const res = await fetch(`${API_BASE}/notifications/test`, {
+        method: 'POST'
+    });
+    if (!res.ok) throw new Error('Failed to send test notification');
+}

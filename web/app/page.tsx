@@ -8,7 +8,8 @@ import SentimentPanel from '@/components/SentimentPanel';
 import { HistoryPanel, Order } from '@/components/HistoryPanel';
 import { IndicatorsInfoModal } from '@/components/IndicatorsInfoModal';
 import { SignalSettingsModal } from '@/components/SignalSettingsModal';
-import { RefreshCw, Zap, BarChart3, Clock, AlertTriangle, Info, Settings } from 'lucide-react';
+import { NotificationSettingsModal } from '@/components/NotificationSettingsModal';
+import { RefreshCw, Zap, BarChart3, Clock, AlertTriangle, Info, Settings, Bell } from 'lucide-react';
 import Link from 'next/link';
 
 const TIMEFRAMES = [
@@ -38,6 +39,7 @@ export default function Dashboard() {
 
   // State for Settings Modal
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [isNotificationSettingsOpen, setIsNotificationSettingsOpen] = useState(false);
   const [signalConfig, setSignalConfig] = useState({
     rangingThreshold: 3,
     trendingThreshold: 3,
@@ -190,6 +192,16 @@ export default function Dashboard() {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Notification Settings Button */}
+            <button
+              onClick={() => setIsNotificationSettingsOpen(true)}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-blue-400 hover:border-blue-900/50 hover:bg-blue-950/20 transition-all font-medium text-sm"
+              title="通知設定"
+            >
+              <Bell className="w-4 h-4" />
+              <span className="hidden sm:inline">通知設定</span>
+            </button>
+
             {/* Settings Button */}
             <button
               onClick={() => setIsSettingsModalOpen(true)}
@@ -372,6 +384,12 @@ export default function Dashboard() {
         onClose={() => setIsSettingsModalOpen(false)}
         currentConfig={signalConfig}
         onSave={setSignalConfig}
+      />
+
+      {/* Notification Settings Modal */}
+      <NotificationSettingsModal 
+        isOpen={isNotificationSettingsOpen}
+        onClose={() => setIsNotificationSettingsOpen(false)}
       />
     </main>
   );

@@ -341,10 +341,10 @@ export default function BacktestPage() {
                                                 保守回歸
                                             </button>
                                             <button 
-                                                onClick={() => { setStopLoss('3.0'); setTakeProfit('8.0'); setTrailingStop('2.5'); setTrailingActivation('2.0'); }}
-                                                className={`px-2 py-1 text-[10px] font-bold rounded transition border ${stopLoss === '3.0' && takeProfit === '8.0' && trailingStop === '2.5' && trailingActivation === '2.0' ? 'bg-purple-900/50 text-purple-300 border-purple-500 shadow-[0_0_10px_rgba(168,85,247,0.2)]' : 'bg-zinc-800 text-zinc-400 border-transparent hover:text-white hover:bg-zinc-700'}`}
+                                                onClick={() => { setStopLoss('4.0'); setTakeProfit('10.0'); setTrailingStop('3.0'); setTrailingActivation('2.0'); }}
+                                                className={`px-2 py-1 text-[10px] font-bold rounded transition border ${stopLoss === '4.0' && takeProfit === '10.0' && trailingStop === '3.0' && trailingActivation === '2.0' ? 'bg-purple-900/50 text-purple-300 border-purple-500 shadow-[0_0_10px_rgba(168,85,247,0.2)]' : 'bg-zinc-800 text-zinc-400 border-transparent hover:text-white hover:bg-zinc-700'}`}
                                             >
-                                                擁抱順勢
+                                                順勢突破
                                             </button>
                                         </div>
                                     </div>
