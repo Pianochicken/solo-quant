@@ -43,12 +43,12 @@ export function SignalSettingsModal({ isOpen, onClose, currentConfig, onSave }: 
                         <label className="block text-sm font-medium text-zinc-300 mb-2">Ranging Regime Threshold 震盪行情門檻</label>
                         <div className="flex items-center gap-4">
                             <input 
-                                type="range" min="1" max="7" 
+                                type="range" min="1" max="10" 
                                 value={config.rangingThreshold} 
                                 onChange={(e) => setConfig({...config, rangingThreshold: parseInt(e.target.value)})}
                                 className="w-full accent-purple-500" 
                             />
-                            <span className="text-xl font-mono text-amber-400 font-bold w-8 text-right">{config.rangingThreshold}/7</span>
+                            <span className="text-xl font-mono text-amber-400 font-bold w-8 text-right">{config.rangingThreshold}/10</span>
                         </div>
                         <p className="text-xs text-zinc-500 mt-1">震盪行情觸發訊號的最低指標數量。</p>
                     </div>
@@ -57,12 +57,12 @@ export function SignalSettingsModal({ isOpen, onClose, currentConfig, onSave }: 
                         <label className="block text-sm font-medium text-zinc-300 mb-2">Trending Regime Threshold 趨勢行情門檻</label>
                         <div className="flex items-center gap-4">
                             <input 
-                                type="range" min="1" max="7" 
+                                type="range" min="1" max="10" 
                                 value={config.trendingThreshold} 
                                 onChange={(e) => setConfig({...config, trendingThreshold: parseInt(e.target.value)})}
                                 className="w-full accent-emerald-500" 
                             />
-                            <span className="text-xl font-mono text-emerald-400 font-bold w-8 text-right">{config.trendingThreshold}/7</span>
+                            <span className="text-xl font-mono text-emerald-400 font-bold w-8 text-right">{config.trendingThreshold}/10</span>
                         </div>
                         <p className="text-xs text-zinc-500 mt-1">趨勢行情觸發訊號的最低指標數量。</p>
                     </div>

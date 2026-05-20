@@ -581,7 +581,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
             {/* 2. Market Pulse Chart */}
             <div className="relative w-full h-[100px] border-t border-zinc-800">
                 <div className="absolute top-1 left-2 z-10 bg-black/50 px-2 py-0.5 rounded text-[10px] text-zinc-400 flex gap-2">
-                    <span className="font-bold text-zinc-300">Market Pulse</span><InfoTooltip text="綜合情緒指數 (0-100)：匯總所有 7 種指標的得分。越接近 100 代表市場越看跌（做空擁擠／超買），越接近 0 代表市場越看漲（做多擁擠／超賣）。" />
+                    <span className="font-bold text-zinc-300">Market Pulse</span><InfoTooltip text="綜合情緒指數 (0-100)：匯總所有核心指標的得分。越接近 100 代表市場越看跌（做空擁擠／超買），越接近 0 代表市場越看漲（做多擁擠／超賣）。" />
                     {typeof pulseLegendValue === 'number' && (
                         <span className={`font-mono font-bold ${pulseLegendValue >= 80 ? 'text-red-400' : pulseLegendValue <= 20 ? 'text-emerald-400' : 'text-zinc-400'}`}>
                             {pulseLegendValue.toFixed(1)}

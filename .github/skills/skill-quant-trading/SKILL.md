@@ -87,3 +87,19 @@ When adding a new indicator to the system, follow this strict lifecycle:
 2. **Confluence Integration**: Wire the output into the `calculate_confluence_signals` engine. Determine if it belongs to the Reversion or Breakout track.
 3. **API Serialization**: Expose the necessary arrays via the FastAPI response model.
 4. **UI Representation**: Build the visualization layer in the frontend chart components, ensuring color consistency (e.g., Green = Bullish/Up, Red = Bearish/Down).
+
+---
+
+## 6. Frontend ↔ Backend Integration SOP
+When connecting frontend UI to backend API endpoints, follow this checklist to prevent contract mismatches:
+
+1. **Verify API Response Shape**: Before writing any TypeScript interface, inspect the actual backend response by either:
+   - Reading the FastAPI endpoint code and its return dict/model.
+   - Running `curl http://localhost:8000/<endpoint>` or `docker exec solo-quant-api python3 -c "..."` to see the real JSON keys.
+2. **Mirror Field Names Exactly**: TypeScript interfaces MUST use the exact same field names as the backend JSON response. Do not rename fields (e.g., `monitored_symbols` → `symbols`) without an explicit mapping layer.
+3. **Null/Undefined Safety**: Always handle the case where the API returns unexpected shapes. Use optional chaining (`?.`) and provide sensible defaults for array/object fields that might be `undefined` during loading states.
+4. **Smoke Test Before Commit**: After wiring up a new frontend component to a backend API, always perform a minimal end-to-end test:
+   - Open the UI feature in a browser.
+   - Confirm no console errors.
+   - Verify the data displays correctly.
+   - Test the save/submit flow round-trip.

@@ -15,7 +15,7 @@ export function IndicatorsInfoModal({ isOpen, onClose }: IndicatorsInfoModalProp
                 <div className="sticky top-0 z-10 bg-zinc-900/90 backdrop-blur-md border-b border-zinc-800 px-6 py-4 flex items-center justify-between">
                     <div className="flex items-center gap-3">
                         <Zap className="w-5 h-5 text-amber-400" />
-                        <h2 className="text-lg font-bold text-zinc-100">Multi-Indicator Confluence Signal (v5)</h2>
+                        <h2 className="text-lg font-bold text-zinc-100">Multi-Indicator Confluence Signal (v6)</h2>
                     </div>
                     <button
                         onClick={onClose}
@@ -29,13 +29,13 @@ export function IndicatorsInfoModal({ isOpen, onClose }: IndicatorsInfoModalProp
                 <div className="p-6 space-y-6">
                     <div className="space-y-3">
                         <p className="text-sm text-zinc-400 leading-relaxed">
-                            此系統升級為「兩階段狀態機（State Machine）」獵殺流動性邏輯。為了解決「共線性誤判」（避免只因為價格急跌就累積滿分），目前的指標被歸類為「價格(Price)」、「情緒(Sentiment)」與「動能(Momentum)」三個維度。
+                            此系統升級為「兩階段狀態機（State Machine）」獵殺流動性邏輯。為了解決「共線性誤判」（避免只因為價格急跌就累積滿分），目前的指標被歸類為「結構(Structure)」、「價格(Price)」、「情緒(Sentiment)」與「動能(Momentum)」四個維度。
                         </p>
                         <div className="bg-amber-500/10 border border-amber-500/20 p-3 rounded-lg text-sm text-amber-200 leading-relaxed">
-                            <span className="font-bold flex items-center gap-2 mb-1"><Zap className="w-4 h-4" /> 觸發條件升級：Setup $\rightarrow$ Trigger</span>
+                            <span className="font-bold flex items-center gap-2 mb-1"><Zap className="w-4 h-4" /> 觸發條件升級：Setup → Trigger</span>
                             要觸發 ⚡ 訊號不再要求所有條件在「同一時間點」發生，而是模擬真人交易員的觀察過程：<br/>
                             1. <strong>醞釀期 (Setup)：</strong> 當「情緒」或「動能」維度出現極端分數時，系統進入「備戰狀態」並開始 3 根 K 線的倒數。<br/>
-                            2. <strong>觸發期 (Trigger)：</strong> 在倒數期間內，如果「價格」維度出現反應（如：插針收回、RSI超賣轉折），使得<strong>總分與維度數量（須 $\ge 2$ 個維度）達標</strong>，才會正式開火亮出 ⚡ 訊號。
+                            2. <strong>觸發期 (Trigger)：</strong> 在倒數期間內，如果「價格」維度出現反應（如：插針收回、RSI超賣轉折），使得<strong>總分與維度數量（須 ≥ 2 個維度）達標</strong>，才會正式開火亮出 ⚡ 訊號。
                         </div>
                     </div>
 
@@ -182,20 +182,40 @@ export function IndicatorsInfoModal({ isOpen, onClose }: IndicatorsInfoModalProp
                             </div>
                         </div>
 
-                        {/* 7. CVD */}
+                        {/* 7. Capitulation Detector */}
+                        <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full relative">
+                            <div className="flex items-center gap-2 mb-2">
+                                <span className="absolute top-4 right-4 text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">Structure</span>
+                                <span className="flex items-center justify-center w-6 h-6 rounded bg-teal-500/20 text-teal-400 text-xs font-bold shrink-0">7</span>
+                                <h3 className="font-semibold text-zinc-200">Capitulation Detector (投降式轉折)</h3>
+                            </div>
+                            <p className="text-xs text-zinc-400 mb-3 flex-grow">偵測大趨勢中因連環爆倉而產生的極端底部或頂部。當未平倉量(OI)從近期高點暴跌超過 10%，同時 CVD 累積大量單向賣壓/買壓，但價格卻不再破底/創新高，代表流動性已被吸收，反轉在即。此為高置信度訊號，權重高達 1.5 分。</p>
+                        </div>
+
+                        {/* 8. CVD Divergence */}
+                        <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full relative">
+                            <div className="flex items-center gap-2 mb-2">
+                                <span className="absolute top-4 right-4 text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">Structure</span>
+                                <span className="flex items-center justify-center w-6 h-6 rounded bg-cyan-500/20 text-cyan-400 text-xs font-bold shrink-0">8</span>
+                                <h3 className="font-semibold text-zinc-200">CVD Divergence (量價結構背離)</h3>
+                            </div>
+                            <p className="text-xs text-zinc-400 mb-3 flex-grow">偵測買賣壓力的衰竭。看漲背離：價格創下新低（Lower Low），但 CVD 卻沒有跟著創新低（Higher Low），代表雖然價格下跌，但主動市價賣壓已經減弱。看跌背離反之。此為高置信度訊號，權重高達 1.5 分。</p>
+                        </div>
+
+                        {/* 9. CVD */}
                         <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full md:col-span-2 relative">
                             <div className="flex items-center gap-2 mb-2">
                                 <span className="absolute top-4 right-4 text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">Momentum</span>
-                                <span className="flex items-center justify-center w-6 h-6 rounded bg-yellow-500/20 text-yellow-500 text-xs font-bold shrink-0">7</span>
+                                <span className="flex items-center justify-center w-6 h-6 rounded bg-yellow-500/20 text-yellow-500 text-xs font-bold shrink-0">9</span>
                                 <h3 className="font-semibold text-zinc-200">CVD (累積成交量差值)</h3>
                             </div>
-                            <p className="text-xs text-zinc-400 mb-2">追蹤主動買入（Taker Buy）與主動賣出（Taker Sell）的淨差額，反映真實資金流向。此訊號沒有固定門檻，而是動態計算當前 K 棒的 CVD 減去過去 N 根 K 棒的 CVD，若為正則加 1 分(看漲)，若為負則加 1 分(看跌)。(N = 3 根)</p>
+                            <p className="text-xs text-zinc-400 mb-2">追蹤主動買入（Taker Buy）與主動賣出（Taker Sell）的淨差額，反映真實資金流向。此訊號沒有固定門檻，而是動態計算當前 K 棒的 CVD 減去上一根 K 棒的 CVD，若為正則加 1 分(看漲)，若為負則加 1 分(看跌)。</p>
                         </div>
 
-                        {/* 8. Market Regime Detection */}
+                        {/* 10. Market Regime Detection */}
                         <div className="bg-zinc-950/50 border border-emerald-900/40 rounded-lg p-4 flex flex-col h-full md:col-span-2">
                             <div className="flex items-center gap-2 mb-2">
-                                <span className="flex items-center justify-center w-6 h-6 rounded bg-emerald-500/20 text-emerald-400 text-xs font-bold shrink-0">8</span>
+                                <span className="flex items-center justify-center w-6 h-6 rounded bg-emerald-500/20 text-emerald-400 text-xs font-bold shrink-0">10</span>
                                 <h3 className="font-semibold text-emerald-400">Market Regime (行情體制判斷)</h3>
                             </div>
                             <p className="text-xs text-zinc-400 mb-2">使用三個大數據因子投票，動態判斷目前的市場狀態並調整訊號過濾機制：</p>
@@ -213,10 +233,10 @@ export function IndicatorsInfoModal({ isOpen, onClose }: IndicatorsInfoModalProp
 
                     <div className="bg-zinc-950/50 border border-zinc-800 rounded-lg p-4 flex flex-col h-full md:col-span-2 relative">
                         <div className="flex items-center gap-2 mb-2">
-                            <span className="flex items-center justify-center w-6 h-6 rounded bg-zinc-500/20 text-zinc-400 text-xs font-bold shrink-0">9</span>
+                            <span className="flex items-center justify-center w-6 h-6 rounded bg-zinc-500/20 text-zinc-400 text-xs font-bold shrink-0">11</span>
                             <h3 className="font-semibold text-zinc-200">Market Pulse (綜合情緒指數)</h3>
                         </div>
-                        <p className="text-xs text-zinc-400 mb-2">將上述 7 種核心指標的狀態，加權計算為 0 ~ 100 的綜合指數。這不是買賣觸發訊號，而是用來直觀感受市場整體的溫度：</p>
+                        <p className="text-xs text-zinc-400 mb-2">將上述核心指標的狀態，加權計算為 0 ~ 100 的綜合指數。這不是買賣觸發訊號，而是用來直觀感受市場整體的溫度：</p>
 
                         <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 mb-3 mt-1 text-[11px]">
                             <div className="bg-zinc-900/50 p-2 rounded border border-zinc-800"><span className="text-zinc-500">LSUR 多空比:</span> <strong className="text-zinc-200">15%</strong></div>

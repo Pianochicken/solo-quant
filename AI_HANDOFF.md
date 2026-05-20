@@ -54,48 +54,66 @@ To prevent regressions, **ALL future AI Agents MUST adhere to these rules**:
 5. **Signal Scanner Warmup Parity**:
    - *Gotcha*: The signal scanner (`signal_scanner.py`) must call `get_market_data(limit=1000)` — the exact same pipeline as the Dashboard — to ensure indicator warmup is identical.
    - *Rule*: Never shortcut the scanner with fewer candles or a different code path.
+6. **API Contract Validation (Frontend ↔ Backend)**:
+   - *Gotcha*: The frontend `NotificationConfig` interface used `symbols` while the backend returned `monitored_symbols`, causing a runtime crash (`Cannot read properties of undefined`).
+   - *Rule*: Before deploying any new frontend ↔ backend integration, **always verify the API response shape** by checking the backend endpoint code or calling `curl` against it. TypeScript interfaces MUST mirror the exact field names returned by FastAPI. When in doubt, run `docker exec solo-quant-api python3 -c "from api.core.signal_scanner import get_notification_config; print(get_notification_config())"` (or equivalent) to confirm.
 
 ---
 
 ## 4. Current Development Focus (The "Next")
-### Goal: Frontend Notification Config Panel & Backtest Parameter Tuning
+### Goal: Signal Quality — Major Trend Inflection Point Detection
 
-**Context**: The backend notification system (Telegram) is fully operational (Phase 1 & 2 complete). The next priorities are:
+**Context**: Phase 3 is complete. Phase 4 Layer 1+2 is **complete** — structural inflection point indicators have been implemented, deployed, and validated.
 
-### 4.1 Frontend Notification Config Panel (Phase 3)
-Build a UI panel so the user can manage notification settings without calling raw API endpoints.
-1. **Frontend UI**: Add a Notification Settings section (e.g., in a Settings page or a dropdown/modal in the header) where the user can:
-   - Toggle notifications on/off globally.
-   - Select which symbols to monitor (default: all enabled).
-   - View current scan schedule.
-   - Send a test notification.
-2. **Integration**: Connect to existing `GET/POST /notifications/config` and `POST /notifications/test` endpoints.
+### 4.1 Completed (Phase 3) ✅
+- `NotificationSettingsModal.tsx` — toggle notifications, select symbols, send test.
+- Backtest presets: "保守回歸" (SL 2%, TP 4%, Trail 1.5%) and "順勢突破" (SL 4%, TP 10%, Trail 3%).
+- Position Lifecycle confirmed correct: SL → TP → Trailing Stop.
 
-### 4.2 Backtest Parameter Tuning & Risk Management Refinement
-The default backtesting parameters (SL, TP, Trail %, Trail Activation %) are too tight for Breakout strategies, causing trades to be prematurely stopped out by normal market noise.
-1. **Parameter Optimization / Preset Profiles**: Determine optimal risk management presets for "Mean-Reversion" vs "Breakout" trades.
-2. **Backtest Panel Enhancements**: Introduce risk management presets in the UI (e.g., "Conservative" vs "Trend Following") which load distinct SL/TP/Trail ratios.
+### 4.2 Phase 4: Structural Indicators ✅
+The primary goal is **finding price lows and highs within major trends** — not maximizing signal quantity.
+
+#### 4.2.1 Completed (Layer 1 + Layer 2) ✅
+Two new structural indicators added to `IndicatorEngine.calculate_confluence_signals()` (v5 → v6):
+
+1. **Layer 1 — Capitulation Detector (`CAP↑`/`CAP↓`)**:
+   - Detects OI crash from recent peak (≥10% drop) + CVD accumulation in one direction + price stabilization.
+   - Bullish: OI crashed + CVD negative (selling) + price stopped falling → liquidation exhaustion = bottom.
+   - Bearish: OI crashed + CVD positive (buying) + price stopped rising → blow-off top = top.
+   - Weight: 1.5 points, `Structure` group.
+
+2. **Layer 2 — CVD Divergence (`DIV↑`/`DIV↓`)**:
+   - Bullish: Price makes Lower Low but CVD makes Higher Low → selling pressure exhaustion.
+   - Bearish: Price makes Higher High but CVD makes Lower High → buying pressure exhaustion.
+   - Weight: 1.5 points, `Structure` group.
+
+- Signal text updated `/7` → `/10`. 
+- **Frontend**: Dashboard modals (`IndicatorsInfoModal.tsx`, `SignalSettingsModal.tsx`) and chart tooltips updated to reflect the v6 scoring logic and the new `Structure` dimension.
+- **Validated**: 4 DIV signals detected (avg score 3.9 vs non-structural avg 3.4). Frontend dashboard renders correctly.
+
+#### 4.2.2 Future Layers (Phase 5 — Next)
+- **Layer 3 — Multi-Timeframe Confirmation**: 1h signals filtered by 4h regime direction. Requires extra API fetch.
+- **Layer 4 — Orderbook Liquidity Imbalance**: Inspired by CoinKarma LIQ. Requires orderbook snapshot collection.
+- **Do NOT lower thresholds for quantity**: Signal quality > signal quantity. Only adjust with backtest evidence.
 
 ### 4.3 (Optional / Future): Frontend WebSocket Push
-1. **WebSocket Endpoint**: `ws://localhost:8000/ws/signals` for real-time push to the frontend UI (toast notifications or signal feed panel).
-2. Not required for Phase 3 — Telegram bot is the primary notification channel.
+1. **WebSocket Endpoint**: `ws://localhost:8000/ws/signals` for real-time push.
+2. Not a priority — Telegram bot is the primary notification channel.
 
 ---
 
 ## 5. AI Agent Prompt (Copy-Paste to start next session)
 *Copy the prompt below to hand off this exact context to the next AI session:*
 
-> 「請扮演一位資深的全端工程師。請先閱讀 `AI_HANDOFF.md` 以了解專案架構與避坑規則。
-> 
-> 我們目前的進度在第 4 節。後端的 Telegram 信號通知系統已經完成並上線運作（Phase 1 & 2），接下來需要完成兩個任務：
-> 
-> **任務一：前端通知設定面板 (Phase 3)**
-> 1. 在前端新增一個 Notification Settings 的 UI 區域（可以是 Settings 頁面或 Header 內的下拉選單）。
-> 2. 串接現有的 `GET/POST /notifications/config` 和 `POST /notifications/test` API。
-> 3. 讓使用者可以開關通知、選擇要監控的幣種、發送測試通知。
-> 
-> **任務二：回測風控參數調校**
-> 1. 檢查 `SignalBacktester` 的預設風控參數，針對 Breakout 策略放寬 SL 和 Trail %。
-> 2. 在前端回測面板加入『快速載入風控預設』選項（例如『保守回歸』與『順勢突破』）。
-> 3. 確認 Position Lifecycle 順序正確 (SL -> TP -> Trailing Stop)。」
+「請扮演一位資深的全端工程師及加密貨幣分析師。請先閱讀 `SKILL.md` 與 `AI_HANDOFF.md` 以了解專案架構、核心理念與避坑規則。
+
+我們目前的進度在第 4 節。Phase 4 的結構性指標已完成（Capitulation Detector + CVD Divergence）。接下來的方向：
+
+**任務：信號品質持續優化 (Phase 5)**
+1. 持續觀察結構性信號（CAP/DIV）在實際行情中的表現，收集實戰數據。
+2. 若有需要，可實作 Layer 3（多時間框架共振）：1h 信號需由 4h regime 確認。
+3. 若有需要，可實作 Layer 4（Orderbook LIQ）：需要先建立訂單簿快照收集機制。
+4. 遵守 `SKILL.md` Section 4, Section 5 與 Section 6 的 SOP。
+5. 任何指標或門檻調整必須用 Signal Backtester 驗證。」
+
 

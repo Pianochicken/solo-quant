@@ -147,7 +147,7 @@ export default function SentimentPanel({ indicators, timeframe = '1h', enablePro
                         <div className={`bg-zinc-950/50 rounded-lg p-3 border ${pBg} flex flex-col col-span-2`}>
                             <div className="flex items-center justify-between">
                                 <div>
-                                    <div className="text-xs text-zinc-500 mb-1 flex items-center">Market Pulse<InfoTooltip text="綜合情緒指數 (0-100)：加權合併了 7 個指標的狀態。分數越低代表群眾過度看跌(超賣)，是買入良機；分數越高代表群眾過度看漲(超買)，是危險信號。" /></div>
+                                    <div className="text-xs text-zinc-500 mb-1 flex items-center">Market Pulse<InfoTooltip text="綜合情緒指數 (0-100)：加權合併了核心指標的狀態。分數越低代表群眾過度看跌(超賣)，是買入良機；分數越高代表群眾過度看漲(超買)，是危險信號。" /></div>
                                     <div className={`text-xl font-mono font-bold ${pColor}`}>
                                         {pulseValue !== null ? pulseValue.toFixed(1) : '—'}
                                     </div>

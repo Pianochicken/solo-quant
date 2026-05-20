@@ -701,24 +701,34 @@ class IndicatorEngine:
         use_dynamic_profiles: bool = True,
     ) -> List[Dict]:
         """
-        Multi-Indicator Confluence Signal System v5: Regime-Adaptive.
+        Multi-Indicator Confluence Signal System v6: Structural Inflection.
         
-        Upgrades from v4:
+        Upgrades from v5:
+          - Capitulation Detector: OI crash + CVD dump + price stabilization → high-confidence bottom
+          - CVD Divergence: price new low but CVD higher low → selling pressure exhaustion
+          - Both belong to 'Structure' indicator group (1.5pt weight)
+        
+        Previous features (v5):
           - Market Regime Detection (ADX + BB Width + CVD slope)
-                    - Fixed threshold: 3/7 in both ranging and trending regimes
+          - Fixed threshold: 3/7 in both ranging and trending regimes
           - No-Short Filter: blocks bearish signals in uptrend regime
           - No-Long Filter: blocks bullish signals in downtrend regime
           - LSUR Dulling Detection: skips Z-score when price contradicts
           - CVD Slope Discount: halves reversal indicator scores in strong CVD trends
         
-        INDICATORS (each = 1 point):
-          1. LSUR Z-Score — crowded positioning (+ dulling detection)
-          2. CVD Momentum — buying/selling pressure direction
-          3. OI × Price — leverage fuel divergence
-          4. Funding Rate — sentiment extreme (+ OI-Weighted logic)
-          5. RSI — overbought/oversold
-          6. EMA Zone — price stretched from EMA50
-          7. Bollinger %B — volatility-based extreme
+        INDICATORS:
+          Environment (Env) group:
+            1. LSUR Z-Score — crowded positioning (+ dulling detection)   [1 pt]
+            2. CVD Momentum — buying/selling pressure direction            [1 pt]
+            3. OI × Price — leverage fuel divergence                      [1 pt]
+            4. Funding Rate — sentiment extreme (+ OI-Weighted logic)     [1 pt]
+          Structure group (high-confidence inflection signals):
+            5. Capitulation Detector — OI crash + CVD dump + price floor  [1.5 pt]
+            6. CVD Divergence — volume-price structural divergence        [1.5 pt]
+          Price group (trigger layer):
+            7. RSI — overbought/oversold                                  [1 pt]
+            8. EMA Zone — price stretched from EMA50                      [1 pt]
+            9. Bollinger %B — volatility-based extreme                    [1 pt]
         """
         if not price_data or len(price_data) < lookback + 1:
             return []
@@ -734,6 +744,12 @@ class IndicatorEngine:
                 'cooldown': 8,
                 'oi_lookback': 4,    # 4 bars = 1 hour
                 'price_thresh': 0.3, # % price change threshold
+                # Capitulation & Divergence params
+                'cap_oi_window': 8,      # bars to look back for OI peak (2 hours)
+                'cap_oi_drop_pct': -12,  # OI must drop at least 12% from peak
+                'cap_cvd_window': 6,     # bars for CVD accumulation check
+                'cap_price_stab': 0.3,   # price change < 0.3% = stabilized
+                'div_window': 12,        # bars to look back for divergence swing detection
             },
             '1h': {
                 'rsi_bull': 30, 'rsi_bear': 70,
@@ -744,6 +760,12 @@ class IndicatorEngine:
                 'cooldown': 5,
                 'oi_lookback': 3,    # 3 bars = 3 hours
                 'price_thresh': 0.5,
+                # Capitulation & Divergence params
+                'cap_oi_window': 6,      # bars to look back for OI peak (6 hours)
+                'cap_oi_drop_pct': -10,  # OI must drop at least 10% from peak
+                'cap_cvd_window': 4,     # bars for CVD accumulation check
+                'cap_price_stab': 0.5,   # price change < 0.5% = stabilized
+                'div_window': 10,        # bars to look back for divergence swing detection
             },
             '4h': {
                 'rsi_bull': 35, 'rsi_bear': 65,
@@ -754,6 +776,12 @@ class IndicatorEngine:
                 'cooldown': 3,
                 'oi_lookback': 3,    # 3 bars = 12 hours
                 'price_thresh': 1.0,
+                # Capitulation & Divergence params
+                'cap_oi_window': 5,      # bars to look back for OI peak (20 hours)
+                'cap_oi_drop_pct': -8,   # OI must drop at least 8% from peak
+                'cap_cvd_window': 4,     # bars for CVD accumulation check
+                'cap_price_stab': 1.0,   # price change < 1.0% = stabilized
+                'div_window': 8,         # bars to look back for divergence swing detection
             },
             '1d': {
                 'rsi_bull': 40, 'rsi_bear': 60,
@@ -764,6 +792,12 @@ class IndicatorEngine:
                 'cooldown': 2,
                 'oi_lookback': 3,    # 3 bars = 3 days
                 'price_thresh': 1.5,
+                # Capitulation & Divergence params
+                'cap_oi_window': 5,      # bars to look back for OI peak (5 days)
+                'cap_oi_drop_pct': -8,   # OI must drop at least 8% from peak
+                'cap_cvd_window': 3,     # bars for CVD accumulation check
+                'cap_price_stab': 1.5,   # price change < 1.5% = stabilized
+                'div_window': 7,         # bars to look back for divergence swing detection
             },
         }
         P = PROFILES.get(timeframe, PROFILES['1h']).copy()
@@ -1061,6 +1095,97 @@ class IndicatorEngine:
                 t_bear_price_reasons.append('BB↓')
                 t_bear_price_groups.add('Price')
             
+            # ===== STRUCTURAL INDICATORS (Layer 1 & 2) =====
+            # High-confidence inflection point detectors for major trend turning points.
+            # They contribute to the Env score with a 'Structure' group (1.5pt weight).
+            
+            # --- Layer 1: Capitulation Detector ---
+            # Bullish: OI crashed from recent peak + CVD accumulated negative + price stabilizing
+            #   → Liquidation cascade exhausted, selling pressure absorbed = bottom forming
+            # Bearish: OI crashed + CVD accumulated positive + price stabilizing from top
+            #   → Blow-off top where longs got overleveraged then liquidated = top forming
+            cap_oi_window = t_profile['cap_oi_window']
+            cap_cvd_window = t_profile['cap_cvd_window']
+            if i >= cap_oi_window and oi_by_time:
+                oi_window_vals = []
+                for k in range(i - cap_oi_window, i + 1):
+                    ov = oi_by_time.get(times[k])
+                    if ov is not None:
+                        oi_window_vals.append(ov)
+                
+                if len(oi_window_vals) >= 3:
+                    oi_peak = max(oi_window_vals[:-1])  # Peak in window excluding current bar
+                    oi_current = oi_window_vals[-1]
+                    oi_drop = (oi_current - oi_peak) / oi_peak * 100 if oi_peak > 0 else 0
+                    
+                    # CVD accumulation over the CVD window
+                    cvd_window_vals = []
+                    for k in range(max(0, i - cap_cvd_window), i + 1):
+                        cv = cvd_by_time.get(times[k])
+                        if cv is not None:
+                            cvd_window_vals.append(cv)
+                    
+                    cvd_accum = 0
+                    if len(cvd_window_vals) >= 2:
+                        cvd_accum = cvd_window_vals[-1] - cvd_window_vals[0]
+                    
+                    # Price stabilization: current bar's % change is small
+                    price_stab = abs(price_chg_pct) < t_profile['cap_price_stab'] if price_chg_pct is not None else False
+                    
+                    # Bullish Capitulation
+                    if oi_drop <= t_profile['cap_oi_drop_pct'] and cvd_accum < 0 and price_stab:
+                        t_bull_env_score += 1.5
+                        t_bull_env_reasons.append('CAP↑')
+                        t_bull_env_groups.add('Structure')
+                    
+                    # Bearish Capitulation (inverse)
+                    if oi_drop <= t_profile['cap_oi_drop_pct'] and cvd_accum > 0 and price_stab:
+                        t_bear_env_score += 1.5
+                        t_bear_env_reasons.append('CAP↓')
+                        t_bear_env_groups.add('Structure')
+            
+            # --- Layer 2: CVD Divergence ---
+            # Bullish: Price makes Lower Low but CVD makes Higher Low → selling exhaustion
+            # Bearish: Price makes Higher High but CVD makes Lower High → buying exhaustion
+            div_window = t_profile['div_window']
+            if i >= div_window and cvd_by_time:
+                div_price_lows = []
+                div_price_highs = []
+                div_cvd_vals = []
+                for k in range(i - div_window, i + 1):
+                    pb = price_by_time.get(times[k])
+                    cv = cvd_by_time.get(times[k])
+                    if pb and cv is not None:
+                        div_price_lows.append(pb['low'])
+                        div_price_highs.append(pb['high'])
+                        div_cvd_vals.append(cv)
+                
+                if len(div_price_lows) >= 4:
+                    # Split window: first half vs second half to compare swing extremes
+                    mid = len(div_price_lows) // 2
+                    
+                    first_price_low = min(div_price_lows[:mid])
+                    second_price_low = min(div_price_lows[mid:])
+                    first_cvd_min = min(div_cvd_vals[:mid])
+                    second_cvd_min = min(div_cvd_vals[mid:])
+                    
+                    first_price_high = max(div_price_highs[:mid])
+                    second_price_high = max(div_price_highs[mid:])
+                    first_cvd_max = max(div_cvd_vals[:mid])
+                    second_cvd_max = max(div_cvd_vals[mid:])
+                    
+                    # Bullish CVD Divergence: Price Lower Low + CVD Higher Low
+                    if second_price_low < first_price_low and second_cvd_min > first_cvd_min:
+                        t_bull_env_score += 1.5
+                        t_bull_env_reasons.append('DIV↑')
+                        t_bull_env_groups.add('Structure')
+                    
+                    # Bearish CVD Divergence: Price Higher High + CVD Lower High
+                    if second_price_high > first_price_high and second_cvd_max < first_cvd_max:
+                        t_bear_env_score += 1.5
+                        t_bear_env_reasons.append('DIV↓')
+                        t_bear_env_groups.add('Structure')
+            
             # --- State Machine Update (Setup window) ---
             if t_bull_env_score >= 1.0:
                 bull_setup_timer = SETUP_WINDOW
@@ -1160,7 +1285,7 @@ class IndicatorEngine:
                             "position": "belowBar",
                             "color": "#22c55e",
                             "shape": "arrowUp",
-                            "text": f"⚡({len(bull_groups)}G) {bull_score:g}/7 [{regime_tag}] {'+'.join(bull_reasons)}",
+                            "text": f"⚡({len(bull_groups)}G) {bull_score:g}/10 [{regime_tag}] {'+'.join(bull_reasons)}",
                             "score": bull_score,
                             "direction": "bullish",
                             "strategy_type": "reversion"
@@ -1189,7 +1314,7 @@ class IndicatorEngine:
                             "position": "aboveBar",
                             "color": "#ef4444",
                             "shape": "arrowDown",
-                            "text": f"⚡({len(bear_groups)}G) {bear_score:g}/7 [{regime_tag}] {'+'.join(bear_reasons)}",
+                            "text": f"⚡({len(bear_groups)}G) {bear_score:g}/10 [{regime_tag}] {'+'.join(bear_reasons)}",
                             "score": bear_score,
                             "direction": "bearish",
                             "strategy_type": "reversion"
