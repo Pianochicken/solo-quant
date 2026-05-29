@@ -91,9 +91,18 @@ Two new structural indicators added to `IndicatorEngine.calculate_confluence_sig
 - **Frontend**: Dashboard modals (`IndicatorsInfoModal.tsx`, `SignalSettingsModal.tsx`) and chart tooltips updated to reflect the v6 scoring logic and the new `Structure` dimension.
 - **Validated**: 4 DIV signals detected (avg score 3.9 vs non-structural avg 3.4). Frontend dashboard renders correctly.
 
-#### 4.2.2 Future Layers (Phase 5 — Next)
-- **Layer 3 — Multi-Timeframe Confirmation**: 1h signals filtered by 4h regime direction. Requires extra API fetch.
-- **Layer 4 — Orderbook Liquidity Imbalance**: Inspired by CoinKarma LIQ. Requires orderbook snapshot collection.
+#### 4.2.2 Phase 5: Signal Quality — Completed ✅
+
+- **Layer 3 — Multi-Timeframe Confirmation (`[4h✓]` tag)**: 1h Reversion signals are now filtered by 4h regime direction.
+  - **Loose mode**: Only blocks when 4h is `trending + direction=down` (blocks BUY) or `trending + direction=up` (blocks SELL). Neutral 4h regimes pass through.
+  - Breakout signals are **exempt** from MTF filter (already aligned to trend).
+  - Toggle: `enable_mtf_filter` param (default `False`). UI toggle in `SignalSettingsModal.tsx` with `[Layer 3]` badge.
+  - When active, signal text shows `[4h✓]` tag: `⚡(2G) 3.5/10 [R][4h✓] RSI30+CVD↑`.
+  - 4h data fetched concurrently in the existing `ThreadPoolExecutor`, adds ~0 extra latency.
+  - `IndicatorEngine.calculate_confluence_signals()` upgraded to **v7**.
+
+#### 4.2.3 Future Layers (Phase 6 — Next)
+- **Layer 4 — Orderbook Liquidity Imbalance**: Inspired by CoinKarma LIQ. Requires orderbook snapshot collection mechanism (periodic DB writes).
 - **Do NOT lower thresholds for quantity**: Signal quality > signal quantity. Only adjust with backtest evidence.
 
 ### 4.3 (Optional / Future): Frontend WebSocket Push
@@ -107,12 +116,12 @@ Two new structural indicators added to `IndicatorEngine.calculate_confluence_sig
 
 「請扮演一位資深的全端工程師及加密貨幣分析師。請先閱讀 `SKILL.md` 與 `AI_HANDOFF.md` 以了解專案架構、核心理念與避坑規則。
 
-我們目前的進度在第 4 節。Phase 4 的結構性指標已完成（Capitulation Detector + CVD Divergence）。接下來的方向：
+我們目前的進度在第 4 節。Phase 5 Layer 3（多時間框架共振）已完成，`enable_mtf_filter` 參數已整合至後端 v7 IndicatorEngine 與前端 UI。
 
-**任務：信號品質持續優化 (Phase 5)**
-1. 持續觀察結構性信號（CAP/DIV）在實際行情中的表現，收集實戰數據。
-2. 若有需要，可實作 Layer 3（多時間框架共振）：1h 信號需由 4h regime 確認。
-3. 若有需要，可實作 Layer 4（Orderbook LIQ）：需要先建立訂單簿快照收集機制。
+**任務：信號品質持續優化 (Phase 6)**
+1. 持續觀察 MTF 過濾器（Layer 3）在實際行情中的表現，收集實戰數據，對比 MTF on/off 的回測勝率差異。
+2. 若 MTF 效果顯著，可考慮讓 Signal Scanner 也可選擇性開啟 MTF 過濾（目前 Scanner 不過濾）。
+3. 若有需要，可實作 Layer 4（Orderbook LIQ）：需要先建立訂單簿快照收集機制（定期寫入 DB）。
 4. 遵守 `SKILL.md` Section 4, Section 5 與 Section 6 的 SOP。
 5. 任何指標或門檻調整必須用 Signal Backtester 驗證。」
 

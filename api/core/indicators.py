@@ -1,3 +1,4 @@
+import bisect
 import pandas as pd
 import numpy as np
 from typing import List, Dict, Optional
@@ -699,11 +700,18 @@ class IndicatorEngine:
         enable_protection: bool = False,
         symbol: str = 'BTC/USDT',
         use_dynamic_profiles: bool = True,
+        higher_tf_regime_history: List[Dict] = None,  # Layer 3: e.g. 4h regime history for MTF confirmation
     ) -> List[Dict]:
         """
-        Multi-Indicator Confluence Signal System v6: Structural Inflection.
+        Multi-Indicator Confluence Signal System v7: MTF Confirmation.
         
-        Upgrades from v5:
+        Upgrades from v6:
+          - Layer 3 MTF (Multi-Timeframe) Confirmation: when higher_tf_regime_history is provided,
+            Reversion signals are blocked if the higher TF (e.g. 4h) is strongly trending against
+            the signal direction. "Loose" mode: only blocks trending+down → bull, trending+up → bear.
+            Neutral 4h regimes still allow all signals through. Breakout signals are exempt.
+        
+        Previous features (v6):
           - Capitulation Detector: OI crash + CVD dump + price stabilization → high-confidence bottom
           - CVD Divergence: price new low but CVD higher low → selling pressure exhaustion
           - Both belong to 'Structure' indicator group (1.5pt weight)
@@ -838,6 +846,16 @@ class IndicatorEngine:
             price_data=price_data,
             cvd_aligned=cvd_aligned,
         )
+        
+        # === Layer 3: MTF Regime Lookup (sorted for merge_asof-style lookup) ===
+        # Build a time-sorted list of (timestamp, regime_dict) for binary-search alignment.
+        # We use a simple sorted list + bisect for O(log n) lookup per bar.
+        htf_regime_times: List[int] = []
+        htf_regime_list: List[Dict] = []
+        if higher_tf_regime_history:
+            sorted_htf = sorted(higher_tf_regime_history, key=lambda x: x['time'])
+            htf_regime_times = [r['time'] for r in sorted_htf]
+            htf_regime_list = sorted_htf
         
         # CVD slope for reversal-indicator discount
         cvd_slope_extreme = False
@@ -1259,6 +1277,27 @@ class IndicatorEngine:
                             bear_breakout_reasons.append('MACD_DN')
                             if cvd_confirm: bear_breakout_reasons.append('CVD↓')
             
+            # --- Layer 3: MTF Confirmation (Loose Mode) ---
+            # For Reversion signals only; Breakout signals are exempt (already regime-aligned).
+            # Loose mode: block only when higher TF is *strongly trending* against the signal.
+            #   4h trending + direction='down' → block bullish reversion
+            #   4h trending + direction='up'   → block bearish reversion
+            #   4h neutral / ranging           → both directions allowed
+            htf_regime_ok_bull = True
+            htf_regime_ok_bear = True
+            if htf_regime_times:
+                # Find the latest HTF bar whose time <= current bar time (backward-fill)
+                idx_htf = bisect.bisect_right(htf_regime_times, t) - 1
+                if idx_htf >= 0:
+                    htf = htf_regime_list[idx_htf]
+                    if htf.get('regime') == 'trending' and htf.get('direction') == 'down':
+                        htf_regime_ok_bull = False  # 4h strong downtrend → block reversion BUY
+                    if htf.get('regime') == 'trending' and htf.get('direction') == 'up':
+                        htf_regime_ok_bear = False  # 4h strong uptrend → block reversion SELL
+
+            # MTF tag appended to signal text when filter is active
+            mtf_tag = "[4h✓]" if htf_regime_times else ""
+
             # --- Emit signal if score >= threshold AND from >= 2 distinct groups ---
             is_bull_valid = (bull_score >= bull_threshold and len(bull_groups) >= 2)
             is_bear_valid = (bear_score >= bear_threshold and len(bear_groups) >= 2)
@@ -1266,7 +1305,9 @@ class IndicatorEngine:
             if (is_bull_valid or is_breakout_bull) and (i - last_bull_idx) >= COOLDOWN:
                 # No-Long filter: block bullish signals in downtrend regime
                 if APPLY_DIRECTIONAL_PROTECTION and current_regime.get('no_long', False):
-                    pass  # Signal blocked by regime filter
+                    pass  # Signal blocked by directional protection
+                elif is_bull_valid and not htf_regime_ok_bull:
+                    pass  # Signal blocked by Layer 3 MTF filter (4h strong downtrend)
                 else:
                     if is_breakout_bull:
                         markers.append({
@@ -1285,7 +1326,7 @@ class IndicatorEngine:
                             "position": "belowBar",
                             "color": "#22c55e",
                             "shape": "arrowUp",
-                            "text": f"⚡({len(bull_groups)}G) {bull_score:g}/10 [{regime_tag}] {'+'.join(bull_reasons)}",
+                            "text": f"⚡({len(bull_groups)}G) {bull_score:g}/10 [{regime_tag}]{mtf_tag} {'+'.join(bull_reasons)}",
                             "score": bull_score,
                             "direction": "bullish",
                             "strategy_type": "reversion"
@@ -1295,7 +1336,9 @@ class IndicatorEngine:
             elif (is_bear_valid or is_breakout_bear) and (i - last_bear_idx) >= COOLDOWN:
                 # No-Short filter: block bearish signals in uptrend regime
                 if APPLY_DIRECTIONAL_PROTECTION and current_regime.get('no_short', False):
-                    pass  # Signal blocked by regime filter
+                    pass  # Signal blocked by directional protection
+                elif is_bear_valid and not htf_regime_ok_bear:
+                    pass  # Signal blocked by Layer 3 MTF filter (4h strong uptrend)
                 else:
                     if is_breakout_bear:
                         markers.append({
@@ -1314,7 +1357,7 @@ class IndicatorEngine:
                             "position": "aboveBar",
                             "color": "#ef4444",
                             "shape": "arrowDown",
-                            "text": f"⚡({len(bear_groups)}G) {bear_score:g}/10 [{regime_tag}] {'+'.join(bear_reasons)}",
+                            "text": f"⚡({len(bear_groups)}G) {bear_score:g}/10 [{regime_tag}]{mtf_tag} {'+'.join(bear_reasons)}",
                             "score": bear_score,
                             "direction": "bearish",
                             "strategy_type": "reversion"

@@ -13,7 +13,11 @@ class DataFetcher:
     SoloQuant Data Handler with PostgreSQL Integration (Aggregator Edition).
     """
     def __init__(self):
-        self.okx = ccxt.okx()
+        self.okx = ccxt.okx({
+            'options': {
+                'defaultType': 'swap',
+            }
+        })
         self.binance = ccxt.binance({
             'options': {
                 'defaultType': 'future',

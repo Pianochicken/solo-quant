@@ -138,7 +138,8 @@ def get_market_data(
     ranging_threshold: int = 3, 
     trending_threshold: int = 3, 
     enable_protection: bool = False,
-    use_dynamic_profiles: bool = True
+    use_dynamic_profiles: bool = True,
+    enable_mtf_filter: bool = False,  # Layer 3: enable 4h regime MTF confirmation
 ):
     """
     Get generic market data (Price + Funding + Sentiment).
@@ -170,7 +171,7 @@ def get_market_data(
         
         # 1. Fetch Basic Data and Indicator Data Concurrently
         import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
             future_data = pool.submit(fetcher.fetch_market_data, formatted_symbol, timeframe, limit)
             future_ob = pool.submit(fetcher.fetch_order_book_depth, formatted_symbol, limit=400)
             
@@ -183,6 +184,11 @@ def get_market_data(
             future_oi_raw = pool.submit(fetcher.fetch_open_interest, formatted_symbol, timeframe=indicator_period, limit=500)
             future_oi_daily = pool.submit(fetcher.fetch_open_interest, formatted_symbol, timeframe='1D', limit=100)
             
+            # Layer 3 MTF: fetch 4h data concurrently only when needed
+            htf_needs_fetch = enable_mtf_filter and timeframe not in ('4h', '1d')
+            future_htf_price = pool.submit(fetcher.fetch_market_data, formatted_symbol, '4h', 1000) if htf_needs_fetch else None
+            future_htf_taker = pool.submit(fetcher.fetch_taker_volume, formatted_symbol, period='1H', limit=1000) if htf_needs_fetch else None
+            
             data = future_data.result()
             orderbook = future_ob.result()
             
@@ -194,6 +200,9 @@ def get_market_data(
             
             open_interest_raw = future_oi_raw.result()
             daily_oi_for_percentile = future_oi_daily.result()
+            
+            htf_price_data = future_htf_price.result() if future_htf_price else None
+            htf_taker_raw = future_htf_taker.result() if future_htf_taker else None
             
         # --- Data Alignment: Merge High-Res and Daily for extended history ---
         import pandas as pd
@@ -308,6 +317,47 @@ def get_market_data(
             ls_ratio_history = merge_history(ls_ratio_history_raw, ls_ratio_daily) if 'ls_ratio_history_raw' in locals() else []
             ls_aligned_history_val = ls_ratio_history
             cvd_aligned = [] # Fallback
+        
+        # === Layer 3 MTF: Build 4h regime history (no look-ahead bias — uses historical 4h bars only) ===
+        htf_regime_history = None
+        if enable_mtf_filter and timeframe not in ('4h', '1d') and htf_price_data and htf_taker_raw:
+            try:
+                htf_price_list = htf_price_data.get('price', [])
+                if htf_price_list and htf_taker_raw:
+                    # Build 4h CVD from 4h taker volume
+                    htf_price_start = min(p['time'] for p in htf_price_list)
+                    htf_price_end = max(p['time'] for p in htf_price_list)
+                    htf_taker_filtered = [t for t in htf_taker_raw if htf_price_start <= t['time'] <= htf_price_end]
+                    htf_cvd_raw = IndicatorEngine.calculate_cvd_history(htf_taker_filtered)
+                    
+                    if htf_cvd_raw:
+                        df_htf_price = pd.DataFrame(htf_price_list)
+                        df_htf_price['time'] = df_htf_price['time'].astype(int)
+                        df_htf_price.sort_values('time', inplace=True)
+                        
+                        df_htf_cvd = pd.DataFrame(htf_cvd_raw)
+                        df_htf_cvd['time'] = df_htf_cvd['time'].astype(int)
+                        df_htf_cvd.sort_values('time', inplace=True)
+                        
+                        merged_htf_cvd = pd.merge_asof(
+                            df_htf_price[['time']],
+                            df_htf_cvd[['time', 'value']],
+                            on='time',
+                            direction='backward'
+                        )
+                        import numpy as np
+                        merged_htf_cvd['value'] = merged_htf_cvd['value'].ffill().fillna(0)
+                        htf_cvd_aligned = merged_htf_cvd[['time', 'value']].to_dict('records')
+                    else:
+                        htf_cvd_aligned = []
+                    
+                    # Calculate 4h regime history (fully causal, no look-ahead bias)
+                    htf_regime_history = IndicatorEngine.calculate_market_regime_history(
+                        price_data=htf_price_list,
+                        cvd_aligned=htf_cvd_aligned,
+                    )
+            except Exception as htf_err:
+                logger.warning(f"MTF 4h regime calc failed, skipping filter: {htf_err}")
 
         # 3. Calculate Indicators
         # Get current price from last close
@@ -358,6 +408,7 @@ def get_market_data(
             enable_protection=enable_protection,
             symbol=formatted_symbol,
             use_dynamic_profiles=use_dynamic_profiles,
+            higher_tf_regime_history=htf_regime_history,  # Layer 3 MTF (None if disabled)
         )
         
         # 7 & 8. Composite Score (Market Pulse) v5 & History
@@ -404,7 +455,8 @@ def get_market_data(
                 "market_regime_history": market_regime_history,
                 "composite_score": composite_score,
                 "composite_score_history": composite_score_history,
-                "exchange_breakdown": fetcher.latest_oi_breakdown
+                "exchange_breakdown": fetcher.latest_oi_breakdown,
+                "mtf_4h_regime": htf_regime_history[-1] if htf_regime_history else None,  # Layer 3 MTF
             }
         }
     except Exception as e:
@@ -745,6 +797,7 @@ class SignalBacktestParams(BaseModel):
     trending_threshold: int = 3
     enable_protection: bool = True
     use_dynamic_profiles: bool = True
+    enable_mtf_filter: bool = False  # Layer 3: 4h regime MTF confirmation
 
 @app.post("/quant/signal-backtest")
 def run_signal_backtest(params: SignalBacktestParams):
@@ -765,7 +818,8 @@ def run_signal_backtest(params: SignalBacktestParams):
             ranging_threshold=params.ranging_threshold,
             trending_threshold=params.trending_threshold,
             enable_protection=params.enable_protection,
-            use_dynamic_profiles=params.use_dynamic_profiles
+            use_dynamic_profiles=params.use_dynamic_profiles,
+            enable_mtf_filter=params.enable_mtf_filter,  # Layer 3 MTF
         )
 
         history = market_res["data"]["price"]

@@ -44,7 +44,8 @@ export default function Dashboard() {
     rangingThreshold: 3,
     trendingThreshold: 3,
     enableProtection: false,
-    useDynamicProfiles: true
+    useDynamicProfiles: true,
+    enableMtfFilter: false,  // Layer 3: 4h regime MTF confirmation (default off)
   });
 
   // Track if this is the initial load for the current timeframe

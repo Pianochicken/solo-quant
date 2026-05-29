@@ -100,6 +100,28 @@ export function SignalSettingsModal({ isOpen, onClose, currentConfig, onSave }: 
                             </div>
                         </label>
                     </div>
+
+                    <div className="pt-4 border-t border-zinc-800">
+                        <label className="flex gap-3 cursor-pointer items-start">
+                            <div className="mt-1">
+                                <input 
+                                    type="checkbox" 
+                                    checked={config.enableMtfFilter ?? false}
+                                    onChange={(e) => setConfig({...config, enableMtfFilter: e.target.checked})}
+                                    className="w-4 h-4 rounded border-zinc-700 bg-zinc-900 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-zinc-900"
+                                />
+                            </div>
+                            <div>
+                                <div className="flex items-center gap-2">
+                                    <span className="block text-sm font-medium text-zinc-300">Enable MTF Confirmation 多時間框架共振</span>
+                                    <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-indigo-900/50 text-indigo-300 border border-indigo-800/50">Layer 3</span>
+                                </div>
+                                <span className="block text-xs text-zinc-500 mt-1 leading-relaxed">
+                                    開啟後，1h 回歸信號僅在 4h 趨勢方向一致或中性時發出。若 4h 為強力下跌趨勢，買入信號將被過濾；反之亦然。有效降低逆勢假訊號（僅限 1h/15m 時間框架）。
+                                </span>
+                            </div>
+                        </label>
+                    </div>
                 </div>
 
                 <div className="p-4 border-t border-zinc-800 flex justify-end gap-3 rounded-b-2xl bg-zinc-950/50">

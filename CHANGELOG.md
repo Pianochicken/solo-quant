@@ -5,6 +5,20 @@ This file serves as a historical record to keep `AI_HANDOFF.md` clean and focuse
 
 ---
 
+## [2026-05-29] - Multi-Timeframe Confirmation (Phase 5 Layer 3)
+- **Backend**: Upgraded `IndicatorEngine.calculate_confluence_signals()` from v6 to **v7** — added Layer 3 MTF (Multi-Timeframe) Confirmation.
+  - New param `higher_tf_regime_history: List[Dict] = None`. When provided, Reversion signals are filtered by the higher TF regime direction.
+  - **Loose mode**: 4h `trending+down` → blocks bullish Reversion BUY; 4h `trending+up` → blocks bearish Reversion SELL; Neutral/ranging 4h regimes pass through unconditionally. Breakout signals are **exempt** (already regime-aligned).
+  - Bisect-based O(log n) backward-fill lookup per bar (no look-ahead bias). `import bisect` moved to module top level.
+  - When MTF is active, passing Reversion signals show `[4h✓]` tag in signal text (e.g. `⚡(2G) 3.5/10 [R][4h✓] RSI30+CVD↑`).
+- **Backend**: `GET /market/{symbol}` — new `enable_mtf_filter: bool = False` query param (default off for full backward compatibility). When enabled and timeframe ≠ 4h/1d, concurrently fetches 4h OHLCV + 4h taker volume (within existing `ThreadPoolExecutor(max_workers=10)`), computes 4h CVD and `calculate_market_regime_history()`, then passes into confluence engine. Response includes `indicators.mtf_4h_regime` (latest 4h regime dict, or `null` when disabled).
+- **Frontend**: `lib/api.ts` — `SignalConfig` extended with `enableMtfFilter: boolean`; `IndicatorData` extended with `mtf_4h_regime?: {...} | null`; `getMarketData()` URL builder appends `enable_mtf_filter` param.
+- **Frontend**: `SignalSettingsModal.tsx` — new MTF Confirmation toggle (indigo accent, `[Layer 3]` badge) with description text explaining loose-mode semantics.
+- **Frontend**: `app/page.tsx` — `signalConfig` default includes `enableMtfFilter: false`.
+- **Validation**: Unit tests confirm correct blocking/passing for all 3 HTF regime states (downtrend/uptrend/neutral). API smoke test confirms: disabled → `mtf_4h_regime: null`; enabled → returns current 4h regime dict and correctly handles neutral 4h (no signals blocked).
+
+---
+
 ## [2026-05-20] - Structural Inflection Point Indicators (Phase 4)
 - **Backend**: Upgraded `IndicatorEngine.calculate_confluence_signals()` from v5 to v6 — added two new structural indicators for detecting major trend turning points.
 - **Layer 1 — Capitulation Detector (`CAP↑`/`CAP↓`)**: Detects OI crash from recent peak (≥10% drop) combined with CVD accumulation and price stabilization. Identifies liquidation cascade exhaustion (bottoms) and blow-off tops. Weight: 1.5pts, `Structure` group. Timeframe-adaptive parameters (e.g., 1h: OI window=6 bars, drop threshold=-10%, CVD window=4 bars, price stability=0.5%).

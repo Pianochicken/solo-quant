@@ -42,6 +42,7 @@ export default function BacktestPage() {
     const [isAiMode, setIsAiMode] = useState(true);
     const [useDynamicProfiles, setUseDynamicProfiles] = useState(true);
     const [enableProtection, setEnableProtection] = useState(false); // Default to false to match main page
+    const [enableMtfFilter, setEnableMtfFilter] = useState(false);  // Layer 3: 4h MTF confirmation
     const [aiLoading, setAiLoading] = useState(false);
 
     // Unified result accessors
@@ -197,6 +198,7 @@ export default function BacktestPage() {
                     trending_threshold: 3,
                     enable_protection: enableProtection,
                     use_dynamic_profiles: useDynamicProfiles,
+                    enable_mtf_filter: enableMtfFilter,  // Layer 3 MTF
                 };
                 const res = await runSignalBacktest(params);
                 setSignalResult(res);
@@ -289,6 +291,21 @@ export default function BacktestPage() {
                                 <div className="text-xs text-zinc-300 font-medium flex items-center">
                                     開啟趨勢過濾 (Regime Filter)
                                     <InfoTooltip text="關閉可測試全部訊號（符合主頁預設值）。開啟則會過濾掉逆勢操作。" />
+                                </div>
+                            </label>
+                        )}
+
+                        {strategyMode === 'signal' && (
+                            <label className="flex items-start gap-2 cursor-pointer group mb-2">
+                                <div className="relative flex items-center pt-1">
+                                    <input type="checkbox" checked={enableMtfFilter} onChange={(e) => setEnableMtfFilter(e.target.checked)} className="peer sr-only" />
+                                    <div className="w-8 h-4 bg-zinc-800 rounded-full peer peer-checked:bg-indigo-600 transition-colors"></div>
+                                    <div className="absolute left-1 top-1.5 w-2 h-2 bg-zinc-400 rounded-full transition-all peer-checked:translate-x-4 peer-checked:bg-white"></div>
+                                </div>
+                                <div className="text-xs text-zinc-300 font-medium flex items-center gap-1">
+                                    MTF 多時間框架確認
+                                    <span className="px-1 py-0.5 text-[9px] font-bold rounded bg-indigo-900/50 text-indigo-300 border border-indigo-800/50">L3</span>
+                                    <InfoTooltip text="開啟後，4h 強力趨勢方向會過濾 1h 逆勢回歸信號（寬鬆模式：僅在 4h 強力 trending 時封鎖）。" />
                                 </div>
                             </label>
                         )}

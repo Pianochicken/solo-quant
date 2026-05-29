@@ -17,6 +17,11 @@ export interface IndicatorData {
         okx: number;
         total: number;
     };
+    mtf_4h_regime?: {
+        regime: string;
+        direction: string;
+        adx: number;
+    } | null;
 }
 
 export interface SignalConfig {
@@ -24,6 +29,7 @@ export interface SignalConfig {
     trendingThreshold: number;
     enableProtection: boolean;
     useDynamicProfiles: boolean;
+    enableMtfFilter: boolean;  // Layer 3: 4h regime MTF confirmation
 }
 
 export interface MarketData {
@@ -80,7 +86,7 @@ export async function getMarketData(symbol: string, timeframe: string = '1h', li
     try {
         let url = `${API_BASE}/market/${safeSymbol}?timeframe=${timeframe}&limit=${limit}`;
         if (config) {
-            url += `&ranging_threshold=${config.rangingThreshold}&trending_threshold=${config.trendingThreshold}&enable_protection=${config.enableProtection}&use_dynamic_profiles=${config.useDynamicProfiles}`;
+            url += `&ranging_threshold=${config.rangingThreshold}&trending_threshold=${config.trendingThreshold}&enable_protection=${config.enableProtection}&use_dynamic_profiles=${config.useDynamicProfiles}&enable_mtf_filter=${config.enableMtfFilter ?? false}`;
         }
         const res = await fetch(url);
         if (!res.ok) throw new Error('Failed to fetch market data');
@@ -211,6 +217,7 @@ export interface SignalBacktestParams {
     trending_threshold: number;
     enable_protection: boolean;
     use_dynamic_profiles: boolean;
+    enable_mtf_filter: boolean;  // Layer 3: 4h regime MTF confirmation
 }
 
 export interface SignalBacktestMetrics {
