@@ -5,6 +5,7 @@ Sends formatted trading signal alerts to the user's Telegram chat.
 Tokens are read from environment variables — never hardcode them.
 """
 import os
+import re
 import logging
 from datetime import datetime, timezone
 
@@ -111,9 +112,9 @@ def format_signal_message(signal: dict, symbol: str, price: float) -> str:
         reasons_raw = text_raw.split("] ")[-1] if "] " in text_raw else text_raw
         reason_str = f"🚀 {reasons_raw}"
     else:
-        # Extract reasons from text like "⚡(2G) 3/7 [T] CVD↑+FR-+BB↑"
-        # We want to show "3/7 CVD↑+FR-+BB↑"
-        reason_str = f"{score:g}/7 {text_raw.split('] ')[-1]}" if "] " in text_raw else f"{score:g}/7"
+        match = re.search(r'([\d\.]+/\d+)', text_raw)
+        score_str = match.group(1) if match else f"{score:g}"
+        reason_str = f"{score_str} {text_raw.split('] ')[-1]}" if "] " in text_raw else score_str
 
     return f"{emoji} {time_str} [{symbol}] {strategy_label} {action} @ {price_str} | {reason_str}"
 
