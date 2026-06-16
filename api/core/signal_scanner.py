@@ -12,7 +12,7 @@ import logging
 import time
 from typing import Dict, List, Optional
 
-from api.core.notifier import format_signal_message, send_telegram_message
+from api.core.notifier import format_signal_message, send_signal_with_chart
 
 logger = logging.getLogger(__name__)
 
@@ -131,8 +131,14 @@ async def scan_and_notify():
             for sig in new_signals:
                 sig_price = price_by_time.get(sig["time"], 0)
                 message = format_signal_message(sig, symbol, sig_price)
-                await send_telegram_message(message)
-                logger.info(f"  → Sent: {message}")
+                # Send chart image (168h OHLCV from DB + all markers) + text caption
+                await send_signal_with_chart(
+                    text=message,
+                    price_data=price_data,
+                    all_markers=markers,
+                    symbol=symbol,
+                )
+                logger.info(f"  → Sent with chart: {message}")
 
             # 6. Update last notified timestamp to the most recent signal
             _last_notified[cache_key] = max(s["time"] for s in new_signals)

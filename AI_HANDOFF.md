@@ -31,7 +31,7 @@ An event-driven notification pipeline embedded within the FastAPI container. No 
 - **Modules**: `api/core/notifier.py` (Telegram Bot API via `httpx`) + `api/core/signal_scanner.py` (scan logic + dedup).
 - **Schedule**: `APScheduler` with `CronTrigger(minute="0,15,30,45")` — scans at fixed clock times, 5-second delay between symbols to avoid OKX rate limiting.
 - **Dedup**: In-memory `_last_notified` dict tracks the latest notified signal timestamp per `(symbol, timeframe)`. Combined with a **1-hour recency window** to prevent notification floods on container restart.
-- **Message Format**: `🟢⬆ 2026/05/05 17:00 [BTC/USDT] Reversion BUY @ $94,500 | 3/7 CVD↑+FR-+BB↑`
+- **Message Format**: `sendPhoto` with a TradingView-style 168-hour candlestick chart (showing EMA and precise signal markers) + Caption: `🟢⬆ 2026/05/05 17:00 [BTC/USDT] Reversion BUY @ $94,500 | 3/7 CVD↑+FR-+BB↑`
 - **Config API**: `GET/POST /notifications/config` (toggle on/off, select symbols), `POST /notifications/test`, `POST /notifications/scan-now`.
 - **Env Vars**: `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env` (injected via `docker-compose.yml`). **Never commit tokens to Git.**
 
@@ -69,6 +69,7 @@ To prevent regressions, **ALL future AI Agents MUST adhere to these rules**:
 - `NotificationSettingsModal.tsx` — toggle notifications, select symbols, send test.
 - Backtest presets: "保守回歸" (SL 2%, TP 4%, Trail 1.5%) and "順勢突破" (SL 4%, TP 10%, Trail 3%).
 - Position Lifecycle confirmed correct: SL → TP → Trailing Stop.
+- **Telegram Notification Chart**: Notifications now include a TradingView-style 168-hour candlestick chart (with EMA lines and matching visual markers for Reversion/Breakout) to provide immediate context without opening the dashboard.
 
 ### 4.2 Phase 4: Structural Indicators ✅
 The primary goal is **finding price lows and highs within major trends** — not maximizing signal quantity.

@@ -5,6 +5,21 @@ This file serves as a historical record to keep `AI_HANDOFF.md` clean and focuse
 
 ---
 
+## [2026-06-16] v0.2.0 - TradingView-Style Chart in Telegram Signal Notifications
+- **Backend**: Created `api/core/utils/chart.py` — pure-`matplotlib` candlestick chart generator.
+  - TradingView dark-theme layout (`#131722` background), no candlestick edge lines.
+  - EMA50 (orange, `#FF9800`) and EMA200 (purple, `#9C27B0`) overlay lines (0.9px).
+  - Per-type signal markers: Reversion BUY (green `▲`), Reversion SELL (red `▼`), MACD Breakout UP (sky-blue `▲`), MACD Breakout DOWN (orange `▼`) — colours read directly from `lsur_markers[].color` to stay in sync with the frontend.
+  - Latest price tag on right Y-axis (round-corner bbox, 1.2px dashed reference line).
+  - Dual Y-axes (left + right), `MM/DD\n HH:MM` X-axis labels (horizontal, no rotation).
+  - Signal markers strictly clamped to the 168-bar visible window to prevent out-of-range signals from snapping to edge candles.
+  - UTC-naive timestamp handling ensures chart signal positions match the frontend exactly (no ±1h timezone drift).
+- **Backend**: Refactored `api/core/notifier.py` — `send_signal_with_chart()` now accepts `price_data` (raw `get_market_data()` OHLCV list) and `all_markers` (raw `lsur_markers` list), converts them internally. Telegram message is sent as `sendPhoto` with chart PNG + caption (text signal message).
+- **Backend**: Updated `api/core/signal_scanner.py` — replaced bare `send_telegram_message()` call with `send_signal_with_chart()`, passing the DB-derived `price_data` and `markers` already in scope. Chart data is always consistent with the frontend because it comes from the same `get_market_data()` call.
+- **Infra**: Added `matplotlib>=3.8.0` to `requirements.txt`. Verified Docker build succeeds and container starts cleanly.
+
+---
+
 ## [2026-05-29] - Multi-Timeframe Confirmation (Phase 5 Layer 3)
 - **Backend**: Upgraded `IndicatorEngine.calculate_confluence_signals()` from v6 to **v7** — added Layer 3 MTF (Multi-Timeframe) Confirmation.
   - New param `higher_tf_regime_history: List[Dict] = None`. When provided, Reversion signals are filtered by the higher TF regime direction.
