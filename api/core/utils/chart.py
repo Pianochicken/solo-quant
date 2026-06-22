@@ -59,11 +59,24 @@ def _draw_candles(ax: plt.Axes, df: pd.DataFrame) -> None:
         ax.add_patch(rect)
 
 
+def _format_price(v: float, _=None) -> str:
+    """Format price dynamically based on magnitude."""
+    abs_v = abs(v)
+    if abs_v >= 1000:
+        return f"{v:,.0f}"
+    elif abs_v >= 1:
+        return f"{v:,.2f}"
+    elif abs_v >= 0.001:
+        return f"{v:.4f}"
+    else:
+        return f"{v:.6f}"
+
 def _price_label(ax: plt.Axes, price: float, color: str) -> None:
     """Draw a TradingView-style price tag on the right spine."""
+    price_str = _format_price(price)
     ax.axhline(price, color=color, linewidth=1.2, linestyle="--", alpha=0.7, zorder=1)
     ax.annotate(
-        f"{price:,.2f}",
+        price_str,
         xy=(1, price), xycoords=("axes fraction", "data"),
         xytext=(6, 0), textcoords="offset points",
         ha="left", va="center",
@@ -200,13 +213,13 @@ def generate_candlestick_chart(
     ax.yaxis.set_label_position("left")
     ax.yaxis.tick_left()
     ax.tick_params(axis="y", left=True, right=False, labelright=False, colors=TEXT)
-    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:,.0f}"))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(_format_price))
 
     # Right Y-axis (twin)
     ax2 = ax.twinx()
     ax2.set_facecolor(PANEL_BG)
     ax2.set_ylim(ax.get_ylim())
-    ax2.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:,.0f}"))
+    ax2.yaxis.set_major_formatter(mticker.FuncFormatter(_format_price))
     ax2.tick_params(colors=TEXT, labelsize=8)
     for spine in ax2.spines.values():
         spine.set_edgecolor(GRID)
