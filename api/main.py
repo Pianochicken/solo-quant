@@ -902,6 +902,8 @@ def run_signal_backtest(params: SignalBacktestParams):
                 "max_drawdown_pct": result['metrics']['max_drawdown_pct'],
                 "sharpe_ratio": result['metrics']['sharpe_ratio'],
                 "total_fees_paid": result['total_fees_paid'],
+                "avg_mfe_pct": result['metrics'].get('avg_mfe_pct', 0.0),
+                "avg_mae_pct": result['metrics'].get('avg_mae_pct', 0.0),
             },
             "equity_curve": result['equity'],
             "trades": result['trades'],

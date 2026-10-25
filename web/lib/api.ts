@@ -235,6 +235,8 @@ export interface SignalBacktestMetrics {
     max_drawdown_pct: number;
     sharpe_ratio: number;
     total_fees_paid: number;
+    avg_mfe_pct?: number;
+    avg_mae_pct?: number;
 }
 
 export interface SignalTrade {

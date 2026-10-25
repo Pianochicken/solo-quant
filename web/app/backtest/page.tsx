@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { BacktestParams, runBacktest, BacktestResult, getSmartGridParams, SignalBacktestParams, SignalBacktestResult, runSignalBacktest } from '@/lib/api';
-import { ArrowLeft, Play, Calculator, Activity, TrendingUp, DollarSign, Brain, RefreshCw, Target, Shield, Crosshair, BarChart3, Percent, ArrowDownUp } from 'lucide-react';
+import { ArrowLeft, Play, Calculator, Activity, TrendingUp, TrendingDown, DollarSign, Brain, RefreshCw, Target, Shield, Crosshair, BarChart3, Percent, ArrowDownUp } from 'lucide-react';
 import { createChart, ColorType, AreaSeries, CandlestickSeries, createSeriesMarkers } from 'lightweight-charts';
 import { InfoTooltip } from '@/components/InfoTooltip';
 import Link from 'next/link';
@@ -451,19 +451,94 @@ export default function BacktestPage() {
                 <div className="col-span-12 lg:col-span-8 flex flex-col gap-6">
                     {/* Metrics Cards */}
                     {strategyMode === 'signal' ? (
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                             {[
-                                { label: 'PnL (Net)', icon: <DollarSign className="w-3 h-3" />, value: signalResult ? `$${signalResult.metrics.pnl.toFixed(2)}` : '--', color: signalResult && signalResult.metrics.pnl >= 0 ? 'text-emerald-400' : 'text-red-400', size: 'text-xl' },
-                                { label: 'Return %', icon: <TrendingUp className="w-3 h-3" />, value: signalResult ? `${signalResult.metrics.pnl_percent.toFixed(2)}%` : '--', color: signalResult && signalResult.metrics.pnl_percent >= 0 ? 'text-emerald-400' : 'text-red-400', size: 'text-xl' },
-                                { label: 'Win Rate', icon: <Target className="w-3 h-3" />, value: signalResult ? `${signalResult.metrics.win_rate.toFixed(1)}%` : '--', color: signalResult && signalResult.metrics.win_rate >= 50 ? 'text-emerald-400' : 'text-amber-400', size: 'text-xl' },
-                                { label: 'Max Drawdown', icon: <Shield className="w-3 h-3" />, value: signalResult ? `${signalResult.metrics.max_drawdown_pct.toFixed(2)}%` : '--', color: 'text-red-400', size: 'text-xl' },
-                                { label: 'Profit Factor', icon: <BarChart3 className="w-3 h-3" />, value: signalResult ? signalResult.metrics.profit_factor.toFixed(2) : '--', color: signalResult && signalResult.metrics.profit_factor >= 1.5 ? 'text-emerald-400' : 'text-zinc-100', size: 'text-xl' },
-                                { label: 'Sharpe Ratio', icon: <Percent className="w-3 h-3" />, value: signalResult ? signalResult.metrics.sharpe_ratio.toFixed(2) : '--', color: signalResult && signalResult.metrics.sharpe_ratio >= 1 ? 'text-emerald-400' : 'text-zinc-100', size: 'text-xl' },
-                                { label: 'Total Trades', icon: <Activity className="w-3 h-3" />, value: signalResult ? `${signalResult.metrics.winning_trades}W / ${signalResult.metrics.losing_trades}L` : '--', color: 'text-zinc-100', size: 'text-lg' },
-                                { label: 'Total Fees', icon: <Calculator className="w-3 h-3" />, value: signalResult ? `$${signalResult.metrics.total_fees_paid.toFixed(2)}` : '--', color: 'text-zinc-400', size: 'text-lg' },
+                                {
+                                    label: 'PnL (Net)',
+                                    icon: <DollarSign className="w-3 h-3" />,
+                                    value: signalResult ? `$${signalResult.metrics.pnl.toFixed(2)}` : '--',
+                                    color: signalResult && signalResult.metrics.pnl >= 0 ? 'text-emerald-400' : 'text-red-400',
+                                    size: 'text-xl',
+                                    tooltip: '回測期間扣除手續費後的總淨盈虧金額'
+                                },
+                                {
+                                    label: 'Return %',
+                                    icon: <TrendingUp className="w-3 h-3" />,
+                                    value: signalResult ? `${signalResult.metrics.pnl_percent.toFixed(2)}%` : '--',
+                                    color: signalResult && signalResult.metrics.pnl_percent >= 0 ? 'text-emerald-400' : 'text-red-400',
+                                    size: 'text-xl',
+                                    tooltip: '相對於初始投資金額的累計淨投資報酬率'
+                                },
+                                {
+                                    label: 'Win Rate',
+                                    icon: <Target className="w-3 h-3" />,
+                                    value: signalResult ? `${signalResult.metrics.win_rate.toFixed(1)}%` : '--',
+                                    color: signalResult && signalResult.metrics.win_rate >= 50 ? 'text-emerald-400' : 'text-amber-400',
+                                    size: 'text-xl',
+                                    tooltip: '獲利平倉交易筆數佔總平倉交易筆數的百分比'
+                                },
+                                {
+                                    label: 'Max Drawdown',
+                                    icon: <Shield className="w-3 h-3" />,
+                                    value: signalResult ? `${signalResult.metrics.max_drawdown_pct.toFixed(2)}%` : '--',
+                                    color: 'text-red-400',
+                                    size: 'text-xl',
+                                    tooltip: '淨值曲線由歷史最高點回落至最低點的最大累積跌幅 (MDD)'
+                                },
+                                {
+                                    label: 'Profit Factor',
+                                    icon: <BarChart3 className="w-3 h-3" />,
+                                    value: signalResult ? signalResult.metrics.profit_factor.toFixed(2) : '--',
+                                    color: signalResult && signalResult.metrics.profit_factor >= 1.5 ? 'text-emerald-400' : 'text-zinc-100',
+                                    size: 'text-xl',
+                                    tooltip: '毛獲利總額除以毛虧損總額的比率，數值大於 1.5 代表具備穩健優勢'
+                                },
+                                {
+                                    label: 'Sharpe Ratio',
+                                    icon: <Percent className="w-3 h-3" />,
+                                    value: signalResult ? signalResult.metrics.sharpe_ratio.toFixed(2) : '--',
+                                    color: signalResult && signalResult.metrics.sharpe_ratio >= 1 ? 'text-emerald-400' : 'text-zinc-100',
+                                    size: 'text-xl',
+                                    tooltip: '年化夏普比率，衡量策略每承受一單位波動風險所能換取的超額報酬'
+                                },
+                                {
+                                    label: 'Total Trades',
+                                    icon: <Activity className="w-3 h-3" />,
+                                    value: signalResult ? `${signalResult.metrics.winning_trades}W / ${signalResult.metrics.losing_trades}L` : '--',
+                                    color: 'text-zinc-100',
+                                    size: 'text-lg',
+                                    tooltip: '回測期間累積完成的平倉交易總數（勝場數 W / 敗場數 L）'
+                                },
+                                {
+                                    label: 'Total Fees',
+                                    icon: <Calculator className="w-3 h-3" />,
+                                    value: signalResult ? `$${signalResult.metrics.total_fees_paid.toFixed(2)}` : '--',
+                                    color: 'text-zinc-400',
+                                    size: 'text-lg',
+                                    tooltip: '回測期間進出場累積扣除的交易所交易手續費總額'
+                                },
+                                {
+                                    label: 'Avg MFE (最高波段)',
+                                    icon: <TrendingUp className="w-3 h-3" />,
+                                    value: signalResult?.metrics?.avg_mfe_pct != null ? `+${signalResult.metrics.avg_mfe_pct.toFixed(2)}%` : '--',
+                                    color: 'text-emerald-400',
+                                    size: 'text-xl',
+                                    tooltip: '進場後在固定窗口內平均最高達到的浮盈幅度，代表訊號的獲利天花板'
+                                },
+                                {
+                                    label: 'Avg MAE (平均浮虧)',
+                                    icon: <TrendingDown className="w-3 h-3" />,
+                                    value: signalResult?.metrics?.avg_mae_pct != null ? `-${Math.abs(signalResult.metrics.avg_mae_pct).toFixed(2)}%` : '--',
+                                    color: 'text-red-400',
+                                    size: 'text-xl',
+                                    tooltip: '進場後在固定窗口內平均承受的最大逆向浮虧，可用來設定合理的止損距離'
+                                },
                             ].map((card, i) => (
                                 <div key={i} className="bg-zinc-900 border border-zinc-800 p-3 rounded-xl min-h-[90px] flex flex-col justify-between">
-                                    <span className="text-zinc-500 text-[10px] uppercase flex items-center gap-1">{card.icon} {card.label}</span>
+                                    <span className="text-zinc-500 text-[10px] uppercase flex items-center gap-1">
+                                        {card.icon} {card.label}
+                                        {card.tooltip && <InfoTooltip text={card.tooltip} />}
+                                    </span>
                                     <div className={`${card.size} font-mono font-bold mt-1 ${card.color}`}>{card.value}</div>
                                 </div>
                             ))}
