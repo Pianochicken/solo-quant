@@ -30,7 +30,7 @@ def ingest_cvd_csv(filepath: str, db_symbol: str):
             'timestamp': dt,
             'exchange': 'binance',
             'symbol': db_symbol,
-            'timeframe': '1D',
+            'timeframe': '1d',
             'taker_buy_vol': float(row['taker_buy_vol']),
             'taker_sell_vol': float(row['taker_sell_vol'])
         }

@@ -21,9 +21,11 @@ services:
       - db
     ports:
       - "8000:8000"
+    volumes:
+      - .:/app
     environment:
       - PYTHONUNBUFFERED=1
-      - DATABASE_URL=postgresql://quant_user:quant_password@db:5432/quant_db
+      - DATABASE_URL=postgresql+psycopg2://quant_user:quant_password@db:5432/quant_db
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
       - NEXT_PUBLIC_TIMEZONE_OFFSET=${NEXT_PUBLIC_TIMEZONE_OFFSET:-0}

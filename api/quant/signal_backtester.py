@@ -91,18 +91,19 @@ class SignalBacktester:
     # ─── Internal: Exit Processing ──────────────────────────────────
 
     def _process_exits(self, high: float, low: float, close: float, time: int) -> None:
-        """Update all open positions and close those that hit exit conditions."""
+        """
+        Check exits first using previous bar's trailing stop, then update tracking.
+        Prevents look-ahead bias (no same-candle ratchet-and-trigger).
+        """
         still_open = []
         for pos in self.open_positions:
-            # Update trailing stop tracking
-            pos.update(high, low, close)
-
             # Check exit conditions
             exit_reason = pos.check_exit(high, low, close)
             if exit_reason:
                 exit_price = pos.get_exit_price_for_reason(exit_reason, high, low)
                 self._close_position(pos, exit_price, time, exit_reason)
             else:
+                pos.update(high, low, close)
                 still_open.append(pos)
 
         self.open_positions = still_open
@@ -209,8 +210,9 @@ class SignalBacktester:
         size = risk_amount / sl_distance  # base asset units
         cost = size * entry_price         # USDT notional
 
-        # Cap at available balance (leave some margin)
-        max_affordable = self.balance * 0.95 / entry_price  # 95% of balance
+        # Cap at available balance and max_positions allocation (leave some margin)
+        max_per_position = (current_equity * 0.95 / max(1, self.config.max_positions)) / entry_price
+        max_affordable = min(self.balance * 0.95 / entry_price, max_per_position)
         if size > max_affordable:
             size = max_affordable
             cost = size * entry_price
@@ -262,8 +264,60 @@ class SignalBacktester:
                 position_value += pos.cost + pos.unrealized_pnl(current_price)
         return self.balance + position_value
 
+    def _calculate_signal_quality(self) -> Dict[str, float]:
+        """
+        Calculate Forward Return & MFE/MAE for all signals.
+        Tracks MFE (Max Favorable Excursion) and MAE (Max Adverse Excursion)
+        over up to 24 bars forward (4, 12, 24 windows).
+        """
+        if not self.signals or not self.price_data:
+            return {"avg_mfe_pct": 0.0, "avg_mae_pct": 0.0}
+
+        time_to_idx = {c['time']: i for i, c in enumerate(self.price_data)}
+        all_mfes = []
+        all_maes = []
+
+        for sig in self.signals:
+            t = sig.get('time')
+            idx = time_to_idx.get(t)
+            if idx is None:
+                continue
+
+            entry_price = self.price_data[idx]['close']
+            if entry_price <= 0:
+                continue
+
+            direction = sig.get('direction')
+            forward_candles = self.price_data[idx + 1 : idx + 1 + 24]
+            if not forward_candles:
+                continue
+
+            highs = [c['high'] for c in forward_candles]
+            lows = [c['low'] for c in forward_candles]
+
+            if direction == 'bullish':
+                mfe = (max(highs) - entry_price) / entry_price * 100.0
+                mae = (entry_price - min(lows)) / entry_price * 100.0
+            elif direction == 'bearish':
+                mfe = (entry_price - min(lows)) / entry_price * 100.0
+                mae = (max(highs) - entry_price) / entry_price * 100.0
+            else:
+                continue
+
+            all_mfes.append(max(0.0, mfe))
+            all_maes.append(max(0.0, mae))
+
+        avg_mfe = float(np.mean(all_mfes)) if all_mfes else 0.0
+        avg_mae = float(np.mean(all_maes)) if all_maes else 0.0
+
+        return {
+            "avg_mfe_pct": round(avg_mfe, 2),
+            "avg_mae_pct": round(avg_mae, 2),
+        }
+
     def _calculate_metrics(self) -> Dict:
-        """Compute performance metrics from closed positions."""
+        """Compute performance metrics from closed positions and signals."""
+        sq = self._calculate_signal_quality()
         if not self.closed_positions:
             return {
                 "win_rate": 0.0,
@@ -275,6 +329,8 @@ class SignalBacktester:
                 "profit_factor": 0.0,
                 "max_drawdown_pct": 0.0,
                 "sharpe_ratio": 0.0,
+                "avg_mfe_pct": sq["avg_mfe_pct"],
+                "avg_mae_pct": sq["avg_mae_pct"],
             }
 
         wins = [p for p in self.closed_positions if p.realized_pnl > 0]
@@ -299,7 +355,7 @@ class SignalBacktester:
         # Max drawdown from equity curve
         max_drawdown_pct = self._calculate_max_drawdown()
 
-        # Simplified Sharpe ratio (daily returns approximation)
+        # Simplified Sharpe ratio (dynamic annualization based on interval)
         sharpe = self._calculate_sharpe()
 
         return {
@@ -312,6 +368,8 @@ class SignalBacktester:
             "profit_factor": round(float(min(profit_factor, 999.9)), 2),
             "max_drawdown_pct": round(max_drawdown_pct, 2),
             "sharpe_ratio": round(sharpe, 2),
+            "avg_mfe_pct": sq["avg_mfe_pct"],
+            "avg_mae_pct": sq["avg_mae_pct"],
         }
 
     def _calculate_max_drawdown(self) -> float:
@@ -335,8 +393,7 @@ class SignalBacktester:
     def _calculate_sharpe(self, risk_free_rate: float = 0.0) -> float:
         """
         Simplified Sharpe Ratio from equity curve.
-        Uses hourly returns (since we typically run on 1h candles).
-        Annualized assuming ~8760 hours/year.
+        Dynamically adjusts annualization factor based on candle interval.
         """
         if len(self.equity_curve) < 2:
             return 0.0
@@ -347,9 +404,16 @@ class SignalBacktester:
         if len(returns) == 0 or np.std(returns) == 0:
             return 0.0
 
-        mean_return = np.mean(returns) - risk_free_rate / 8760
+        interval_hours = 1.0
+        if len(self.price_data) >= 2:
+            delta_ms = self.price_data[1]['time'] - self.price_data[0]['time']
+            if delta_ms > 0:
+                interval_hours = max(delta_ms / 3600000.0, 1.0 / 60.0)
+
+        annual_factor = 8760.0 / interval_hours
+        mean_return = np.mean(returns) - (risk_free_rate / annual_factor)
         std_return = np.std(returns)
-        sharpe = (mean_return / std_return) * np.sqrt(8760)  # Annualized
+        sharpe = (mean_return / std_return) * np.sqrt(annual_factor)
 
         return float(sharpe)
 

@@ -373,6 +373,68 @@ class TestSignalBacktester:
         assert result_with_fee['final_balance'] < result_no_fee['final_balance']
         assert result_with_fee['total_fees_paid'] > 0
 
+    def test_mfe_mae_metrics(self):
+        """Verify MFE and MAE forward metrics are populated."""
+        prices = [100] * 5 + [102, 105, 98, 103] + [100] * 5
+        candles = _make_candles(prices)
+        signals = _make_signals([(candles[2]['time'], 'bullish')])
+        config = SignalStrategyConfig(investment=10000, take_profit_pct=20.0, stop_loss_pct=20.0)
+        result = SignalBacktester(config, candles, signals).run()
+        metrics = result['metrics']
+        assert 'avg_mfe_pct' in metrics
+        assert 'avg_mae_pct' in metrics
+        assert metrics['avg_mfe_pct'] > 0
+
+    def test_trailing_stop_cross_candle_no_lookahead(self):
+        """
+        Verify that trailing stop does not exit on the same candle that pushed
+        the high up, but on subsequent candle when low breaches previous bar's trailing stop.
+        """
+        # Candle 0: entry at 100
+        # Candle 1: high=105, low=99 (ratchets trailing stop to 105*(1-0.015)=103.425; low 99 doesn't trigger trailing because exit check ran before update)
+        # Candle 2: high=103, low=101 (low 101 triggers trailing stop at 103.425)
+        candles = [
+            {'time': 1000, 'open': 100, 'high': 100.5, 'low': 99.5, 'close': 100},
+            {'time': 2000, 'open': 100, 'high': 105.0, 'low': 99.0, 'close': 103.5},
+            {'time': 3000, 'open': 103.5, 'high': 103.5, 'low': 101.0, 'close': 102.0},
+        ]
+        signals = [{'time': 1000, 'direction': 'bullish', 'score': 5}]
+        config = SignalStrategyConfig(
+            investment=10000,
+            take_profit_pct=20.0,
+            stop_loss_pct=10.0,
+            trailing_stop_pct=1.5,
+            trailing_activation_pct=1.0,
+            max_positions=1,
+            fee_rate=0.0
+        )
+        result = SignalBacktester(config, candles, signals).run()
+        close_trades = [t for t in result['trades'] if t['side'] == 'close_long']
+        assert len(close_trades) == 1
+        assert close_trades[0]['time'] == 3000
+        assert close_trades[0]['exit_reason'] == 'trailing'
+
+
+class TestIndicatorEngineV8:
+    def test_btc_macro_regime_filtering(self):
+        from api.core.indicators import IndicatorEngine
+        price_data = [
+            {'time': i * 3600, 'open': 100, 'high': 101, 'low': 99, 'close': 100}
+            for i in range(50)
+        ]
+        # Neutral baseline
+        markers, regime = IndicatorEngine.calculate_confluence_signals(
+            price_data=price_data,
+            lsur_z_aligned=[],
+            cvd_aligned=[],
+            oi_percentile=50.0,
+            funding_aligned=[],
+            symbol='SOL/USDT',
+            btc_macro_regime={'regime': 'trending', 'direction': 'down', 'pulse': 85.0}
+        )
+        assert isinstance(markers, list)
+        assert isinstance(regime, dict)
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

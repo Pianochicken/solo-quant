@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
+from typing import Optional, Dict, Any, List
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -63,6 +65,7 @@ app.add_middleware(
 
 # Global DataFetcher instance to maintain the in-memory cache
 _fetcher_instance = None
+_btc_macro_cache: Optional[Dict] = None
 
 def get_fetcher() -> DataFetcher:
     global _fetcher_instance
@@ -77,13 +80,12 @@ def read_root():
 @app.post("/clear-cache")
 def clear_cache():
     """
-    Clears the in-memory cache of the DataFetcher to force fresh data fetches.
+    Clears the in-memory cache and re-initializes DataFetcher.
     """
-    global _fetcher_instance
-    if _fetcher_instance and hasattr(_fetcher_instance, 'cache'):
-        _fetcher_instance.cache.clear()
-        return {"status": "success", "message": "Cache cleared successfully"}
-    return {"status": "info", "message": "Cache was already empty"}
+    global _fetcher_instance, _btc_macro_cache
+    _fetcher_instance = DataFetcher()
+    _btc_macro_cache = None
+    return {"status": "success", "message": "Fetcher re-initialized and cache cleared successfully"}
 
 # --- Notification Config Endpoints ---
 from api.core.signal_scanner import get_notification_config, update_notification_config
@@ -93,6 +95,8 @@ from typing import List, Optional
 class NotificationConfigUpdate(PydanticBaseModel):
     enabled: Optional[bool] = None
     monitored_symbols: Optional[List[str]] = None
+    enable_mtf_filter: Optional[bool] = None
+    enable_protection: Optional[bool] = None
 
 
 @app.get("/notifications/config")
@@ -103,10 +107,12 @@ def get_notif_config():
 
 @app.post("/notifications/config")
 def update_notif_config(body: NotificationConfigUpdate):
-    """Update notification settings (toggle on/off, select symbols)."""
+    """Update notification settings (toggle on/off, select symbols, mtf, protection)."""
     return update_notification_config(
         enabled=body.enabled,
         monitored_symbols=body.monitored_symbols,
+        enable_mtf_filter=body.enable_mtf_filter,
+        enable_protection=body.enable_protection,
     )
 
 
@@ -140,10 +146,12 @@ def get_market_data(
     enable_protection: bool = False,
     use_dynamic_profiles: bool = True,
     enable_mtf_filter: bool = False,  # Layer 3: enable 4h regime MTF confirmation
+    btc_macro_regime: Optional[Dict] = None,  # Layer 4: BTC macro regime filter for altcoins
 ):
     """
     Get generic market data (Price + Funding + Sentiment).
     """
+    global _btc_macro_cache
     # Fix symbol format
     formatted_symbol = symbol.replace('-', '/')
     
@@ -387,8 +395,13 @@ def get_market_data(
         donchian = IndicatorEngine.calculate_donchian_channel(data['price'])
         macd_history = IndicatorEngine.calculate_macd(data['price'])
 
-        # 6. Multi-Indicator Confluence Signals v4
-        # Timeframe-adaptive thresholds, trend filter, per-bar rolling OI percentile
+        # Resolve effective BTC macro regime for altcoin threshold adjustments
+        effective_btc_macro = btc_macro_regime
+        if effective_btc_macro is None and 'BTC' not in formatted_symbol.upper() and _btc_macro_cache:
+            effective_btc_macro = _btc_macro_cache
+
+        # 6. Multi-Indicator Confluence Signals v8
+        # Timeframe-adaptive thresholds, trend filter, per-bar rolling OI percentile, BTC macro regime
         confluence_markers, market_regime = IndicatorEngine.calculate_confluence_signals(
             price_data=data['price'],
             lsur_z_aligned=lsur_z_aligned,
@@ -409,6 +422,7 @@ def get_market_data(
             symbol=formatted_symbol,
             use_dynamic_profiles=use_dynamic_profiles,
             higher_tf_regime_history=htf_regime_history,  # Layer 3 MTF (None if disabled)
+            btc_macro_regime=effective_btc_macro,         # Layer 4 BTC macro regime
         )
         
         # 7 & 8. Composite Score (Market Pulse) v5 & History
@@ -426,6 +440,15 @@ def get_market_data(
             use_dynamic_profiles=use_dynamic_profiles,
         )
         composite_score = composite_score_history[-1]['value'] if composite_score_history else 50.0
+
+        # Cache BTC macro regime if current symbol is BTC
+        if 'BTC' in formatted_symbol.upper():
+            _btc_macro_cache = {
+                'regime': market_regime.get('regime', 'ranging'),
+                'direction': market_regime.get('direction', 'neutral'),
+                'pulse': composite_score,
+                'time': time.time(),
+            }
 
         # 9. Market Regime Detection History
         market_regime_history = IndicatorEngine.calculate_market_regime_history(

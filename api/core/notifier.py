@@ -110,9 +110,7 @@ async def send_signal_with_chart(
         for m in all_markers
     ]
 
-    artifacts_dir = Path(
-        "/Users/huangjunyou/.gemini/antigravity-ide/brain/bb3e634d-9790-427f-ac57-6fa3f7dd5dd0/artifacts"
-    )
+    artifacts_dir = Path(os.getenv("ARTIFACTS_DIR", "/tmp/solo_quant_charts"))
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     output_path = artifacts_dir / f"{symbol.replace('/', '_')}_168h.png"
 

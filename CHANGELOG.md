@@ -3,6 +3,34 @@
 All notable changes to the Solo-Quant project will be documented in this file.
 This file serves as a historical record to keep `AI_HANDOFF.md` clean and focused on current state and next steps.
 
+## [2026-10-25] v0.3.0 - IndicatorEngine v8 (Macro & Inflection Precision Upgrade)
+- **Data Ingestion & Aggregation (Phase A)**:
+  - `scripts/data/ingest_cvd.py`: Standardized timeframe to `'1d'` (was uppercase `'1D'`).
+  - `api/core/fetcher.py`:
+    - Fixed 4h Taker Volume collapse: dynamically scaled `query_limit = limit * tf_ratio` based on timeframe duration, ensuring 4h queries return a full 1000 warmup candles.
+    - Fixed cross-exchange Open Interest aggregation: merged OKX and Binance OI on timestamp with `ffill(limit=2)` and smooth ratio scaling across boundaries, eliminating false OI crashes/CAP signals caused by Binance 30-day history cutoffs.
+    - Standardized long/short account ratio fetching to align retail contract accounts across exchanges.
+- **Backtest Precision & Look-Ahead Removal (Phase A)**:
+  - `api/quant/signal_backtester.py`:
+    - Fixed intra-bar trailing stop look-ahead bias: `_process_exits()` now evaluates `pos.check_exit()` strictly *before* `pos.update()`, evaluating trailing stops against previous-bar ratchets.
+    - Fixed position sizing: `max_affordable` divides by `max_positions` (`current_equity * 0.95 / max_positions`), preventing the first trade from locking 95% equity.
+    - Dynamic annualization factor for Sharpe ratio using detected candle interval.
+    - Added Forward Return MFE/MAE tracking (`avg_mfe_pct`, `avg_mae_pct` in backtest metrics).
+- **IndicatorEngine v8 Upgrade (Phase B)**:
+  - Converted `cvd_slope_extreme` to rolling causal 20-bar lookback inside loop, removing future look-ahead bias.
+  - Added rolling `oi_percentile_series` leverage multipliers: `curr_oi_pct >= 80` + extreme funding raises CAP/DIV structural weights to 2.0; `curr_oi_pct <= 20` lowers CAP weight to 1.0.
+  - Upgraded Layer 1 Capitulation Detector (`CAP↑`/`CAP↓`): Dynamic `cap_oi_drop_pct` by coin tier (BTC -4.5%, Midcaps -7%, Alts -10%), replaced flawed 3-bar price stab with true absorption price action (`price_chg_pct` + `is_bull_pa`/`is_bear_pa`).
+  - Upgraded Layer 2 CVD Divergence (`DIV↑`/`DIV↓`): Added recency condition (`min(div_price_lows[-2:]) == second_price_low` with `is_bull_pa` / max with `is_bear_pa`), eliminating repetitive continuous signals.
+  - Breakout Engine MTF & logic fix: Resolved `if/elif` mutual blocking bug via decoupled flags; required `'Structure'` group confirmation for 1h breakouts counter to 4h MTF trends.
+  - Layer 4 BTC Macro Regime Filter: `btc_macro_regime` parameter adjusts altcoin bull/bear thresholds (+1.0) when BTC is in an adverse macro regime.
+- **Scanner, API & Frontend Alignment (Phase C)**:
+  - `api/core/notifier.py`: Replaced hardcoded local file path with `ARTIFACTS_DIR` env var fallback.
+  - `api/core/signal_scanner.py`: Added MTF filter and regime protection support; offloaded I/O to worker threads; added unclosed candle broadcast filter (`score >= 5.0` or structural signals only for intra-bar); deduplicates on `(time, strategy_type)`; scans BTC first to propagate `btc_macro_regime` to altcoins.
+  - `api/main.py`: Propagates and caches `_btc_macro_cache`; clears cache and resets fetcher instance on `/clear-cache`.
+  - `web/app/backtest/page.tsx`: Fixed double timezone offset (+16h) in trade history table by adding `{ timeZone: 'UTC' }` to pre-shifted timestamps.
+  - `web/components/AdvancedChart.tsx`: Aligned `fundingData` via `alignData` with null/undefined filtering; corrected inverted `Market Pulse` tooltip description.
+- **Tests**: Added comprehensive unit tests in `api/tests/test_signal_strategy.py` for MFE/MAE metrics, causal trailing stop sequence, and BTC macro regime filtering (all 27 tests passing).
+
 ---
 
 ## [2026-06-16] v0.2.0 - TradingView-Style Chart in Telegram Signal Notifications

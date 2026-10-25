@@ -1,5 +1,6 @@
 import ccxt
 import pandas as pd
+import numpy as np
 import time
 import concurrent.futures
 from typing import Tuple, Dict, List, Optional
@@ -172,41 +173,44 @@ class DataFetcher:
         binance_symbol = f"{ccy}USDT"
         db_symbol = symbol 
         
+        p_lower = period.lower()
+        period_seconds = 300
+        if 'm' in p_lower: period_seconds = int(p_lower.replace('m', '')) * 60
+        elif 'h' in p_lower: period_seconds = int(p_lower.replace('h', '')) * 3600
+        elif 'd' in p_lower: period_seconds = 86400
+
+        tf_ratio = max(1, period_seconds // 3600) if p_lower in ['2h', '4h', '6h', '8h', '12h'] else 1
+        query_limit = limit * tf_ratio
+
         with SessionLocal() as db:
-            db_bin = crud.get_market_data(db, symbol=db_symbol, timeframe=period, exchange="binance", limit=limit)
+            db_bin = crud.get_market_data(db, symbol=db_symbol, timeframe=period, exchange="binance", limit=query_limit)
             db_bin = [x for x in db_bin if x.taker_buy_vol is not None]
             
-            missed_candles = 20
+            missed_candles = 20 * tf_ratio
             if db_bin:
                 latest_ts = db_bin[-1].timestamp.timestamp()
                 first_ts = db_bin[0].timestamp.timestamp()
                 now_ts = time.time()
                 
-                tf_sec = 300
-                tf_l = period.lower()
-                if 'm' in tf_l: tf_sec = int(tf_l.replace('m', '')) * 60
-                elif 'h' in tf_l: tf_sec = int(tf_l.replace('h', '')) * 3600
-                elif 'd' in tf_l: tf_sec = int(tf_l.replace('d', '')) * 86400
-                
+                raw_step_sec = 3600 if p_lower in ['1h', '2h', '4h', '6h', '8h', '12h'] else period_seconds
                 diff = now_ts - latest_ts
                 span = latest_ts - first_ts
-                expected_span = (len(db_bin) - 1) * tf_sec
+                expected_span = (len(db_bin) - 1) * raw_step_sec
                 
-                if span > expected_span + tf_sec:
-                    missed_candles = max(limit, 100)
+                if span > expected_span + raw_step_sec:
+                    missed_candles = max(query_limit, 100 * tf_ratio)
                 elif diff > 0:
-                    calc_missed = int((diff // tf_sec) + 2)
-                    missed_candles = max(20, min(calc_missed, limit))
+                    calc_missed = int((diff // raw_step_sec) + 2)
+                    missed_candles = max(20 * tf_ratio, min(calc_missed, query_limit))
             
-            limit_to_fetch = missed_candles if len(db_bin) >= limit else max(limit, 100)
+            limit_to_fetch = missed_candles if len(db_bin) >= query_limit else max(query_limit, 100 * tf_ratio)
 
             def fetch_binance():
                 binance_period = '5m'
-                p_lower = period.lower()
                 if p_lower in ['1h', '2h', '4h', '6h', '8h', '12h']: binance_period = '1h'
                 elif p_lower in ['1d', '2d', '3d', '1w', '1m']: binance_period = '1d'
                 
-                max_pages = min((limit_to_fetch + 499) // 500, 3)
+                max_pages = min((limit_to_fetch + 499) // 500, 10)
                 end_ts = None
                 records = []
                 for page in range(max_pages):
@@ -237,17 +241,12 @@ class DataFetcher:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 executor.submit(fetch_binance).result()
 
-            bin_data = crud.get_market_data(db, symbol=db_symbol, timeframe=period, exchange="binance", limit=limit)
+            bin_data = crud.get_market_data(db, symbol=db_symbol, timeframe=period, exchange="binance", limit=query_limit)
             df_bin = pd.DataFrame([{ "time": int(x.timestamp.timestamp()), "sell_vol": x.taker_sell_vol or 0, "buy_vol": x.taker_buy_vol or 0 } for x in bin_data])
             
             merged = df_bin
             if merged.empty: return []
 
-            period_seconds = 300
-            if 'm' in period.lower(): period_seconds = int(period.lower().replace('m', '')) * 60
-            elif 'h' in period.lower(): period_seconds = int(period.lower().replace('h', '')) * 3600
-            elif 'd' in period.lower(): period_seconds = 86400
-            
             merged['rounded_time'] = (merged['time'] // period_seconds) * period_seconds
             agg_df = merged.groupby('rounded_time').agg({'sell_vol': 'sum', 'buy_vol': 'sum'}).reset_index()
             agg_df.rename(columns={'rounded_time': 'time'}, inplace=True)
@@ -260,51 +259,46 @@ class DataFetcher:
         okx_symbol = f"{symbol.split('/')[0]}-USDT-SWAP" if '/' in symbol else f"{symbol.split('-')[0]}-USDT-SWAP"
         db_symbol = symbol 
         
+        p_lower = timeframe.lower()
+        period_seconds = 3600
+        if 'm' in p_lower: period_seconds = int(p_lower.replace('m', '')) * 60
+        elif 'h' in p_lower: period_seconds = int(p_lower.replace('h', '')) * 3600
+        elif 'd' in p_lower: period_seconds = 86400
+        
+        tf_ratio = max(1, period_seconds // 3600) if p_lower in ['2h', '4h', '6h', '8h', '12h'] else 1
+        query_limit = limit * tf_ratio
+
         with SessionLocal() as db:
-            db_okx = crud.get_market_data(db, symbol=db_symbol, timeframe=timeframe, exchange="okx", limit=limit)
+            db_okx = crud.get_market_data(db, symbol=db_symbol, timeframe=timeframe, exchange="okx", limit=query_limit)
             db_okx = [x for x in db_okx if x.open_interest is not None]
             
-            missed_candles = 20
+            missed_candles = 20 * tf_ratio
             if db_okx:
                 latest_ts = db_okx[-1].timestamp.timestamp()
                 first_ts = db_okx[0].timestamp.timestamp()
                 now_ts = time.time()
                 
-                tf_sec = 3600
-                tf_l = timeframe.lower()
-                if 'm' in tf_l: tf_sec = int(tf_l.replace('m', '')) * 60
-                elif 'h' in tf_l: tf_sec = int(tf_l.replace('h', '')) * 3600
-                elif 'd' in tf_l: tf_sec = int(tf_l.replace('d', '')) * 86400
-                
+                tf_sec = period_seconds
                 diff = now_ts - latest_ts
                 span = latest_ts - first_ts
                 expected_span = (len(db_okx) - 1) * tf_sec
                 
                 if span > expected_span + tf_sec:
-                    missed_candles = max(limit, 100)
+                    missed_candles = max(query_limit, 100 * tf_ratio)
                 elif diff > 0:
                     calc_missed = int((diff // tf_sec) + 2)
-                    missed_candles = max(20, min(calc_missed, limit))
+                    missed_candles = max(20 * tf_ratio, min(calc_missed, query_limit))
             
-            limit_to_fetch = missed_candles if len(db_okx) >= limit else max(limit, 90)
+            limit_to_fetch = missed_candles if len(db_okx) >= query_limit else max(query_limit, 90 * tf_ratio)
 
             def fetch_okx():
                 okx_tf = '5m'
-                p_lower = timeframe.lower()
                 if p_lower in ['1h', '2h', '4h', '6h', '8h', '12h']: okx_tf = '1H'
                 elif p_lower in ['1d', '2d', '3d', '1w', '1m']: okx_tf = '1D'
                 
-                period_seconds = 3600
-                if 'm' in timeframe.lower(): period_seconds = int(timeframe.lower().replace('m', '')) * 60
-                elif 'h' in timeframe.lower(): period_seconds = int(timeframe.lower().replace('h', '')) * 3600
-                elif 'd' in timeframe.lower(): period_seconds = 86400
-                
-                # Expand limit if we fetch '1h' to cover '4h'
-                tf_ratio = max(1, period_seconds // 3600 if okx_tf == '1H' else 1)
                 adjusted_limit = limit_to_fetch * tf_ratio
-                
                 per_page = 100
-                max_pages = min((adjusted_limit + per_page - 1) // per_page, 5)
+                max_pages = min((adjusted_limit + per_page - 1) // per_page, 10)
                 since = None
                 records = []
                 for page in range(max_pages):
@@ -338,7 +332,7 @@ class DataFetcher:
 
             def fetch_binance():
                 per_page = 500
-                max_pages = min((limit_to_fetch + per_page - 1) // per_page, 2)
+                max_pages = min((limit_to_fetch + per_page - 1) // per_page, 10)
                 since = None
                 records = []
                 for page in range(max_pages):
@@ -369,8 +363,8 @@ class DataFetcher:
                 executor.submit(fetch_okx)
                 executor.submit(fetch_binance)
 
-            okx_data = crud.get_market_data(db, symbol=db_symbol, timeframe=timeframe, exchange="okx", limit=limit)
-            bin_data = crud.get_market_data(db, symbol=db_symbol, timeframe=timeframe, exchange="binance", limit=limit)
+            okx_data = crud.get_market_data(db, symbol=db_symbol, timeframe=timeframe, exchange="okx", limit=query_limit)
+            bin_data = crud.get_market_data(db, symbol=db_symbol, timeframe=timeframe, exchange="binance", limit=query_limit)
 
             df_okx = pd.DataFrame([{ "time": int(x.timestamp.timestamp()), "value": x.open_interest or 0 } for x in okx_data])
             df_bin = pd.DataFrame([{ "time": int(x.timestamp.timestamp()), "value": x.open_interest or 0 } for x in bin_data])
@@ -379,19 +373,57 @@ class DataFetcher:
             if not df_okx.empty: self.latest_oi_breakdown["okx"] = float(df_okx.iloc[-1]['value'])
             self.latest_oi_breakdown["total"] = self.latest_oi_breakdown["binance"] + self.latest_oi_breakdown["okx"]
 
-            merged = pd.concat([df_okx, df_bin])
-            if merged.empty: return []
+            if df_okx.empty and df_bin.empty:
+                return []
 
-            period_seconds = 3600
-            if 'm' in timeframe.lower(): period_seconds = int(timeframe.lower().replace('m', '')) * 60
-            elif 'h' in timeframe.lower(): period_seconds = int(timeframe.lower().replace('h', '')) * 3600
-            elif 'd' in timeframe.lower(): period_seconds = 86400
-            
-            merged['rounded_time'] = (merged['time'] // period_seconds) * period_seconds
-            agg_df = merged.groupby('rounded_time')['value'].sum().reset_index()
-            agg_df.rename(columns={'rounded_time': 'time'}, inplace=True)
-            agg_df.sort_values('time', inplace=True)
-            return agg_df.to_dict('records')[-limit:]
+            if not df_okx.empty:
+                df_okx['rounded_time'] = (df_okx['time'] // period_seconds) * period_seconds
+                df_okx = df_okx.groupby('rounded_time')['value'].mean().reset_index().rename(columns={'rounded_time': 'time'})
+            if not df_bin.empty:
+                df_bin['rounded_time'] = (df_bin['time'] // period_seconds) * period_seconds
+                df_bin = df_bin.groupby('rounded_time')['value'].mean().reset_index().rename(columns={'rounded_time': 'time'})
+
+            if df_okx.empty:
+                merged = df_bin.rename(columns={'value': 'value_bin'})
+                merged['value_okx'] = np.nan
+            elif df_bin.empty:
+                merged = df_okx.rename(columns={'value': 'value_okx'})
+                merged['value_bin'] = np.nan
+            else:
+                merged = pd.merge(df_okx, df_bin, on='time', how='outer', suffixes=('_okx', '_bin')).sort_values('time')
+
+            merged['value_okx'] = merged['value_okx'].ffill(limit=2)
+            merged['value_bin'] = merged['value_bin'].ffill(limit=2)
+
+            # Smooth scaling if one side is missing to prevent cliff jumps
+            overlap = merged.dropna(subset=['value_okx', 'value_bin'])
+            if not overlap.empty:
+                first_overlap = overlap.iloc[0]
+                okx_val_0 = float(first_overlap['value_okx'])
+                scale_ratio = ((okx_val_0 + float(first_overlap['value_bin'])) / okx_val_0) if okx_val_0 > 0 else 1.0
+
+                last_overlap = overlap.iloc[-1]
+                bin_val_last = float(last_overlap['value_bin'])
+                scale_ratio_bin = ((float(last_overlap['value_okx']) + bin_val_last) / bin_val_last) if bin_val_last > 0 else 1.0
+
+                values = []
+                for _, row in merged.iterrows():
+                    v_okx = row['value_okx']
+                    v_bin = row['value_bin']
+                    if pd.notna(v_okx) and pd.notna(v_bin):
+                        values.append(v_okx + v_bin)
+                    elif pd.notna(v_okx):
+                        values.append(v_okx * scale_ratio)
+                    elif pd.notna(v_bin):
+                        values.append(v_bin * scale_ratio_bin)
+                    else:
+                        values.append(0.0)
+                merged['value'] = values
+            else:
+                merged['value'] = merged['value_okx'].fillna(0) + merged['value_bin'].fillna(0)
+
+            merged.sort_values('time', inplace=True)
+            return merged[['time', 'value']].to_dict('records')[-limit:]
 
     def fetch_order_book_depth(self, symbol: str, limit: int = 400) -> Dict:
         """ Orderbook is live snapshot logic, untouched and un-stored. """
@@ -477,7 +509,10 @@ class DataFetcher:
                     params = {'symbol': binance_symbol, 'period': binance_period, 'limit': min(limit_to_fetch, 500)}
                     if end_ts: params['endTime'] = int(end_ts)
                     try:
-                        res = self.binance.fapidataGetToplongshortaccountratio(params)
+                        if hasattr(self.binance, 'fapidataGetGloballongshortaccountratio'):
+                            res = self.binance.fapidataGetGloballongshortaccountratio(params)
+                        else:
+                            res = self.binance.fapidataGetToplongshortaccountratio(params)
                         if not isinstance(res, list) or not res: break
                         for item in res:
                             records.append({

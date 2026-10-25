@@ -16,99 +16,71 @@ This document is the **Context Buffer** for AI Agents. It defines how the system
 
 ## 2. Current Architecture (The "Now")
 
-### 2.1 The Signal-Driven Engine (v2)
-The core of the system relies on generating `Bullish` and `Bearish` markers from `IndicatorEngine`, which are then parsed by the `SignalBacktester` to execute trades.
+### 2.1 The Signal-Driven Engine (v8 - Macro & Inflection Precision)
+The core of the system generates `Bullish` and `Bearish` markers from `IndicatorEngine` v8, which are parsed by the `SignalBacktester` to execute trades and visualized on the dashboard.
 
 - **Data Flow**: `get_market_data(limit=1000)` fetches OHLCV from DB -> `IndicatorEngine` calculates arrays -> UI renders `AdvancedChart` / Backend runs `SignalBacktester`.
-- **Dual-Engine Logic**: Evaluation combines a **Reversion Engine** (RSI, BB, EMA, Funding) for ranging regimes, and a **Breakout Engine** (Donchian Channels, MACD, CVD) for catching strong trend continuations.
-- **Position Lifecycle**: `api/quant/position.py` manages Stop Loss -> Take Profit -> Trailing Stop (evaluated in this exact order per bar).
-- **Regime-Adaptive Thresholds**: The system detects the current market regime (`trending up`, `trending down`, `ranging`). In a trend, it automatically relaxes the thresholds of Mean-Reversion indicators (like RSI and EMA) to buy shallow dips.
-- **Visuals**: The UI features an `AdvancedChart` with 7 layers: Main Price, RSI, CVD, Open Interest, Funding Rate, Market Pulse, and a **Regime Chart** (Emerald for Uptrend, Red for Downtrend, Amber for Ranging). Breakout signals are distinctly visualized (e.g., Rocket 🚀 icon, Blue/Orange colors) separate from reversion signals.
+- **Multi-Layer Confluence Logic**:
+  - **Reversion Engine**: RSI, BB, EMA, Funding for ranging regimes.
+  - **Breakout Engine**: Donchian Channels, MACD, CVD for trend continuations (requires `'Structure'` confirmation when counter to 4h MTF trend).
+  - **Layer 1 Capitulation Detector (`CAP↑`/`CAP↓`)**: Dynamic OI drop thresholds (BTC -4.5%, Midcaps -7%, Alts -10%) + CVD accumulation + absorption price action (wick / candle body direction).
+  - **Layer 2 CVD Divergence (`DIV↑`/`DIV↓`)**: Volume-price structural divergence with recency constraint (`min`/`max` within last 2 bars) and price action confirmation.
+  - **Layer 3 MTF Confirmation (`[4h✓]`)**: 4h regime direction blocks counter-trend 1h reversion signals.
+  - **Layer 4 BTC Macro Regime Filter**: BTC trending down or overbought (pulse ≥ 80) increases altcoin long threshold (+1.0); BTC trending up or oversold (pulse ≤ 20) increases altcoin short threshold (+1.0).
+  - **Macro Leverage Multiplier**: Rolling OI percentile (90 bars) dynamically scales `CAP`/`DIV` structural weights (2.0x when OI pct ≥ 80 with extreme funding; 1.0x when OI pct ≤ 20).
+- **Position Lifecycle & Zero Look-Ahead Bias**: In `api/quant/signal_backtester.py`, `_process_exits()` strictly calls `pos.check_exit()` *before* `pos.update()`. Stop Loss -> Take Profit -> Trailing Stop (evaluated using previous-bar ratchet).
+- **Capital Allocation**: Position size safely divided by `max_positions` (`current_equity * 0.95 / max_positions`).
+- **Signal Quality Metrics**: Backtester computes Forward Return MFE/MAE (`avg_mfe_pct`, `avg_mae_pct`).
 
-### 2.2 Signal Notification System (Telegram)
-An event-driven notification pipeline embedded within the FastAPI container. No external message brokers (Kafka/RabbitMQ).
+### 2.2 Signal Notification System (Telegram v8)
+An event-driven notification pipeline embedded within the FastAPI container.
 
-- **Modules**: `api/core/notifier.py` (Telegram Bot API via `httpx`) + `api/core/signal_scanner.py` (scan logic + dedup).
-- **Schedule**: `APScheduler` with `CronTrigger(minute="0,15,30,45")` — scans at fixed clock times, 5-second delay between symbols to avoid OKX rate limiting.
-- **Dedup**: In-memory `_last_notified` dict tracks the latest notified signal timestamp per `(symbol, timeframe)`. Combined with a **1-hour recency window** to prevent notification floods on container restart.
-- **Message Format**: `sendPhoto` with a TradingView-style 168-hour candlestick chart (showing EMA and precise signal markers) + Caption: `🟢⬆ 2026/05/05 17:00 [BTC/USDT] Reversion BUY @ $94,500 | 3/7 CVD↑+FR-+BB↑`
-- **Config API**: `GET/POST /notifications/config` (toggle on/off, select symbols), `POST /notifications/test`, `POST /notifications/scan-now`.
-- **Env Vars**: `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env` (injected via `docker-compose.yml`). **Never commit tokens to Git.**
+- **Modules**: `api/core/notifier.py` + `api/core/signal_scanner.py`.
+- **Schedule**: `APScheduler` with `CronTrigger(minute="0,15,30,45")`. Worker I/O offloaded to thread pool (`asyncio.to_thread`).
+- **Candle Close Confirmation**: Intra-bar 1h signals broadcast only if high conviction (`score >= 5.0` or structural `CAP`/`DIV`). Otherwise, alerts are broadcast only after the candle closes.
+- **Dedup**: Tracks `(signal_time, strategy_type)` to avoid intra-bar alerts cannibalizing final closed candle signals.
+- **BTC Macro Scanning Sequence**: Scans BTC first to cache and propagate `btc_macro_regime` to monitored altcoins.
+- **Message Format**: `sendPhoto` with TradingView-style 168-hour candlestick chart (custom symbol decimal tick format, EMA lines, exact signal markers) + detailed caption.
+- **Config API**: `GET/POST /notifications/config` (exposes `enable_mtf_filter`, `enable_protection`, `monitored_symbols`).
 
 ---
 
 ## 3. Crucial Principles & Gotchas (READ BEFORE CODING)
 To prevent regressions, **ALL future AI Agents MUST adhere to these rules**:
 
-1. **Indicator Path-Dependence Parity**:
-   - *Gotcha*: Backtest and Dashboard used to show different signals because the backtest only fetched the `duration_days` worth of candles, altering the warmup of EMA/CVD.
-   - *Rule*: **ALWAYS** fetch `limit=1000` candles for indicator calculation, even if the backtest only runs on the last 30 days. Crop the data *after* calculation.
-2. **Strict Time Alignment (No Look-Ahead Bias)**:
-   - *Gotcha*: Calculating regime on the entire array leaks future data into the past.
-   - *Rule*: Any new indicator or regime detection MUST use `.rolling(window)` or strictly iterate using only index `<= current_bar`.
-3. **Local Time vs UTC**:
-   - *Gotcha*: Lightweight charts defaults to UTC, causing a 1-hour mismatch with the backend trade logs.
-   - *Rule*: All UI times must be explicitly parsed as Local Time before injecting into charts or tables.
-4. **Regime Chart Constraints**:
-   - *Gotcha*: The `AdvancedChart.tsx` Regime Chart is a *constant height* histogram (value is always 1). It relies purely on the `color` attribute to convey state. Do not attempt to map Y-values for regime states.
-5. **Signal Scanner Warmup Parity**:
-   - *Gotcha*: The signal scanner (`signal_scanner.py`) must call `get_market_data(limit=1000)` — the exact same pipeline as the Dashboard — to ensure indicator warmup is identical.
-   - *Rule*: Never shortcut the scanner with fewer candles or a different code path.
-6. **API Contract Validation (Frontend ↔ Backend)**:
-   - *Gotcha*: The frontend `NotificationConfig` interface used `symbols` while the backend returned `monitored_symbols`, causing a runtime crash (`Cannot read properties of undefined`).
-   - *Rule*: Before deploying any new frontend ↔ backend integration, **always verify the API response shape** by checking the backend endpoint code or calling `curl` against it. TypeScript interfaces MUST mirror the exact field names returned by FastAPI. When in doubt, run `docker exec solo-quant-api python3 -c "from api.core.signal_scanner import get_notification_config; print(get_notification_config())"` (or equivalent) to confirm.
+1. **Indicator Path-Dependence Parity (1000-candle Warmup)**:
+   - *Rule*: **ALWAYS** fetch `limit=1000` candles for indicator calculation. When aggregating higher timeframes (e.g. 4h), query `limit * tf_ratio` raw points to guarantee a full 1000 aggregated bars.
+2. **Strict Time Alignment & Zero Look-Ahead Bias**:
+   - *Rule*: Indicators must be strictly causal (rolling windows `<= current_bar`). Trailing stops in backtesting must be evaluated against the previous bar's ratcheted price before applying current-bar highs/lows.
+3. **Cross-Exchange OI Merging**:
+   - *Gotcha*: Binance OI history is limited to ~30 days. Directly summing unaligned series causes 60%+ artificial drops at boundary points.
+   - *Rule*: Always outer-merge on timestamp, apply `ffill(limit=2)`, and smooth boundary scale before computing delta/percentiles.
+4. **Local Time vs UTC Formatting**:
+   - *Gotcha*: If timestamps have already been shifted for local timezone display (e.g., in `runSignalBacktest()`), frontend formatters must specify `{ timeZone: 'UTC' }` to avoid double-offset (+16h).
+5. **API Contract Validation (Frontend ↔ Backend)**:
+   - *Rule*: Always verify that TypeScript interfaces mirror the exact field names returned by FastAPI before deploying UI changes.
 
 ---
 
 ## 4. Current Development Focus (The "Next")
-### Goal: Signal Quality — Major Trend Inflection Point Detection
+### Goal: Macro Precision & Live Execution Optimization
 
-**Context**: Phase 3 is complete. Phase 4 Layer 1+2 is **complete** — structural inflection point indicators have been implemented, deployed, and validated.
+**Context**: Solo-Quant v8 (Macro & Inflection Precision Upgrade) is **complete and validated**:
+- Data ingestion and cross-exchange aggregation fixed (no false OI crashes, 4h warmup aligned).
+- Backtest engine look-ahead bias eliminated; MFE/MAE signal quality tracking added.
+- IndicatorEngine upgraded to v8 with dynamic leverage multipliers, absorption-based capitulation, recency-constrained divergence, and BTC macro regime filtering.
+- Signal scanner upgraded with closed-bar confirmation, MTF filter support, and BTC-first macro propagation.
+- Frontend timezone display and chart tooltip alignment complete.
 
-### 4.1 Completed (Phase 3) ✅
-- `NotificationSettingsModal.tsx` — toggle notifications, select symbols, send test.
-- Backtest presets: "保守回歸" (SL 2%, TP 4%, Trail 1.5%) and "順勢突破" (SL 4%, TP 10%, Trail 3%).
-- Position Lifecycle confirmed correct: SL → TP → Trailing Stop.
-- **Telegram Notification Chart**: Notifications now include a TradingView-style 168-hour candlestick chart (with EMA lines and matching visual markers for Reversion/Breakout) to provide immediate context without opening the dashboard.
+### 4.1 Completed Phases ✅
+- Phase A: Data Ingestion & Backtest Engine Accuracy
+- Phase B: IndicatorEngine v8 Upgrade
+- Phase C: Telegram Signal Scanner & Frontend Alignment
 
-### 4.2 Phase 4: Structural Indicators ✅
-The primary goal is **finding price lows and highs within major trends** — not maximizing signal quantity.
-
-#### 4.2.1 Completed (Layer 1 + Layer 2) ✅
-Two new structural indicators added to `IndicatorEngine.calculate_confluence_signals()` (v5 → v6):
-
-1. **Layer 1 — Capitulation Detector (`CAP↑`/`CAP↓`)**:
-   - Detects OI crash from recent peak (≥10% drop) + CVD accumulation in one direction + price stabilization.
-   - Bullish: OI crashed + CVD negative (selling) + price stopped falling → liquidation exhaustion = bottom.
-   - Bearish: OI crashed + CVD positive (buying) + price stopped rising → blow-off top = top.
-   - Weight: 1.5 points, `Structure` group.
-
-2. **Layer 2 — CVD Divergence (`DIV↑`/`DIV↓`)**:
-   - Bullish: Price makes Lower Low but CVD makes Higher Low → selling pressure exhaustion.
-   - Bearish: Price makes Higher High but CVD makes Lower High → buying pressure exhaustion.
-   - Weight: 1.5 points, `Structure` group.
-
-- Signal text updated `/7` → `/10`. 
-- **Frontend**: Dashboard modals (`IndicatorsInfoModal.tsx`, `SignalSettingsModal.tsx`) and chart tooltips updated to reflect the v6 scoring logic and the new `Structure` dimension.
-- **Validated**: 4 DIV signals detected (avg score 3.9 vs non-structural avg 3.4). Frontend dashboard renders correctly.
-
-#### 4.2.2 Phase 5: Signal Quality — Completed ✅
-
-- **Layer 3 — Multi-Timeframe Confirmation (`[4h✓]` tag)**: 1h Reversion signals are now filtered by 4h regime direction.
-  - **Loose mode**: Only blocks when 4h is `trending + direction=down` (blocks BUY) or `trending + direction=up` (blocks SELL). Neutral 4h regimes pass through.
-  - Breakout signals are **exempt** from MTF filter (already aligned to trend).
-  - Toggle: `enable_mtf_filter` param (default `False`). UI toggle in `SignalSettingsModal.tsx` with `[Layer 3]` badge.
-  - When active, signal text shows `[4h✓]` tag: `⚡(2G) 3.5/10 [R][4h✓] RSI30+CVD↑`.
-  - 4h data fetched concurrently in the existing `ThreadPoolExecutor`, adds ~0 extra latency.
-  - `IndicatorEngine.calculate_confluence_signals()` upgraded to **v7**.
-
-#### 4.2.3 Future Layers (Phase 6 — Next)
-- **Layer 4 — Orderbook Liquidity Imbalance**: Inspired by CoinKarma LIQ. Requires orderbook snapshot collection mechanism (periodic DB writes).
-- **Do NOT lower thresholds for quantity**: Signal quality > signal quantity. Only adjust with backtest evidence.
-
-### 4.3 (Optional / Future): Frontend WebSocket Push
-1. **WebSocket Endpoint**: `ws://localhost:8000/ws/signals` for real-time push.
-2. Not a priority — Telegram bot is the primary notification channel.
+### 4.2 Next Goals (Phase 6)
+1. **Live Paper Trading / Execution Engine**: Connect signals to paper-trading accounts (e.g., OKX / Binance Demo API) to measure real slippage vs backtest MFE/MAE.
+2. **Orderbook Liquidity Imbalance (Layer 5)**: Periodic depth/orderbook snapshot ingestion into DB for institutional orderflow absorption scoring.
+3. **Parameter Optimization**: Fine-tune per-asset profile thresholds using the new forward-return MFE/MAE metrics.
 
 ---
 
@@ -117,13 +89,11 @@ Two new structural indicators added to `IndicatorEngine.calculate_confluence_sig
 
 「請扮演一位資深的全端工程師及加密貨幣分析師。請先閱讀 `SKILL.md` 與 `AI_HANDOFF.md` 以了解專案架構、核心理念與避坑規則。
 
-我們目前的進度在第 4 節。Phase 5 Layer 3（多時間框架共振）已完成，`enable_mtf_filter` 參數已整合至後端 v7 IndicatorEngine 與前端 UI。
+目前系統已升級至 **Solo-Quant v8 (Macro & Inflection Precision)**，包含零未來函數回測、1000 根 K 線暖機對齊、動態槓桿脆弱度乘數、真吸收 K 線投降指標與 BTC 宏觀狀態過濾。
 
-**任務：信號品質持續優化 (Phase 6)**
-1. 持續觀察 MTF 過濾器（Layer 3）在實際行情中的表現，收集實戰數據，對比 MTF on/off 的回測勝率差異。
-2. 若 MTF 效果顯著，可考慮讓 Signal Scanner 也可選擇性開啟 MTF 過濾（目前 Scanner 不過濾）。
-3. 若有需要，可實作 Layer 4（Orderbook LIQ）：需要先建立訂單簿快照收集機制（定期寫入 DB）。
-4. 遵守 `SKILL.md` Section 4, Section 5 與 Section 6 的 SOP。
-5. 任何指標或門檻調整必須用 Signal Backtester 驗證。」
+**任務：實戰驗證與訊號品質調優 (Phase 6)**
+1. 使用 Backtester 分析不同幣種在開啟 MTF 與 BTC 宏觀過濾下的勝率與 MFE/MAE 表現。
+2. 監控 Telegram Scanner 推播訊號的收線確認機制與圖表清晰度。
+3. 遵循三大鐵則：零未來函數、1000 根暖機對齊、前後端 API 型別一致。」
 
 

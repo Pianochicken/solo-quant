@@ -701,9 +701,10 @@ class IndicatorEngine:
         symbol: str = 'BTC/USDT',
         use_dynamic_profiles: bool = True,
         higher_tf_regime_history: List[Dict] = None,  # Layer 3: e.g. 4h regime history for MTF confirmation
+        btc_macro_regime: Optional[Dict] = None,      # Layer 4: BTC macro regime filter for altcoins
     ) -> List[Dict]:
         """
-        Multi-Indicator Confluence Signal System v7: MTF Confirmation.
+        Multi-Indicator Confluence Signal System v8: Macro & Inflection Precision Upgrade.
         
         Upgrades from v6:
           - Layer 3 MTF (Multi-Timeframe) Confirmation: when higher_tf_regime_history is provided,
@@ -813,15 +814,19 @@ class IndicatorEngine:
         # --- Feature Toggle for Easy Revert ---
         if use_dynamic_profiles:
             # Asset Class Dynamic Overrides (Major, Midcap, Meme/Alt)
+            is_btc = 'BTC' in symbol.upper()
             is_midcap = any(s in symbol.upper() for s in ['SOL', 'ETH'])
             is_alt = any(s in symbol.upper() for s in ['HYPE', 'CC'])
             
-            if is_midcap:
+            if is_btc:
+                P['cap_oi_drop_pct'] = -4.5
+            elif is_midcap:
                 # Widen funding rate thresholds because midcaps have higher baseline yields
                 P['fr_bull'] *= 1.5
                 P['fr_bear'] *= 1.5
                 P['rsi_bull'] -= 5
                 P['rsi_bear'] += 5
+                P['cap_oi_drop_pct'] = -7.0
             elif is_alt:
                 # Massive widening for alts
                 P['fr_bull'] *= 2.5
@@ -829,6 +834,7 @@ class IndicatorEngine:
                 P['rsi_bull'] -= 10
                 P['rsi_bear'] += 10
                 P['price_thresh'] *= 2.0  # Alts need bigger price moves to confirm
+                P['cap_oi_drop_pct'] = -10.0
         
         COOLDOWN = P['cooldown']
         APPLY_DIRECTIONAL_PROTECTION = enable_protection
@@ -857,15 +863,9 @@ class IndicatorEngine:
             htf_regime_times = [r['time'] for r in sorted_htf]
             htf_regime_list = sorted_htf
         
-        # CVD slope for reversal-indicator discount
-        cvd_slope_extreme = False
-        if cvd_aligned and len(cvd_aligned) >= lookback + 1:
-            cvd_recent = [item['value'] for item in cvd_aligned[-lookback-1:]]
-            cvd_slope_val = cvd_recent[-1] - cvd_recent[0]
-            # Normalize: compare against typical CVD range
-            cvd_range = max(abs(cvd_aligned[-1]['value'] - cvd_aligned[0]['value']), 1)
-            cvd_slope_ratio = abs(cvd_slope_val) / cvd_range
-            cvd_slope_extreme = cvd_slope_ratio > 0.3  # 30%+ of total range in lookback
+        # Rolling OI percentile series (Macro Leverage Multiplier)
+        oi_pct_series = IndicatorEngine.calculate_oi_percentile_series(oi_aligned, window=90) if oi_aligned else []
+        oi_pct_by_time = {item['time']: item['value'] for item in oi_pct_series}
         
         # Build lookup dicts by time for O(1) access
         z_by_time = {item['time']: item['value'] for item in lsur_z_aligned}
@@ -912,8 +912,8 @@ class IndicatorEngine:
             
             t_profile = P.copy()
             if current_regime.get('regime') == 'trending':
-                bull_threshold = trending_threshold
-                bear_threshold = trending_threshold
+                bull_threshold = float(trending_threshold)
+                bear_threshold = float(trending_threshold)
                 
                 # Regime-Adaptive Thresholds: Relax conditions to capture shallow pullbacks/bounces in trends
                 if current_regime.get('direction') == 'up':
@@ -929,9 +929,23 @@ class IndicatorEngine:
                     t_profile['bb_bear'] -= 0.20      # e.g., 0.92 -> 0.72
                     t_profile['fr_bear'] = -0.001     # Neutral funding is enough to short
             else:
-                bull_threshold = ranging_threshold
-                bear_threshold = ranging_threshold
+                bull_threshold = float(ranging_threshold)
+                bear_threshold = float(ranging_threshold)
+
+            # Macro BTC Regime Adjustment for Altcoins
+            if 'BTC' not in symbol.upper() and btc_macro_regime:
+                btc_reg = btc_macro_regime.get('regime')
+                btc_dir = btc_macro_regime.get('direction')
+                btc_pulse = btc_macro_regime.get('pulse')
                 
+                # If BTC is trending down or overbought (pulse >= 80), raise alt long bar
+                if (btc_reg == 'trending' and btc_dir == 'down') or (btc_pulse is not None and btc_pulse >= 80):
+                    bull_threshold += 1.0
+                    
+                # If BTC is trending up or oversold (pulse <= 20), raise alt short bar
+                if (btc_reg == 'trending' and btc_dir == 'up') or (btc_pulse is not None and btc_pulse <= 20):
+                    bear_threshold += 1.0
+
             z_val = z_by_time.get(t)
             cvd_now = cvd_by_time.get(t)
             funding_now = funding_by_time.get(t)
@@ -940,6 +954,36 @@ class IndicatorEngine:
             bb_now = bb_by_time.get(t)
             price_bar = price_by_time.get(t)
             price_close = price_bar['close'] if price_bar else None
+
+            # Rolling CVD slope extreme (lookback window without lookahead bias)
+            cvd_slope_extreme = False
+            if i >= 20 and cvd_now is not None:
+                win_cvd = [cvd_by_time.get(times[k]) for k in range(i - 20, i + 1) if cvd_by_time.get(times[k]) is not None]
+                if len(win_cvd) >= lookback + 1:
+                    cvd_slope_val = win_cvd[-1] - win_cvd[-lookback - 1]
+                    cvd_range = max(max(win_cvd) - min(win_cvd), 1.0)
+                    cvd_slope_extreme = (abs(cvd_slope_val) / cvd_range) > 0.35
+
+            # Macro Leverage Multiplier via rolling OI percentile
+            curr_oi_pct = oi_pct_by_time.get(t, oi_percentile)
+            is_fr_extreme_bull = (funding_now is not None and funding_now < t_profile['fr_bull'])
+            is_fr_extreme_bear = (funding_now is not None and funding_now > t_profile['fr_bear'])
+
+            cap_weight_bull = 1.5
+            div_weight_bull = 1.5
+            if curr_oi_pct is not None and curr_oi_pct >= 80 and is_fr_extreme_bull:
+                cap_weight_bull = 2.0
+                div_weight_bull = 2.0
+            elif curr_oi_pct is not None and curr_oi_pct <= 20:
+                cap_weight_bull = 1.0
+
+            cap_weight_bear = 1.5
+            div_weight_bear = 1.5
+            if curr_oi_pct is not None and curr_oi_pct >= 80 and is_fr_extreme_bear:
+                cap_weight_bear = 2.0
+                div_weight_bear = 2.0
+            elif curr_oi_pct is not None and curr_oi_pct <= 20:
+                cap_weight_bear = 1.0
             
             # --- Price Action (Structural) Validation ---
             is_bull_pa = True
@@ -1147,18 +1191,19 @@ class IndicatorEngine:
                     if len(cvd_window_vals) >= 2:
                         cvd_accum = cvd_window_vals[-1] - cvd_window_vals[0]
                     
-                    # Price stabilization: current bar's % change is small
-                    price_stab = abs(price_chg_pct) < t_profile['cap_price_stab'] if price_chg_pct is not None else False
-                    
-                    # Bullish Capitulation
-                    if oi_drop <= t_profile['cap_oi_drop_pct'] and cvd_accum < 0 and price_stab:
-                        t_bull_env_score += 1.5
+                    # Bullish Capitulation: prior drop, OI crash, CVD dump, current candle absorbed
+                    if (oi_drop <= t_profile['cap_oi_drop_pct'] and cvd_accum < 0 
+                            and price_chg_pct is not None and price_chg_pct < -t_profile['price_thresh'] 
+                            and is_bull_pa):
+                        t_bull_env_score += cap_weight_bull
                         t_bull_env_reasons.append('CAP↑')
                         t_bull_env_groups.add('Structure')
                     
-                    # Bearish Capitulation (inverse)
-                    if oi_drop <= t_profile['cap_oi_drop_pct'] and cvd_accum > 0 and price_stab:
-                        t_bear_env_score += 1.5
+                    # Bearish Capitulation (inverse): prior rally, OI crash, CVD pump, current candle exhausted
+                    if (oi_drop <= t_profile['cap_oi_drop_pct'] and cvd_accum > 0 
+                            and price_chg_pct is not None and price_chg_pct > t_profile['price_thresh'] 
+                            and is_bear_pa):
+                        t_bear_env_score += cap_weight_bear
                         t_bear_env_reasons.append('CAP↓')
                         t_bear_env_groups.add('Structure')
             
@@ -1192,15 +1237,17 @@ class IndicatorEngine:
                     first_cvd_max = max(div_cvd_vals[:mid])
                     second_cvd_max = max(div_cvd_vals[mid:])
                     
-                    # Bullish CVD Divergence: Price Lower Low + CVD Higher Low
-                    if second_price_low < first_price_low and second_cvd_min > first_cvd_min:
-                        t_bull_env_score += 1.5
+                    # Bullish CVD Divergence: Price Lower Low + CVD Higher Low + lowest low in last 2 bars + bull PA
+                    if (second_price_low < first_price_low and second_cvd_min > first_cvd_min
+                            and min(div_price_lows[-2:]) == second_price_low and is_bull_pa):
+                        t_bull_env_score += div_weight_bull
                         t_bull_env_reasons.append('DIV↑')
                         t_bull_env_groups.add('Structure')
                     
-                    # Bearish CVD Divergence: Price Higher High + CVD Lower High
-                    if second_price_high > first_price_high and second_cvd_max < first_cvd_max:
-                        t_bear_env_score += 1.5
+                    # Bearish CVD Divergence: Price Higher High + CVD Lower High + highest high in last 2 bars + bear PA
+                    if (second_price_high > first_price_high and second_cvd_max < first_cvd_max
+                            and max(div_price_highs[-2:]) == second_price_high and is_bear_pa):
+                        t_bear_env_score += div_weight_bear
                         t_bear_env_reasons.append('DIV↓')
                         t_bear_env_groups.add('Structure')
             
@@ -1302,12 +1349,15 @@ class IndicatorEngine:
             is_bull_valid = (bull_score >= bull_threshold and len(bull_groups) >= 2)
             is_bear_valid = (bear_score >= bear_threshold and len(bear_groups) >= 2)
 
+            bull_emitted = False
             if (is_bull_valid or is_breakout_bull) and (i - last_bull_idx) >= COOLDOWN:
                 # No-Long filter: block bullish signals in downtrend regime
                 if APPLY_DIRECTIONAL_PROTECTION and current_regime.get('no_long', False):
                     pass  # Signal blocked by directional protection
                 elif is_bull_valid and not htf_regime_ok_bull:
                     pass  # Signal blocked by Layer 3 MTF filter (4h strong downtrend)
+                elif is_breakout_bull and htf_regime_times and (not htf_regime_ok_bull) and ('Structure' not in t_bull_env_groups):
+                    pass  # In 4h downtrend, 1h breakout bull requires Structure confirmation
                 else:
                     if is_breakout_bull:
                         markers.append({
@@ -1332,13 +1382,16 @@ class IndicatorEngine:
                             "strategy_type": "reversion"
                         })
                     last_bull_idx = i
+                    bull_emitted = True
                     
-            elif (is_bear_valid or is_breakout_bear) and (i - last_bear_idx) >= COOLDOWN:
+            if (is_bear_valid or is_breakout_bear) and (i - last_bear_idx) >= COOLDOWN and not bull_emitted:
                 # No-Short filter: block bearish signals in uptrend regime
                 if APPLY_DIRECTIONAL_PROTECTION and current_regime.get('no_short', False):
                     pass  # Signal blocked by directional protection
                 elif is_bear_valid and not htf_regime_ok_bear:
                     pass  # Signal blocked by Layer 3 MTF filter (4h strong uptrend)
+                elif is_breakout_bear and htf_regime_times and (not htf_regime_ok_bear) and ('Structure' not in t_bear_env_groups):
+                    pass  # In 4h uptrend, 1h breakout bear requires Structure confirmation
                 else:
                     if is_breakout_bear:
                         markers.append({

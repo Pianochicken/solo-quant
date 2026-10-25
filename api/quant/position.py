@@ -15,7 +15,7 @@ class Position:
     
     Lifecycle:
         1. Created at entry with TP/SL levels pre-calculated
-        2. Updated every candle via update() → check_exit()
+        2. Evaluated every candle via check_exit() → if not exited, update()
         3. Closed via close() with exit reason
     """
     side: str               # 'long' | 'short'
@@ -54,8 +54,7 @@ class Position:
 
     def update(self, high: float, low: float, close: float) -> None:
         """
-        Update trailing stop tracking with the latest candle data.
-        Must be called BEFORE check_exit() each bar.
+        Update trailing stop tracking with the latest candle data for the NEXT bar's exit check.
         """
         if self.is_closed:
             return

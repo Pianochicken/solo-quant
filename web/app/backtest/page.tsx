@@ -581,7 +581,7 @@ export default function BacktestPage() {
                                             return (
                                                 <tr key={i} className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors">
                                                     <td className="py-2 text-zinc-400 whitespace-nowrap">
-                                                        {new Date(trade.time * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })}
+                                                        {new Date(trade.time * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' })}
                                                     </td>
                                                     <td className="py-2">
                                                         <span className={`px-1.5 py-0.5 rounded text-[10px] text-center inline-block uppercase border ${badgeColor}`}>
