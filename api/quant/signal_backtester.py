@@ -45,6 +45,26 @@ class SignalBacktester:
         for sig in signals:
             self.signal_map[sig['time']] = sig
 
+        # Precompute 14-period ATR
+        self.atr_map: Dict[int, float] = {}
+        if self.price_data:
+            n = len(self.price_data)
+            tr = [0.0] * n
+            tr[0] = self.price_data[0]['high'] - self.price_data[0]['low']
+            for i in range(1, n):
+                h = self.price_data[i]['high']
+                l = self.price_data[i]['low']
+                prev_c = self.price_data[i - 1]['close']
+                tr[i] = max(h - l, abs(h - prev_c), abs(l - prev_c))
+            
+            period = 14
+            initial_atr = sum(tr[:period]) / max(1, period)
+            curr_atr = initial_atr
+            for i in range(n):
+                if i >= period:
+                    curr_atr = (curr_atr * (period - 1) + tr[i]) / period
+                self.atr_map[self.price_data[i]['time']] = curr_atr
+
         # State
         self.balance: float = config.investment
         self.open_positions: List[Position] = []
@@ -180,12 +200,17 @@ class SignalBacktester:
 
         # --- Calculate position size (risk-based) ---
         current_equity = self._calculate_equity(entry_price)
-        pos = self._open_position(target_side, entry_price, time, current_equity)
+        pos = self._open_position(target_side, entry_price, time, current_equity, signal=signal)
         if pos:
             self.open_positions.append(pos)
 
     def _open_position(
-        self, side: str, entry_price: float, time: int, current_equity: float
+        self,
+        side: str,
+        entry_price: float,
+        time: int,
+        current_equity: float,
+        signal: Optional[Dict] = None,
     ) -> Optional[Position]:
         """
         Open a new position with risk-based sizing.
@@ -193,12 +218,20 @@ class SignalBacktester:
         Size = risk_amount / SL_distance
         Capped by available balance.
         """
+        # Determine TP percentage (Structure and Breakout signals get 1.35x TP expansion)
+        tp_pct = self.config.take_profit_pct
+        if signal:
+            sig_text = signal.get('text', '')
+            sig_type = signal.get('strategy_type', '')
+            if sig_type == 'breakout' or '🚀' in sig_text or 'Structure' in sig_text or 'CAP' in sig_text or 'DIV' in sig_text:
+                tp_pct *= 1.35
+
         # Calculate TP/SL levels
         if side == 'long':
-            take_profit = entry_price * (1 + self.config.take_profit_pct / 100)
+            take_profit = entry_price * (1 + tp_pct / 100)
             stop_loss = entry_price * (1 - self.config.stop_loss_pct / 100)
         else:
-            take_profit = entry_price * (1 - self.config.take_profit_pct / 100)
+            take_profit = entry_price * (1 - tp_pct / 100)
             stop_loss = entry_price * (1 + self.config.stop_loss_pct / 100)
 
         # Risk-based position sizing

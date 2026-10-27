@@ -43,8 +43,14 @@ class DataFetcher:
         ccxt_symbol = f"{base_asset}/USDT:USDT"
         funding_symbol = swap_symbol
         
+        if not self.exchange.markets:
+            try:
+                self.exchange.load_markets()
+            except Exception:
+                pass
+
         with SessionLocal() as db:
-            db_ohlcv = crud.get_market_data(db, symbol=db_symbol, timeframe=timeframe, exchange="okx", limit=limit)
+            db_ohlcv = crud.get_market_data(db, symbol=db_symbol, timeframe=timeframe, exchange="okx", limit=limit, require_ohlcv=True)
             db_ohlcv = [x for x in db_ohlcv if x.open is not None]
             
             is_full_fetch = len(db_ohlcv) < limit
@@ -93,11 +99,48 @@ class DataFetcher:
                         else:
                             batch = fetch_func(target_symbol, limit=this_limit, params=params)
                         
+                        # Fallback for OKX OHLCV when regular candles (1440 limit) run dry
+                        if not batch and is_ohlcv and collected:
+                            try:
+                                okx_bar = timeframe.upper()
+                                res_hist = self.exchange.publicGetMarketHistoryCandles({
+                                    'instId': swap_symbol,
+                                    'bar': okx_bar,
+                                    'after': str(collected[0][0]),
+                                    'limit': str(min(this_limit, 100))
+                                })
+                                raw_hist = res_hist.get('data', [])
+                                if raw_hist:
+                                    market = self.exchange.market(target_symbol) if target_symbol in self.exchange.markets else None
+                                    batch = self.exchange.parse_ohlcvs(raw_hist, market, timeframe)
+                            except Exception:
+                                pass
+                        
                         if not batch: break
                         collected = batch + collected
                         if len(batch) < 2 or len(collected) >= target_limit: break
-                        time.sleep(0.1)
+                        time.sleep(0.05)
                     except Exception as e:
+                        # Fallback attempt on error
+                        if is_ohlcv and collected:
+                            try:
+                                okx_bar = timeframe.upper()
+                                res_hist = self.exchange.publicGetMarketHistoryCandles({
+                                    'instId': swap_symbol,
+                                    'bar': okx_bar,
+                                    'after': str(collected[0][0]),
+                                    'limit': str(min(this_limit, 100))
+                                })
+                                raw_hist = res_hist.get('data', [])
+                                if raw_hist:
+                                    market = self.exchange.market(target_symbol) if target_symbol in self.exchange.markets else None
+                                    batch = self.exchange.parse_ohlcvs(raw_hist, market, timeframe)
+                                    if batch:
+                                        collected = batch + collected
+                                        if len(collected) >= target_limit: break
+                                        continue
+                            except Exception:
+                                pass
                         print(f"Pagination error for {target_symbol}: {e}")
                         break
                 return collected[-target_limit:]
@@ -133,7 +176,7 @@ class DataFetcher:
             except Exception as e:
                 print(f"Error fetching Funding for {funding_symbol}: {e}")
 
-            final_ohlcv = crud.get_market_data(db, symbol=db_symbol, timeframe=timeframe, exchange="okx", limit=limit)
+            final_ohlcv = crud.get_market_data(db, symbol=db_symbol, timeframe=timeframe, exchange="okx", limit=limit, require_ohlcv=True)
             price_data = []
             for x in final_ohlcv:
                 if x.open is not None:
@@ -183,8 +226,20 @@ class DataFetcher:
         query_limit = limit * tf_ratio
 
         with SessionLocal() as db:
-            db_bin = crud.get_market_data(db, symbol=db_symbol, timeframe=period, exchange="binance", limit=query_limit)
-            db_bin = [x for x in db_bin if x.taker_buy_vol is not None]
+            if p_lower == '1d':
+                db_bin_lower = crud.get_market_data(db, symbol=db_symbol, timeframe='1d', exchange="binance", limit=query_limit)
+                db_bin_upper = crud.get_market_data(db, symbol=db_symbol, timeframe='1D', exchange="binance", limit=query_limit)
+                seen_ts = set()
+                db_bin = []
+                for x in sorted(db_bin_lower + db_bin_upper, key=lambda item: item.timestamp):
+                    if x.timestamp not in seen_ts and x.taker_buy_vol is not None:
+                        seen_ts.add(x.timestamp)
+                        db_bin.append(x)
+                if len(db_bin) > query_limit:
+                    db_bin = db_bin[-query_limit:]
+            else:
+                db_bin = crud.get_market_data(db, symbol=db_symbol, timeframe=period, exchange="binance", limit=query_limit)
+                db_bin = [x for x in db_bin if x.taker_buy_vol is not None]
             
             missed_candles = 20 * tf_ratio
             if db_bin:
@@ -241,7 +296,19 @@ class DataFetcher:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 executor.submit(fetch_binance).result()
 
-            bin_data = crud.get_market_data(db, symbol=db_symbol, timeframe=period, exchange="binance", limit=query_limit)
+            if p_lower == '1d':
+                bin_data_lower = crud.get_market_data(db, symbol=db_symbol, timeframe='1d', exchange="binance", limit=query_limit)
+                bin_data_upper = crud.get_market_data(db, symbol=db_symbol, timeframe='1D', exchange="binance", limit=query_limit)
+                seen_ts = set()
+                bin_data = []
+                for x in sorted(bin_data_lower + bin_data_upper, key=lambda item: item.timestamp):
+                    if x.timestamp not in seen_ts and x.taker_buy_vol is not None:
+                        seen_ts.add(x.timestamp)
+                        bin_data.append(x)
+                if len(bin_data) > query_limit:
+                    bin_data = bin_data[-query_limit:]
+            else:
+                bin_data = crud.get_market_data(db, symbol=db_symbol, timeframe=period, exchange="binance", limit=query_limit)
             df_bin = pd.DataFrame([{ "time": int(x.timestamp.timestamp()), "sell_vol": x.taker_sell_vol or 0, "buy_vol": x.taker_buy_vol or 0 } for x in bin_data])
             
             merged = df_bin

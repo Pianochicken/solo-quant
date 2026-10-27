@@ -125,12 +125,8 @@ async def send_signal_with_chart(
 # ---------------------------------------------------------------------------
 # Existing plain‑text formatter (unchanged apart from imports)
 # ---------------------------------------------------------------------------
-def format_signal_message(signal: dict, symbol: str, price: float) -> str:
-    """Format a confluence signal into a human‑readable Telegram message.
-
-    Example output::
-        🟢⬆ 2026/05/05 17:00 [BTC/USDT] Reversion BUY @ $94,500 | 3/7 CVD↑+FR-(OI↑)+BB↑
-    """
+def format_signal_message(signal: dict, symbol: str, price: float, timeframe: str = "1h") -> str:
+    """Format a confluence signal into a human-readable Telegram message."""
     direction = signal.get("direction", "bullish")
     strategy_type = signal.get("strategy_type", "reversion")
     score = signal.get("score", 0)
@@ -173,4 +169,4 @@ def format_signal_message(signal: dict, symbol: str, price: float) -> str:
         score_str = match.group(1) if match else f"{score:g}"
         reason_str = f"{score_str} {text_raw.split('] ')[-1]}" if "] " in text_raw else score_str
 
-    return f"{emoji} {time_str} [{symbol}] {strategy_label} {action} @ {price_str} | {reason_str}"
+    return f"{emoji} {time_str} [{symbol} {timeframe}] {strategy_label} {action} @ {price_str} | {reason_str}"

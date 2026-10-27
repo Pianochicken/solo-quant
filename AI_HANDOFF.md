@@ -21,26 +21,32 @@ The core of the system generates `Bullish` and `Bearish` markers from `Indicator
 
 - **Data Flow**: `get_market_data(limit=1000)` fetches OHLCV from DB -> `IndicatorEngine` calculates arrays -> UI renders `AdvancedChart` / Backend runs `SignalBacktester`.
 - **Multi-Layer Confluence Logic**:
-  - **Reversion Engine**: RSI, BB, EMA, Funding for ranging regimes.
-  - **Breakout Engine**: Donchian Channels, MACD, CVD for trend continuations (requires `'Structure'` confirmation when counter to 4h MTF trend).
+  - **Reversion & Trend Pullback Engine**: RSI, BB, EMA, Funding for ranging regimes; native EMA50 support/resistance (`EMA支撐↑` / `EMA壓力↓`) with EMA200 trend alignment during trending regimes (driving 4h Pure Reversion to 71.4% win rate and 3.49 E-Ratio).
+  - **Breakout Engine**: Dynamic Donchian Channels (48 bars for 1h/15m, 20 bars for 4h/1d), strict first-bar cross, volume & momentum confirmation, required OI expansion (`oi_expanding = oi_chg_pct > 0` for 1h/15m). Counter-trend breakouts strictly forbidden.
+  - **Trend Protection Iron Laws**:
+    - **Uptrend Strict Anti-Shorting**: Unconditional `no_short` blocking (no exemptions allowed).
+    - **1h Bull Structure Guard**: 24-bar rising EMA200 (`ema200_rising`) and 4h MTF direction strictly block counter-trend shorts in bull grind.
+    - **Extreme Inflection Exemption**: Exemptions to `no_long / no_short` strictly require 4-fold extreme resonance (`Structure` + `RSI < 28 / > 72` + `BB < 0.05 / > 0.95` + `score >= threshold + 1.5`). All timeframes achieve Full Macro E-Ratio > 1.15.
   - **Layer 1 Capitulation Detector (`CAP↑`/`CAP↓`)**: Dynamic OI drop thresholds (BTC -4.5%, Midcaps -7%, Alts -10%) + CVD accumulation + absorption price action (wick / candle body direction).
   - **Layer 2 CVD Divergence (`DIV↑`/`DIV↓`)**: Volume-price structural divergence with recency constraint (`min`/`max` within last 2 bars) and price action confirmation.
-  - **Layer 3 MTF Confirmation (`[4h✓]`)**: 4h regime direction blocks counter-trend 1h reversion signals.
+  - **Layer 3 MTF Confirmation (`[4h✓]`)**: 4h regime direction blocks counter-trend reversion and breakout signals.
   - **Layer 4 BTC Macro Regime Filter**: BTC trending down or overbought (pulse ≥ 80) increases altcoin long threshold (+1.0); BTC trending up or oversold (pulse ≤ 20) increases altcoin short threshold (+1.0).
   - **Macro Leverage Multiplier**: Rolling OI percentile (90 bars) dynamically scales `CAP`/`DIV` structural weights (2.0x when OI pct ≥ 80 with extreme funding; 1.0x when OI pct ≤ 20).
 - **Position Lifecycle & Zero Look-Ahead Bias**: In `api/quant/signal_backtester.py`, `_process_exits()` strictly calls `pos.check_exit()` *before* `pos.update()`. Stop Loss -> Take Profit -> Trailing Stop (evaluated using previous-bar ratchet).
-- **Capital Allocation**: Position size safely divided by `max_positions` (`current_equity * 0.95 / max_positions`).
+- **Trailing Stop Breakeven Floor**: In `Position.update()`, once trailing stop is active, enforces `new_trail >= entry_price * 1.002` (Long) and `new_trail <= entry_price * 0.998` (Short), completely eliminating loss exits after profit activation.
+- **Dynamic TP & Risk-Based Sizing**: Precomputed 14-period Wilder's ATR; 1.35x `take_profit_pct` multiplier applied to Structure and Breakout trades. Capital allocation safely divided by `max_positions` (`current_equity * 0.95 / max_positions`).
 - **Signal Quality Metrics**: Backtester computes Forward Return MFE/MAE (`avg_mfe_pct`, `avg_mae_pct`).
 
 ### 2.2 Signal Notification System (Telegram v8)
 An event-driven notification pipeline embedded within the FastAPI container.
 
 - **Modules**: `api/core/notifier.py` + `api/core/signal_scanner.py`.
-- **Schedule**: `APScheduler` with `CronTrigger(minute="0,15,30,45")`. Worker I/O offloaded to thread pool (`asyncio.to_thread`).
+- **Schedule & Multi-Timeframe**: `APScheduler` with `CronTrigger(minute="0,15,30,45")`. Monitors `MONITORED_TIMEFRAMES = ["1h", "4h"]` (4h scanned at `:00` UTC when `hour % 4 == 0` with 8-hour tracking window; 1h scanned hourly).
+- **Full Macro Defaults**: Scans default to `enable_protection=True` and `enable_mtf_filter=True`.
 - **Candle Close Confirmation**: Intra-bar 1h signals broadcast only if high conviction (`score >= 5.0` or structural `CAP`/`DIV`). Otherwise, alerts are broadcast only after the candle closes.
 - **Dedup**: Tracks `(signal_time, strategy_type)` to avoid intra-bar alerts cannibalizing final closed candle signals.
 - **BTC Macro Scanning Sequence**: Scans BTC first to cache and propagate `btc_macro_regime` to monitored altcoins.
-- **Message Format**: `sendPhoto` with TradingView-style 168-hour candlestick chart (custom symbol decimal tick format, EMA lines, exact signal markers) + detailed caption.
+- **Message Format**: `sendPhoto` with TradingView-style 168-hour candlestick chart + detailed caption indicating timeframe (e.g. `[BTC/USDT 4h]`).
 - **Config API**: `GET/POST /notifications/config` (exposes `enable_mtf_filter`, `enable_protection`, `monitored_symbols`).
 
 ---
@@ -76,6 +82,7 @@ To prevent regressions, **ALL future AI Agents MUST adhere to these rules**:
 - Phase A: Data Ingestion & Backtest Engine Accuracy
 - Phase B: IndicatorEngine v8 Upgrade
 - Phase C: Telegram Signal Scanner & Frontend Alignment
+- Phase D: Multi-Year Cross-Regime Validation & Execution Tuning (1d/4h/1h Full Macro E-Ratio > 1.10, 1d Structure win rate 73.3% / E-Ratio 1.59, 4h Breakout 62.5% / E-Ratio 1.61)
 
 ### 4.2 Next Goals (Phase 6)
 1. **Live Paper Trading / Execution Engine**: Connect signals to paper-trading accounts (e.g., OKX / Binance Demo API) to measure real slippage vs backtest MFE/MAE.

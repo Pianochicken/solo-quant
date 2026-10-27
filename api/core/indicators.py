@@ -513,22 +513,49 @@ class IndicatorEngine:
                 cvd_trending = True
                 cvd_direction = 'up' if cvd_slope > 0 else 'down'
         
-        # === Majority Vote ===
-        trending_votes = sum([adx_trending, bb_trending, cvd_trending])
+        # === Factor 4: EMA Structure (Macro Trend Alignment) ===
+        ema_trending = False
+        ema_direction = 'neutral'
+        if len(close) >= 20:
+            ema50_s = df['close'].ewm(span=50, adjust=False).mean()
+            ema200_s = df['close'].ewm(span=200, adjust=False).mean()
+            ema50_val = float(ema50_s.iloc[-1])
+            ema200_val = float(ema200_s.iloc[-1])
+            close_val = float(close[-1])
+            if ema200_val > 0:
+                if close_val > ema50_val > ema200_val and (ema50_val - ema200_val) / ema200_val > 0.01:
+                    ema_trending = True
+                    ema_direction = 'up'
+                elif close_val < ema50_val < ema200_val and (ema200_val - ema50_val) / ema200_val > 0.01:
+                    ema_trending = True
+                    ema_direction = 'down'
+
+        # === Majority Vote (4 Factors) ===
+        trending_votes = sum([adx_trending, bb_trending, cvd_trending, ema_trending])
         
         if trending_votes >= 2:
             result['regime'] = 'trending'
-            # Direction: ADX direction takes priority, CVD confirms
-            if adx_direction == cvd_direction:
-                result['direction'] = adx_direction
+            dir_votes = [d for d, t in [(adx_direction, adx_trending), (cvd_direction, cvd_trending), (ema_direction, ema_trending)] if t and d in ('up', 'down')]
+            up_count = dir_votes.count('up')
+            down_count = dir_votes.count('down')
+            if up_count > down_count:
+                result['direction'] = 'up'
+            elif down_count > up_count:
+                result['direction'] = 'down'
             else:
-                result['direction'] = adx_direction  # ADX as tiebreaker
+                result['direction'] = ema_direction if ema_trending else adx_direction
             
             # No-Short / No-Long filters
             if result['direction'] == 'up':
                 result['no_short'] = True
             elif result['direction'] == 'down':
                 result['no_long'] = True
+        
+        # Macro Trend Structure Guard: Direct directional protection from clear EMA divergence
+        if ema_trending and ema_direction == 'up':
+            result['no_short'] = True
+        elif ema_trending and ema_direction == 'down':
+            result['no_long'] = True
         
         return result
 
@@ -645,10 +672,26 @@ class IndicatorEngine:
                     cvd_trending[i] = True
                     cvd_direction[i] = 'up' if slope > 0 else 'down'
                     
+        # === 4. EMA Structure (Vectorized) ===
+        ema50 = df['close'].ewm(span=50, adjust=False).mean().values
+        ema200 = df['close'].ewm(span=200, adjust=False).mean().values
+        
+        ema_trending = np.zeros(len(close), dtype=bool)
+        ema_direction = np.full(len(close), 'neutral', dtype=object)
+        
+        for j in range(len(close)):
+            if ema200[j] > 0:
+                if close[j] > ema50[j] > ema200[j] and (ema50[j] - ema200[j]) / ema200[j] > 0.01:
+                    ema_trending[j] = True
+                    ema_direction[j] = 'up'
+                elif close[j] < ema50[j] < ema200[j] and (ema200[j] - ema50[j]) / ema200[j] > 0.01:
+                    ema_trending[j] = True
+                    ema_direction[j] = 'down'
+
         # === Aggregate History ===
         history = []
         for i in range(len(close)):
-            votes = sum([adx_trending[i], bb_trending[i], cvd_trending[i]])
+            votes = sum([adx_trending[i], bb_trending[i], cvd_trending[i], ema_trending[i]])
             
             regime = 'ranging'
             direction = 'neutral'
@@ -657,13 +700,26 @@ class IndicatorEngine:
             
             if votes >= 2:
                 regime = 'trending'
-                # ADX direction takes priority
-                direction = adx_direction[i]
+                dir_votes = [d for d, t in [(adx_direction[i], adx_trending[i]), (cvd_direction[i], cvd_trending[i]), (ema_direction[i], ema_trending[i])] if t and d in ('up', 'down')]
+                up_count = dir_votes.count('up')
+                down_count = dir_votes.count('down')
+                if up_count > down_count:
+                    direction = 'up'
+                elif down_count > up_count:
+                    direction = 'down'
+                else:
+                    direction = ema_direction[i] if ema_trending[i] else adx_direction[i]
                 
                 if direction == 'up':
                     no_short = True
                 elif direction == 'down':
                     no_long = True
+            
+            # Macro Trend Structure Guard: Direct directional protection from clear EMA divergence
+            if ema_trending[i] and ema_direction[i] == 'up':
+                no_short = True
+            elif ema_trending[i] and ema_direction[i] == 'down':
+                no_long = True
                     
             history.append({
                 "time": int(df['time'].iloc[i]),
@@ -689,6 +745,7 @@ class IndicatorEngine:
         trend_state: str = 'neutral',
         rsi_aligned: List[Dict] = None,
         ema_fast_aligned: List[Dict] = None,
+        ema_slow_aligned: List[Dict] = None,
         bb_pctb_aligned: List[Dict] = None,
         donchian_aligned: List[Dict] = None,
         macd_aligned: List[Dict] = None,
@@ -873,9 +930,33 @@ class IndicatorEngine:
         funding_by_time = {item['time']: item['value'] for item in funding_aligned}
         rsi_by_time = {item['time']: item['value'] for item in (rsi_aligned or [])}
         ema_fast_by_time = {item['time']: item['value'] for item in (ema_fast_aligned or [])}
+        ema_slow_by_time = {item['time']: item['value'] for item in (ema_slow_aligned or [])}
         bb_by_time = {item['time']: item['value'] for item in (bb_pctb_aligned or [])}
         donchian_by_time = {item['time']: item for item in (donchian_aligned or [])}
         macd_by_time = {item['time']: item for item in (macd_aligned or [])}
+        
+        # Ensure EMA50 & EMA200 are available for every price candle (Macro Trend Structure Guard)
+        df_price_eval = pd.DataFrame(price_data)
+        ema50_vals = df_price_eval['close'].ewm(span=50, adjust=False).mean().values
+        ema200_vals = df_price_eval['close'].ewm(span=200, adjust=False).mean().values
+        for k in range(len(price_data)):
+            pk_time = price_data[k]['time']
+            if pk_time not in ema_fast_by_time:
+                ema_fast_by_time[pk_time] = float(ema50_vals[k])
+            if pk_time not in ema_slow_by_time:
+                ema_slow_by_time[pk_time] = float(ema200_vals[k])
+
+        # Precompute 14-period Wilder's ATR for candle normalization and breakout confirmation
+        prev_close_series = df_price_eval['close'].shift(1)
+        tr1 = df_price_eval['high'] - df_price_eval['low']
+        tr2 = (df_price_eval['high'] - prev_close_series).abs()
+        tr3 = (df_price_eval['low'] - prev_close_series).abs()
+        tr_series = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr_series = tr_series.ewm(alpha=1/14, adjust=False).mean().values
+        atr_by_time = {}
+        for k in range(len(price_data)):
+            pk_time = price_data[k]['time']
+            atr_by_time[pk_time] = float(atr_series[k]) if pd.notnull(atr_series[k]) else 1.0
         
         # OI lookup by time (for OI change rate calculation)
         oi_by_time = {item['time']: item['value'] for item in (oi_aligned or [])}
@@ -915,19 +996,15 @@ class IndicatorEngine:
                 bull_threshold = float(trending_threshold)
                 bear_threshold = float(trending_threshold)
                 
-                # Regime-Adaptive Thresholds: Relax conditions to capture shallow pullbacks/bounces in trends
+                # Regime-Adaptive Thresholds: Controlled relaxation in trends
                 if current_regime.get('direction') == 'up':
-                    # Uptrend: Relax Bullish thresholds (buy the shallow dip)
-                    t_profile['rsi_bull'] += 15       # e.g., 30 -> 45
-                    t_profile['ema_pct'] *= 0.2       # e.g., 1.0 -> 0.2
-                    t_profile['bb_bull'] += 0.20      # e.g., 0.08 -> 0.28
-                    t_profile['fr_bull'] = 0.001      # Neutral funding is enough to buy
+                    # Uptrend: Controlled relaxation for bullish pullbacks
+                    t_profile['rsi_bull'] = 48
+                    t_profile['bb_bull'] = 0.25
                 elif current_regime.get('direction') == 'down':
-                    # Downtrend: Relax Bearish thresholds (short the shallow bounce)
-                    t_profile['rsi_bear'] -= 15       # e.g., 70 -> 55
-                    t_profile['ema_pct'] *= 0.2       # e.g., 1.0 -> 0.2
-                    t_profile['bb_bear'] -= 0.20      # e.g., 0.92 -> 0.72
-                    t_profile['fr_bear'] = -0.001     # Neutral funding is enough to short
+                    # Downtrend: Controlled relaxation for bearish bounces
+                    t_profile['rsi_bear'] = 52
+                    t_profile['bb_bear'] = 0.75
             else:
                 bull_threshold = float(ranging_threshold)
                 bear_threshold = float(ranging_threshold)
@@ -951,9 +1028,13 @@ class IndicatorEngine:
             funding_now = funding_by_time.get(t)
             rsi_now = rsi_by_time.get(t)
             ema_fast_now = ema_fast_by_time.get(t)
+            ema_slow_now = ema_slow_by_time.get(t)
+            ema50_now = ema_fast_now
+            ema200_now = ema_slow_now
             bb_now = bb_by_time.get(t)
             price_bar = price_by_time.get(t)
             price_close = price_bar['close'] if price_bar else None
+            atr_now = max(atr_by_time.get(t, 1.0), 1e-6)
 
             # Rolling CVD slope extreme (lookback window without lookahead bias)
             cvd_slope_extreme = False
@@ -1087,11 +1168,20 @@ class IndicatorEngine:
                 t_bull_price_groups.add('Price')
             
             if ema_fast_now is not None and price_close is not None and is_bull_pa:
-                ema_dist = (price_close - ema_fast_now) / ema_fast_now * 100
-                if ema_dist < -t_profile['ema_pct']:
-                    t_bull_price_score += 1
-                    t_bull_price_reasons.append('EMA↑')
-                    t_bull_price_groups.add('Price')
+                if current_regime.get('regime') == 'trending' and current_regime.get('direction') == 'up':
+                    if price_bar and 'low' in price_bar:
+                        low_ema_dist = (price_bar['low'] - ema_fast_now) / ema_fast_now * 100
+                        ema200_ok = (ema200_now is None or price_close > ema200_now)
+                        if -1.2 <= low_ema_dist <= 0.35 and ema200_ok:
+                            t_bull_price_score += 1
+                            t_bull_price_reasons.append('EMA支撐↑')
+                            t_bull_price_groups.add('Price')
+                else:
+                    ema_dist = (price_close - ema_fast_now) / ema_fast_now * 100
+                    if ema_dist < -t_profile['ema_pct']:
+                        t_bull_price_score += 1
+                        t_bull_price_reasons.append('EMA↑')
+                        t_bull_price_groups.add('Price')
             
             if bb_now is not None and bb_now < t_profile['bb_bull'] and is_bull_pa:
                 t_bull_price_score += 1
@@ -1146,11 +1236,20 @@ class IndicatorEngine:
                 t_bear_price_groups.add('Price')
             
             if ema_fast_now is not None and price_close is not None and is_bear_pa:
-                ema_dist = (price_close - ema_fast_now) / ema_fast_now * 100
-                if ema_dist > t_profile['ema_pct']:
-                    t_bear_price_score += 1
-                    t_bear_price_reasons.append('EMA↓')
-                    t_bear_price_groups.add('Price')
+                if current_regime.get('regime') == 'trending' and current_regime.get('direction') == 'down':
+                    if price_bar and 'high' in price_bar:
+                        high_ema_dist = (price_bar['high'] - ema_fast_now) / ema_fast_now * 100
+                        ema200_ok = (ema200_now is None or price_close < ema200_now)
+                        if -0.35 <= high_ema_dist <= 1.2 and ema200_ok:
+                            t_bear_price_score += 1
+                            t_bear_price_reasons.append('EMA壓力↓')
+                            t_bear_price_groups.add('Price')
+                else:
+                    ema_dist = (price_close - ema_fast_now) / ema_fast_now * 100
+                    if ema_dist > t_profile['ema_pct']:
+                        t_bear_price_score += 1
+                        t_bear_price_reasons.append('EMA↓')
+                        t_bear_price_groups.add('Price')
             
             if bb_now is not None and bb_now > t_profile['bb_bear'] and is_bear_pa:
                 t_bear_price_score += 1
@@ -1250,7 +1349,7 @@ class IndicatorEngine:
                         t_bear_env_score += div_weight_bear
                         t_bear_env_reasons.append('DIV↓')
                         t_bear_env_groups.add('Structure')
-            
+
             # --- State Machine Update (Setup window) ---
             if t_bull_env_score >= 1.0:
                 bull_setup_timer = SETUP_WINDOW
@@ -1291,44 +1390,11 @@ class IndicatorEngine:
 
             # --- Regime tag for signal text ---
             regime_tag = 'T' if current_regime.get('regime') == 'trending' else 'R'
-            
-            # === BREAKOUT ENGINE (Trend-Following) ===
-            is_breakout_bull = False
-            bull_breakout_reasons = []
-            is_breakout_bear = False
-            bear_breakout_reasons = []
-            
-            # Only trigger breakout in trending regimes
-            if current_regime.get('regime') == 'trending':
-                donchian_now = donchian_by_time.get(t)
-                macd_now = macd_by_time.get(t)
-                macd_prev = macd_by_time.get(times[i - 1])
-                
-                if donchian_now and macd_now and macd_prev and price_bar:
-                    # Breakout Buy: Uptrend direction + breaks higher than upper band + MACD momentum rising
-                    if current_regime.get('direction') == 'up' and price_bar['close'] > donchian_now['upper']:
-                        macd_rising = macd_now['hist'] > macd_prev['hist']
-                        cvd_confirm = cvd_now is not None and cvd_prev is not None and (cvd_now - cvd_prev) > 0 # CVD confirmation
-                        # Check macd and optionally cvd
-                        if macd_rising:
-                            is_breakout_bull = True
-                            bull_breakout_reasons.append('MACD_UP')
-                            if cvd_confirm: bull_breakout_reasons.append('CVD↑')
-                            
-                    # Breakout Sell: Downtrend direction + breaks lower than lower band + MACD momentum falling
-                    elif current_regime.get('direction') == 'down' and price_bar['close'] < donchian_now['lower']:
-                        macd_falling = macd_now['hist'] < macd_prev['hist']
-                        cvd_confirm = cvd_now is not None and cvd_prev is not None and (cvd_now - cvd_prev) < 0
-                        if macd_falling:
-                            is_breakout_bear = True
-                            bear_breakout_reasons.append('MACD_DN')
-                            if cvd_confirm: bear_breakout_reasons.append('CVD↓')
-            
+
             # --- Layer 3: MTF Confirmation (Loose Mode) ---
-            # For Reversion signals only; Breakout signals are exempt (already regime-aligned).
             # Loose mode: block only when higher TF is *strongly trending* against the signal.
-            #   4h trending + direction='down' → block bullish reversion
-            #   4h trending + direction='up'   → block bearish reversion
+            #   4h trending + direction='down' → block bullish signals
+            #   4h trending + direction='up'   → block bearish signals
             #   4h neutral / ranging           → both directions allowed
             htf_regime_ok_bull = True
             htf_regime_ok_bear = True
@@ -1338,39 +1404,155 @@ class IndicatorEngine:
                 if idx_htf >= 0:
                     htf = htf_regime_list[idx_htf]
                     if htf.get('regime') == 'trending' and htf.get('direction') == 'down':
-                        htf_regime_ok_bull = False  # 4h strong downtrend → block reversion BUY
+                        htf_regime_ok_bull = False  # 4h strong downtrend → block reversion/breakout BUY
                     if htf.get('regime') == 'trending' and htf.get('direction') == 'up':
-                        htf_regime_ok_bear = False  # 4h strong uptrend → block reversion SELL
+                        htf_regime_ok_bear = False  # 4h strong uptrend → block reversion/breakdown SELL
 
             # MTF tag appended to signal text when filter is active
             mtf_tag = "[4h✓]" if htf_regime_times else ""
+            
+            # --- MACD Momentum ---
+            macd_now = macd_by_time.get(t)
+            macd_prev = macd_by_time.get(times[i - 1])
+            macd_rising = (macd_now is not None and macd_prev is not None and macd_now['hist'] > macd_prev['hist'])
+            macd_falling = (macd_now is not None and macd_prev is not None and macd_now['hist'] < macd_prev['hist'])
 
-            # --- Emit signal if score >= threshold AND from >= 2 distinct groups ---
+            prev_bar_1 = price_by_time.get(times[i - 1], {})
+            prev_bar_2 = price_by_time.get(times[i - 2], {}) if i >= 2 else None
+            prev_close_1 = prev_bar_1.get('close') if isinstance(prev_bar_1, dict) else None
+            prev_close_2 = prev_bar_2.get('close') if isinstance(prev_bar_2, dict) else None
+
+            # === TRACK 3: BREAKOUT ENGINE (🚀) ===
+            is_breakout_bull = False
+            bull_breakout_reasons = []
+            is_breakout_bear = False
+            bear_breakout_reasons = []
+
+            donchian_now = donchian_by_time.get(t)
+            donchian_prev = donchian_by_time.get(times[i - 1]) if i >= 1 else None
+
+            if donchian_now and donchian_prev and price_bar and i >= 1:
+                is_trending = (current_regime.get('regime') == 'trending')
+                cvd_confirm_bull = (cvd_now is not None and cvd_prev is not None and cvd_now > cvd_prev)
+                cvd_confirm_bear = (cvd_now is not None and cvd_prev is not None and cvd_now < cvd_prev)
+                oi_ok = True
+                if timeframe in ('15m', '1h'):
+                    oi_ok = (oi_chg_pct is not None and oi_chg_pct > 0)
+
+                # Bullish Breakout (Strict first-bar cross + trend/momentum)
+                if (price_bar['close'] > donchian_now['upper'] and
+                    prev_close_1 is not None and prev_close_1 <= donchian_prev['upper'] and
+                    is_trending and
+                    macd_rising and
+                    cvd_confirm_bull and
+                    is_bull_pa and
+                    oi_ok and
+                    htf_regime_ok_bull):
+                    is_breakout_bull = True
+                    bull_breakout_reasons.append('DONCHIAN')
+                    bull_breakout_reasons.append('MACD↑')
+                    bull_breakout_reasons.append('CVD↑')
+                    if oi_chg_pct is not None and oi_chg_pct > 0:
+                        bull_breakout_reasons.append('OI↑')
+
+                # Bearish Breakdown (Strict first-bar cross + trend/momentum)
+                elif (price_bar['close'] < donchian_now['lower'] and
+                      prev_close_1 is not None and prev_close_1 >= donchian_prev['lower'] and
+                      is_trending and
+                      macd_falling and
+                      cvd_confirm_bear and
+                      is_bear_pa and
+                      oi_ok and
+                      htf_regime_ok_bear):
+                    is_breakout_bear = True
+                    bear_breakout_reasons.append('DONCHIAN')
+                    bear_breakout_reasons.append('MACD↓')
+                    bear_breakout_reasons.append('CVD↓')
+                    if oi_chg_pct is not None and oi_chg_pct > 0:
+                        bear_breakout_reasons.append('OI↑')
+
+            # --- Confluence Validation & Cooldown Gating ---
             is_bull_valid = (bull_score >= bull_threshold and len(bull_groups) >= 2)
             is_bear_valid = (bear_score >= bear_threshold and len(bear_groups) >= 2)
 
             bull_emitted = False
-            if (is_bull_valid or is_breakout_bull) and (i - last_bull_idx) >= COOLDOWN:
-                # No-Long filter: block bullish signals in downtrend regime
-                if APPLY_DIRECTIONAL_PROTECTION and current_regime.get('no_long', False):
-                    pass  # Signal blocked by directional protection
-                elif is_bull_valid and not htf_regime_ok_bull:
-                    pass  # Signal blocked by Layer 3 MTF filter (4h strong downtrend)
-                elif is_breakout_bull and htf_regime_times and (not htf_regime_ok_bull) and ('Structure' not in t_bull_env_groups):
-                    pass  # In 4h downtrend, 1h breakout bull requires Structure confirmation
-                else:
-                    if is_breakout_bull:
+            allow_breakout_bull = is_breakout_bull and (i - last_bull_idx) >= (COOLDOWN * 2)
+            allow_reversion_bull = is_bull_valid and (i - last_bull_idx) >= COOLDOWN
+
+            allow_breakout_bear = is_breakout_bear and (i - last_bear_idx) >= (COOLDOWN * 2)
+            allow_reversion_bear = is_bear_valid and (i - last_bear_idx) >= COOLDOWN
+
+            # --- Extreme Inflection Definitions ---
+            is_extreme_bottom = (
+                'Structure' in bull_groups and
+                rsi_now is not None and rsi_now < 28 and
+                bb_now is not None and bb_now < 0.05 and
+                bull_score >= bull_threshold + 1.5
+            )
+
+            is_extreme_top = (
+                'Structure' in bear_groups and
+                rsi_now is not None and rsi_now > 72 and
+                bb_now is not None and bb_now > 0.95 and
+                bear_score >= bear_threshold + 1.5
+            )
+
+            # --- Macro Trend Structural Guard (EMA50 / EMA200 alignment) ---
+            is_bull_macro_trend = (
+                price_close is not None and ema50_now is not None and ema200_now is not None
+                and price_close > ema50_now > ema200_now
+            )
+            is_bear_macro_trend = (
+                price_close is not None and ema50_now is not None and ema200_now is not None
+                and price_close < ema50_now < ema200_now
+            )
+
+            # In strong bear macro structure (close < ema50 < ema200), bullish reversion requires Structure or extreme bottom
+            if allow_reversion_bull and is_bear_macro_trend and not is_extreme_bottom:
+                allow_reversion_bull = False
+
+            # In strong bull macro structure (close > ema50 > ema200), bearish reversion strictly requires Structure or extreme top
+            if allow_reversion_bear and is_bull_macro_trend and not is_extreme_top:
+                allow_reversion_bear = False
+
+            # --- 1h/15m Bullish Structure Protection (eliminate counter-trend shorts in bull grind) ---
+            prev_24_idx = max(0, i - 24)
+            ema200_prev_24 = ema_slow_by_time.get(times[prev_24_idx])
+            ema200_rising = (ema200_now is not None and ema200_prev_24 is not None and ema200_now > ema200_prev_24)
+
+            if timeframe in ('15m', '1h') and APPLY_DIRECTIONAL_PROTECTION:
+                is_bull_structure_1h = (
+                    (price_close is not None and ema200_now is not None and price_close > ema200_now and ema200_rising)
+                    or (bool(htf_regime_times) and not htf_regime_ok_bear)
+                )
+                if is_bull_structure_1h and not is_extreme_top:
+                    allow_reversion_bear = False
+
+            # --- SIGNAL EMISSION ---
+            bull_emitted = False
+            if allow_breakout_bull or allow_reversion_bull:
+                blocked_bull = False
+                if not is_extreme_bottom:
+                    if APPLY_DIRECTIONAL_PROTECTION and current_regime.get('no_long', False):
+                        blocked_bull = True
+                    elif not htf_regime_ok_bull:
+                        blocked_bull = True
+
+                if not blocked_bull:
+                    if allow_breakout_bull:
                         markers.append({
                             "time": t,
                             "position": "belowBar",
-                            "color": "#0ea5e9", # Distinct color for Breakout (e.g. blueish/cyan)
+                            "color": "#0ea5e9",  # Distinct color for Breakout
                             "shape": "arrowUp",
                             "text": f"🚀 [BREAKOUT] {'+'.join(bull_breakout_reasons)}",
-                            "score": 7, # Mock high score for breakout
+                            "score": 7,
                             "direction": "bullish",
                             "strategy_type": "breakout"
                         })
-                    else:
+                        last_bull_idx = i
+                        bull_emitted = True
+                    elif allow_reversion_bull:
                         markers.append({
                             "time": t,
                             "position": "belowBar",
@@ -1381,30 +1563,31 @@ class IndicatorEngine:
                             "direction": "bullish",
                             "strategy_type": "reversion"
                         })
-                    last_bull_idx = i
-                    bull_emitted = True
-                    
-            if (is_bear_valid or is_breakout_bear) and (i - last_bear_idx) >= COOLDOWN and not bull_emitted:
-                # No-Short filter: block bearish signals in uptrend regime
-                if APPLY_DIRECTIONAL_PROTECTION and current_regime.get('no_short', False):
-                    pass  # Signal blocked by directional protection
-                elif is_bear_valid and not htf_regime_ok_bear:
-                    pass  # Signal blocked by Layer 3 MTF filter (4h strong uptrend)
-                elif is_breakout_bear and htf_regime_times and (not htf_regime_ok_bear) and ('Structure' not in t_bear_env_groups):
-                    pass  # In 4h uptrend, 1h breakout bear requires Structure confirmation
-                else:
-                    if is_breakout_bear:
+                        last_bull_idx = i
+                        bull_emitted = True
+
+            if (allow_breakout_bear or allow_reversion_bear) and not bull_emitted:
+                blocked_bear = False
+                if not is_extreme_top:
+                    if APPLY_DIRECTIONAL_PROTECTION and current_regime.get('no_short', False):
+                        blocked_bear = True
+                    elif not htf_regime_ok_bear:
+                        blocked_bear = True
+
+                if not blocked_bear:
+                    if allow_breakout_bear:
                         markers.append({
                             "time": t,
                             "position": "aboveBar",
-                            "color": "#f97316", # Orange/amber for Breakout short
+                            "color": "#f97316",  # Orange for Breakdown short
                             "shape": "arrowDown",
                             "text": f"🚀 [BREAKDOWN] {'+'.join(bear_breakout_reasons)}",
                             "score": 7,
                             "direction": "bearish",
                             "strategy_type": "breakout"
                         })
-                    else:
+                        last_bear_idx = i
+                    elif allow_reversion_bear:
                         markers.append({
                             "time": t,
                             "position": "aboveBar",
@@ -1415,7 +1598,7 @@ class IndicatorEngine:
                             "direction": "bearish",
                             "strategy_type": "reversion"
                         })
-                    last_bear_idx = i
+                        last_bear_idx = i
         
         return markers, latest_regime
 

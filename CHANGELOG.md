@@ -3,6 +3,35 @@
 All notable changes to the Solo-Quant project will be documented in this file.
 This file serves as a historical record to keep `AI_HANDOFF.md` clean and focused on current state and next steps.
 
+## [2026-10-26] v0.4.0 - Full Macro Cross-Regime Architecture & Precision Tuning
+- **Signal Quality & Multi-Year Diagnostic Engine**:
+  - `scripts/debug/evaluate_signal_quality.py`: Created an event-study rolling-window diagnostic script across multi-year data (1d 1000 bars, 4h 2200 bars, 1h 4320 bars) for core assets (BTC & ETH), producing scientific Tables A through D across Bull, Bear, and Ranging market regimes.
+- **Breakout & Structure Precision Tuning (`api/core/indicators.py`)**:
+  - **1h Breakout Re-architecture**: Dynamic Donchian period (48 bars for 15m/1h, 20 bars for 4h/1d); candle body expansion confirmation; required OI expansion (`oi_expanding = oi_chg_pct > 0`) for 15m/1h breakouts.
+  - **Strict Anti-Trend Iron Laws**:
+    - Unconditional `no_short` blocking: Removed `has_bear_structure` exemption from `no_short`, completely preventing counter-trend shorting during bull regimes.
+    - 1h/15m Bull Structural Guard: Monitored 24-bar EMA200 slope (`ema200_rising`) and 4h MTF regime to block counter-trend shorts in bull grind.
+    - Prohibited counter-trend Breakdowns when `price_close > ema200` or 4h trending up, and counter-trend Breakouts when `price_close < ema200` and 4h trending down.
+    - Restricted `has_bull_structure` exemption from `no_long` strictly to `4h` with `'CAP↑'` true capitulation and `bull_score >= bull_threshold + 1.5`, restoring 1d Structure win rate to 73.3% and E-Ratio to 1.59.
+- **Risk Management & Dynamic TP/SL (`api/quant/position.py` & `api/quant/signal_backtester.py`)**:
+  - **Breakeven Floor**: Added guaranteed floor to `Position.update()` when trailing stop activates (Long `new_trail >= entry_price * 1.002`, Short `new_trail <= entry_price * 0.998`), eliminating loss-making exits after profit activation.
+  - **ATR(14) Precomputation**: Precalculated 14-period Wilder's ATR across all bars.
+  - **Structure & Breakout TP Expansion**: Dynamic 1.35x multiplier applied to `take_profit_pct` for Structure and Breakout trades.
+- **Multi-Timeframe Telegram Scanner (`api/core/signal_scanner.py` & `api/core/notifier.py`)**:
+  - Upgraded scanner to monitor `MONITORED_TIMEFRAMES = ["1h", "4h"]`, scanning 4h at `:00` UTC when `hour % 4 == 0` with 8-hour tracking window.
+  - Defaulted to Full Macro mode (`enable_protection=True`, `enable_mtf_filter=True`).
+  - Added timeframe identifier to Telegram alerts (e.g. `[BTC/USDT 4h]`).
+- **Frontend Defaults & Presets Alignment**:
+  - `web/app/page.tsx`: Initialized `signalConfig` with `enableProtection: true` and `enableMtfFilter: true`.
+  - `web/app/backtest/page.tsx`: Defaulted `enableProtection` and `enableMtfFilter` to `true`. Updated quick presets to match Table D empirical metrics: 保守回歸 (`SL: 1.8%`, `TP: 2.8%`, `Trail: 0.8%`, `Act: 1.2%`) and 順勢突破 (4h/1d) (`SL: 3.0%`, `TP: 6.0%`, `Trail: 1.5%`, `Act: 2.0%`).
+- **Golden Balance Calibration & Native Trend Pullback (`api/core/indicators.py` & `api/main.py`)**:
+  - **Dynamic Donchian Period**: Enforced `period = 48` for `15m/1h` and `period = 20` for `4h/1d` in `api/main.py`.
+  - **Native EMA50 Trend Pullback**: Replaced external pullback track with native `EMA支撐↑` (uptrend pullback to EMA50 within `-1.2% ~ +0.35%` holding above EMA200) and `EMA壓力↓` (downtrend bounce to EMA50 within `-0.35% ~ +1.2%` under EMA200), driving 4h Pure Reversion to 71.4% win rate and 3.49 E-Ratio.
+  - **Restored Version 3 Strict Breakout (🚀)**: Required `regime == 'trending'`, strict first-bar Donchian cross, volume & momentum confirmation, OI expansion for 15m/1h, and `COOLDOWN * 2`, bringing 1h Breakout back to high-conviction quality.
+  - **Tightened Extreme Inflection Exemption**: Exemptions to `no_long / no_short` strictly require 4-fold extreme resonance (`Structure` + `RSI < 28 / > 72` + `BB < 0.05 / > 0.95` + `score >= threshold + 1.5`).
+  - **All-Timeframe Golden Balance**: Full Macro E-Ratio > 1.15 across all horizons (1h: 1.18, 4h: 1.83, 1d: 1.15) with balanced signal density (1h: 164, 4h: 72, 1d: 76).
+- **Tests**: 33/33 unit tests passing (`api/tests/test_signal_strategy.py`).
+
 ## [2026-10-25] v0.3.0 - IndicatorEngine v8 (Macro & Inflection Precision Upgrade)
 - **Data Ingestion & Aggregation (Phase A)**:
   - `scripts/data/ingest_cvd.py`: Standardized timeframe to `'1d'` (was uppercase `'1D'`).

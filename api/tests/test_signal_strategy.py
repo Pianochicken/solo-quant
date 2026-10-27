@@ -435,6 +435,164 @@ class TestIndicatorEngineV8:
         assert isinstance(markers, list)
         assert isinstance(regime, dict)
 
+    def test_trend_pullback_detection(self):
+        from api.core.indicators import IndicatorEngine
+        # Construct candles with EMA50 > EMA200 uptrend, then pullback to EMA50
+        # 100 bars baseline rising from 100 to 120
+        price_data = []
+        for i in range(60):
+            p = 100 + i * 0.5
+            price_data.append({'time': i * 3600, 'open': p - 0.2, 'high': p + 0.3, 'low': p - 0.3, 'close': p})
+        
+        # Calculate EMA50 on bar 59
+        import pandas as pd
+        df = pd.DataFrame(price_data)
+        ema50_val = df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
+        
+        # Add pullback candle touching EMA50 then closing green with RSI ~ 45
+        t_pb = 60 * 3600
+        price_data.append({
+            'time': t_pb,
+            'open': ema50_val - 0.1,
+            'high': ema50_val + 0.5,
+            'low': ema50_val - 0.2,  # low is within -1.5% to +0.4%
+            'close': ema50_val + 0.3 # green candle
+        })
+        rsi_aligned = [{'time': p['time'], 'value': 45.0} for p in price_data]
+        cvd_aligned = [{'time': p['time'], 'value': float(idx * 10)} for idx, p in enumerate(price_data)]
+        macd_aligned = [{'time': p['time'], 'hist': float(idx * 0.1)} for idx, p in enumerate(price_data)]
+        
+        markers, _ = IndicatorEngine.calculate_confluence_signals(
+            price_data=price_data,
+            lsur_z_aligned=[],
+            cvd_aligned=cvd_aligned,
+            oi_percentile=50.0,
+            funding_aligned=[],
+            rsi_aligned=rsi_aligned,
+            macd_aligned=macd_aligned,
+            timeframe='1h'
+        )
+        pb_markers = [m for m in markers if 'EMA支撐↑' in m.get('text', '')]
+        assert len(pb_markers) >= 1
+        assert pb_markers[-1]['direction'] == 'bullish'
+        assert pb_markers[-1]['strategy_type'] == 'reversion'
+
+    def test_breakout_engine_detection(self):
+        from api.core.indicators import IndicatorEngine
+        # 45 bars rising then 5 bars consolidating
+        price_data = []
+        for i in range(45):
+            p = 100 + i * 0.5
+            price_data.append({'time': i * 3600, 'open': p - 0.2, 'high': p + 0.3, 'low': p - 0.3, 'close': p})
+        for i in range(45, 50):
+            price_data.append({'time': i * 3600, 'open': 122.0, 'high': 122.5, 'low': 121.5, 'close': 122.0})
+
+        # Bar 50: Strong breakout above Donchian upper with expanding OI & CVD
+        t_bo = 50 * 3600
+        price_data.append({
+            'time': t_bo,
+            'open': 122.0,
+            'high': 126.0,
+            'low': 121.8,
+            'close': 125.5
+        })
+        donchian_aligned = IndicatorEngine.calculate_donchian_channel(price_data, period=20)
+        macd_aligned = IndicatorEngine.calculate_macd(price_data)
+        cvd_aligned = [{'time': p['time'], 'value': float(idx * 10)} for idx, p in enumerate(price_data)]
+        oi_aligned = [{'time': p['time'], 'value': float(1000 + idx * 50)} for idx, p in enumerate(price_data)]
+
+        markers, _ = IndicatorEngine.calculate_confluence_signals(
+            price_data=price_data,
+            lsur_z_aligned=[],
+            cvd_aligned=cvd_aligned,
+            oi_percentile=50.0,
+            funding_aligned=[],
+            donchian_aligned=donchian_aligned,
+            macd_aligned=macd_aligned,
+            oi_aligned=oi_aligned,
+            timeframe='1h'
+        )
+        bo_markers = [m for m in markers if m.get('strategy_type') == 'breakout']
+        assert len(bo_markers) >= 1
+        assert bo_markers[-1]['direction'] == 'bullish'
+        assert 'BREAKOUT' in bo_markers[-1]['text']
+
+
+class TestBreakevenAndDynamicTP:
+    """Tests for Breakeven Floor and Structure/Breakout TP scaling."""
+
+    def test_breakeven_floor_long(self):
+        # trail_pct=5.0 > trail_act=1.0. Without floor, 101.5 * 0.95 = 96.425 (< entry!)
+        pos = Position(
+            side='long',
+            entry_price=100.0,
+            entry_time=1000,
+            size=1.0,
+            take_profit=120.0,
+            stop_loss=90.0,
+            trailing_stop_pct=5.0,
+            trailing_activation_pct=1.0,
+        )
+        pos.update(high=101.5, low=100.0, close=101.2)
+        assert pos.trailing_active is True
+        # Breakeven floor must be at least entry * 1.002 = 100.2
+        assert pos.trailing_stop_price >= 100.2
+
+    def test_breakeven_floor_short(self):
+        pos = Position(
+            side='short',
+            entry_price=100.0,
+            entry_time=1000,
+            size=1.0,
+            take_profit=80.0,
+            stop_loss=110.0,
+            trailing_stop_pct=5.0,
+            trailing_activation_pct=1.0,
+        )
+        pos.update(high=100.0, low=98.5, close=98.8)
+        assert pos.trailing_active is True
+        # Breakeven floor must be at most entry * 0.998 = 99.8
+        assert pos.trailing_stop_price <= 99.8
+
+    def test_structure_and_breakout_tp_expansion(self):
+        candles = [
+            {'time': 1000, 'open': 100, 'high': 101, 'low': 99, 'close': 100},
+            {'time': 2000, 'open': 100, 'high': 102, 'low': 99, 'close': 101},
+        ]
+        # Standard signal (no Structure/Breakout)
+        sig_std = [{'time': 1000, 'direction': 'bullish', 'score': 4, 'text': '⚡ standard'}]
+        config = SignalStrategyConfig(take_profit_pct=4.0, stop_loss_pct=2.0)
+        bt_std = SignalBacktester(config, candles, sig_std)
+        bt_std.run()
+        assert len(bt_std.open_positions) + len(bt_std.closed_positions) > 0
+        pos_std = (bt_std.open_positions + bt_std.closed_positions)[0]
+        assert abs(pos_std.take_profit - 104.0) < 0.01
+
+        # Structure signal (CAP/DIV)
+        sig_struct = [{'time': 1000, 'direction': 'bullish', 'score': 5, 'text': '⚡(2G) 5/10 [R] CAP+DIV'}]
+        bt_struct = SignalBacktester(config, candles, sig_struct)
+        bt_struct.run()
+        pos_struct = (bt_struct.open_positions + bt_struct.closed_positions)[0]
+        # TP should be 4.0 * 1.35 = 5.4% -> 105.4
+        assert abs(pos_struct.take_profit - 105.4) < 0.01
+
+        # Breakout signal (🚀)
+        sig_bo = [{'time': 1000, 'direction': 'bullish', 'score': 7, 'strategy_type': 'breakout', 'text': '🚀 [BREAKOUT]'}]
+        bt_bo = SignalBacktester(config, candles, sig_bo)
+        bt_bo.run()
+        pos_bo = (bt_bo.open_positions + bt_bo.closed_positions)[0]
+        assert abs(pos_bo.take_profit - 105.4) < 0.01
+
+    def test_atr_precomputation(self):
+        candles = [
+            {'time': i * 1000, 'open': 100, 'high': 105, 'low': 95, 'close': 100}
+            for i in range(30)
+        ]
+        bt = SignalBacktester(SignalStrategyConfig(), candles, [])
+        assert len(bt.atr_map) == 30
+        for t, val in bt.atr_map.items():
+            assert val > 0
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

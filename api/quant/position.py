@@ -72,6 +72,8 @@ class Position:
             # Update trailing stop price (ratchets up, never down)
             if self.trailing_active:
                 new_trail = self.highest_since_entry * (1 - self.trailing_stop_pct / 100)
+                # Breakeven Floor: prevent exiting below entry price + 0.2%
+                new_trail = max(new_trail, self.entry_price * 1.002)
                 if new_trail > self.trailing_stop_price:
                     self.trailing_stop_price = new_trail
 
@@ -88,6 +90,8 @@ class Position:
             # Update trailing stop price (ratchets down, never up)
             if self.trailing_active:
                 new_trail = self.lowest_since_entry * (1 + self.trailing_stop_pct / 100)
+                # Breakeven Floor: prevent exiting above entry price - 0.2%
+                new_trail = min(new_trail, self.entry_price * 0.998)
                 if self.trailing_stop_price == 0.0 or new_trail < self.trailing_stop_price:
                     self.trailing_stop_price = new_trail
 

@@ -26,10 +26,10 @@ export default function BacktestPage() {
 
     // Signal params
     const [riskPerTrade, setRiskPerTrade] = useState('2.0');
-    const [takeProfit, setTakeProfit] = useState('4.0');
-    const [stopLoss, setStopLoss] = useState('2.0');
-    const [trailingStop, setTrailingStop] = useState('1.5');
-    const [trailingActivation, setTrailingActivation] = useState('1.0');
+    const [takeProfit, setTakeProfit] = useState('2.8');
+    const [stopLoss, setStopLoss] = useState('1.8');
+    const [trailingStop, setTrailingStop] = useState('0.8');
+    const [trailingActivation, setTrailingActivation] = useState('1.2');
     const [maxPositions, setMaxPositions] = useState('3');
     const [allowShort, setAllowShort] = useState(true);
     const [reverseOnSignal, setReverseOnSignal] = useState(true);
@@ -41,8 +41,8 @@ export default function BacktestPage() {
     // AI Mode (grid only)
     const [isAiMode, setIsAiMode] = useState(true);
     const [useDynamicProfiles, setUseDynamicProfiles] = useState(true);
-    const [enableProtection, setEnableProtection] = useState(false); // Default to false to match main page
-    const [enableMtfFilter, setEnableMtfFilter] = useState(false);  // Layer 3: 4h MTF confirmation
+    const [enableProtection, setEnableProtection] = useState(true);
+    const [enableMtfFilter, setEnableMtfFilter] = useState(true);  // Layer 3: 4h MTF confirmation
     const [aiLoading, setAiLoading] = useState(false);
 
     // Unified result accessors
@@ -352,16 +352,16 @@ export default function BacktestPage() {
                                         <p className="text-[10px] uppercase tracking-wider text-purple-400 font-bold flex items-center gap-1"><Target className="w-3 h-3" /> Risk & Position</p>
                                         <div className="flex gap-2">
                                             <button 
-                                                onClick={() => { setStopLoss('2.0'); setTakeProfit('4.0'); setTrailingStop('1.5'); setTrailingActivation('1.0'); }}
-                                                className={`px-2 py-1 text-[10px] font-bold rounded transition border ${stopLoss === '2.0' && takeProfit === '4.0' && trailingStop === '1.5' && trailingActivation === '1.0' ? 'bg-purple-900/50 text-purple-300 border-purple-500 shadow-[0_0_10px_rgba(168,85,247,0.2)]' : 'bg-zinc-800 text-zinc-400 border-transparent hover:text-white hover:bg-zinc-700'}`}
+                                                onClick={() => { setStopLoss('1.8'); setTakeProfit('2.8'); setTrailingStop('0.8'); setTrailingActivation('1.2'); }}
+                                                className={`px-2 py-1 text-[10px] font-bold rounded transition border ${stopLoss === '1.8' && takeProfit === '2.8' && trailingStop === '0.8' && trailingActivation === '1.2' ? 'bg-purple-900/50 text-purple-300 border-purple-500 shadow-[0_0_10px_rgba(168,85,247,0.2)]' : 'bg-zinc-800 text-zinc-400 border-transparent hover:text-white hover:bg-zinc-700'}`}
                                             >
                                                 保守回歸
                                             </button>
                                             <button 
-                                                onClick={() => { setStopLoss('4.0'); setTakeProfit('10.0'); setTrailingStop('3.0'); setTrailingActivation('2.0'); }}
-                                                className={`px-2 py-1 text-[10px] font-bold rounded transition border ${stopLoss === '4.0' && takeProfit === '10.0' && trailingStop === '3.0' && trailingActivation === '2.0' ? 'bg-purple-900/50 text-purple-300 border-purple-500 shadow-[0_0_10px_rgba(168,85,247,0.2)]' : 'bg-zinc-800 text-zinc-400 border-transparent hover:text-white hover:bg-zinc-700'}`}
+                                                onClick={() => { setStopLoss('3.0'); setTakeProfit('6.0'); setTrailingStop('1.5'); setTrailingActivation('2.0'); }}
+                                                className={`px-2 py-1 text-[10px] font-bold rounded transition border ${stopLoss === '3.0' && takeProfit === '6.0' && trailingStop === '1.5' && trailingActivation === '2.0' ? 'bg-purple-900/50 text-purple-300 border-purple-500 shadow-[0_0_10px_rgba(168,85,247,0.2)]' : 'bg-zinc-800 text-zinc-400 border-transparent hover:text-white hover:bg-zinc-700'}`}
                                             >
-                                                順勢突破
+                                                順勢突破 (4h/1d)
                                             </button>
                                         </div>
                                     </div>

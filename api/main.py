@@ -179,23 +179,26 @@ def get_market_data(
         
         # 1. Fetch Basic Data and Indicator Data Concurrently
         import concurrent.futures
+        daily_limit = max(limit, 1200)
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
             future_data = pool.submit(fetcher.fetch_market_data, formatted_symbol, timeframe, limit)
             future_ob = pool.submit(fetcher.fetch_order_book_depth, formatted_symbol, limit=400)
             
-            future_ls = pool.submit(fetcher.fetch_long_short_ratio, formatted_symbol, period=indicator_period, limit=200)
-            future_ls_daily = pool.submit(fetcher.fetch_long_short_ratio, formatted_symbol, period='1D', limit=100)
+            future_ls = pool.submit(fetcher.fetch_long_short_ratio, formatted_symbol, period=indicator_period, limit=max(limit, 1000))
+            future_ls_daily = pool.submit(fetcher.fetch_long_short_ratio, formatted_symbol, period='1D', limit=daily_limit)
             
-            future_taker = pool.submit(fetcher.fetch_taker_volume, formatted_symbol, period=indicator_period, limit=1000)
-            future_taker_daily = pool.submit(fetcher.fetch_taker_volume, formatted_symbol, period='1D', limit=100)
+            future_taker = pool.submit(fetcher.fetch_taker_volume, formatted_symbol, period=indicator_period, limit=max(limit, 1000))
+            future_taker_daily = pool.submit(fetcher.fetch_taker_volume, formatted_symbol, period='1D', limit=daily_limit)
             
-            future_oi_raw = pool.submit(fetcher.fetch_open_interest, formatted_symbol, timeframe=indicator_period, limit=500)
-            future_oi_daily = pool.submit(fetcher.fetch_open_interest, formatted_symbol, timeframe='1D', limit=100)
+            future_oi_raw = pool.submit(fetcher.fetch_open_interest, formatted_symbol, timeframe=indicator_period, limit=max(limit, 1000))
+            future_oi_daily = pool.submit(fetcher.fetch_open_interest, formatted_symbol, timeframe='1D', limit=daily_limit)
             
             # Layer 3 MTF: fetch 4h data concurrently only when needed
             htf_needs_fetch = enable_mtf_filter and timeframe not in ('4h', '1d')
-            future_htf_price = pool.submit(fetcher.fetch_market_data, formatted_symbol, '4h', 1000) if htf_needs_fetch else None
-            future_htf_taker = pool.submit(fetcher.fetch_taker_volume, formatted_symbol, period='1H', limit=1000) if htf_needs_fetch else None
+            htf_limit = max(1000, limit // 4 + 250) if timeframe == '1h' else max(1000, limit)
+            htf_taker_limit = max(1000, limit + 500)
+            future_htf_price = pool.submit(fetcher.fetch_market_data, formatted_symbol, '4h', htf_limit) if htf_needs_fetch else None
+            future_htf_taker = pool.submit(fetcher.fetch_taker_volume, formatted_symbol, period='1H', limit=htf_taker_limit) if htf_needs_fetch else None
             
             data = future_data.result()
             orderbook = future_ob.result()
@@ -328,14 +331,16 @@ def get_market_data(
         
         # === Layer 3 MTF: Build 4h regime history (no look-ahead bias — uses historical 4h bars only) ===
         htf_regime_history = None
-        if enable_mtf_filter and timeframe not in ('4h', '1d') and htf_price_data and htf_taker_raw:
+        if enable_mtf_filter and timeframe not in ('4h', '1d') and htf_price_data and (htf_taker_raw or taker_volume_daily):
             try:
                 htf_price_list = htf_price_data.get('price', [])
-                if htf_price_list and htf_taker_raw:
-                    # Build 4h CVD from 4h taker volume
+                if htf_price_list and (htf_taker_raw or taker_volume_daily):
+                    # Merge high-res htf taker with daily taker for complete deep history
+                    htf_taker_combined = merge_history(htf_taker_raw, taker_volume_daily)
+                    # Build 4h CVD from merged taker volume
                     htf_price_start = min(p['time'] for p in htf_price_list)
                     htf_price_end = max(p['time'] for p in htf_price_list)
-                    htf_taker_filtered = [t for t in htf_taker_raw if htf_price_start <= t['time'] <= htf_price_end]
+                    htf_taker_filtered = [t for t in htf_taker_combined if htf_price_start <= t['time'] <= htf_price_end]
                     htf_cvd_raw = IndicatorEngine.calculate_cvd_history(htf_taker_filtered)
                     
                     if htf_cvd_raw:
@@ -392,7 +397,9 @@ def get_market_data(
         bb_pctb = bb_data['bb_pctb']
         
         # 5.8. Donchian Channel and MACD for Breakout Strategy
-        donchian = IndicatorEngine.calculate_donchian_channel(data['price'])
+        # Dynamic Donchian period: 48 for 15m/1h (48-hour range), 20 for 4h/1d
+        donchian_period = 48 if timeframe in ('15m', '1h') else 20
+        donchian = IndicatorEngine.calculate_donchian_channel(data['price'], period=donchian_period)
         macd_history = IndicatorEngine.calculate_macd(data['price'])
 
         # Resolve effective BTC macro regime for altcoin threshold adjustments
@@ -411,6 +418,7 @@ def get_market_data(
             trend_state=trend_state,
             rsi_aligned=rsi_history,
             ema_fast_aligned=ema_trend['ema_fast'],
+            ema_slow_aligned=ema_trend['ema_slow'],
             bb_pctb_aligned=bb_pctb,
             donchian_aligned=donchian,
             macd_aligned=macd_history,

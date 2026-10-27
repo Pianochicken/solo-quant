@@ -43,9 +43,9 @@ export default function Dashboard() {
   const [signalConfig, setSignalConfig] = useState({
     rangingThreshold: 3,
     trendingThreshold: 3,
-    enableProtection: false,
+    enableProtection: true,
     useDynamicProfiles: true,
-    enableMtfFilter: false,  // Layer 3: 4h regime MTF confirmation (default off)
+    enableMtfFilter: true,  // Layer 3: 4h regime MTF confirmation (default on)
   });
 
   // Track if this is the initial load for the current timeframe

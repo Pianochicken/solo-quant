@@ -51,7 +51,8 @@ def get_market_data(
     exchange: str = "okx", 
     limit: int = 100,
     start_time: Optional[datetime] = None,
-    end_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None,
+    require_ohlcv: bool = False
 ) -> List[MarketDataPoint]:
     """
     Retrieve market data points. Order is chronological (ascending timestamp).
@@ -61,6 +62,9 @@ def get_market_data(
         MarketDataPoint.timeframe == timeframe,
         MarketDataPoint.exchange == exchange
     )
+
+    if require_ohlcv:
+        query = query.filter(MarketDataPoint.open.isnot(None))
 
     if start_time:
         query = query.filter(MarketDataPoint.timestamp >= start_time)
