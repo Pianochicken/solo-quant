@@ -67,9 +67,9 @@ To prevent regressions, **ALL future AI Agents MUST adhere to these rules**:
    - *Rule*: **ALWAYS** fetch `limit=1000` candles for indicator calculation. When aggregating higher timeframes (e.g. 4h), query `limit * tf_ratio` raw points to guarantee a full 1000 aggregated bars.
 2. **Strict Time Alignment & Zero Look-Ahead Bias**:
    - *Rule*: Indicators must be strictly causal (rolling windows `<= current_bar`). Trailing stops in backtesting must be evaluated against the previous bar's ratcheted price before applying current-bar highs/lows.
-3. **Cross-Exchange OI Merging**:
-   - *Gotcha*: Binance OI history is limited to ~30 days. Directly summing unaligned series causes 60%+ artificial drops at boundary points.
-   - *Rule*: Always outer-merge on timestamp, apply `ffill(limit=2)`, and smooth boundary scale before computing delta/percentiles.
+3. **Cross-Exchange OI Merging & Liquidity Sources**:
+   - *Gotcha*: Binance and OKX have different historical depth limits. Directly summing unaligned series causes artificial jumps at boundary points. Furthermore, OKX daily candles close at 16:00 UTC (modulo 86400 == 57600), so filtering by `ts % 86400 == 0` drops all daily data.
+   - *Rule*: For live breakdown, use `get_exchange_breakdown()` with in-memory caching. For historical series, outer-merge on timestamp, apply `ffill(limit=2)`, and apply bidirectional boundary scaling (`scale_to_bin_past` / `scale_to_bin_future`) to guarantee zero artificial cliff jumps.
 4. **Local Time vs UTC Formatting**:
    - *Gotcha*: If timestamps have already been shifted for local timezone display (e.g., in `runSignalBacktest()`), frontend formatters must specify `{ timeZone: 'UTC' }` to avoid double-offset (+16h).
 5. **API Contract Validation (Frontend ↔ Backend)**:

@@ -4,6 +4,13 @@ All notable changes to the Solo-Quant project will be documented in this file.
 This file serves as a historical record to keep `AI_HANDOFF.md` clean and focused on current state and next steps.
 
 ## [2026-10-28] v0.5.0 - Frontend Signal Terminal Refactoring & Macro Alignment
+- **Dual-Exchange Open Interest & Liquidity Breakdown Fix (`api/core/fetcher.py` & `api/main.py`)**:
+  - Implemented lightweight `get_exchange_breakdown()` with 60s in-memory cache, accurately parsing Binance USD values (`openInterestValue`, `sumOpenInterestValue`, or `amount * price`) and OKX USD values (`oiUsd`, `openInterestValue`, or `oiCcy * price`).
+  - Fixed OKX daily OI fetching bug where `(ts // 1000) % 86400 != 0` (57600 at 16:00 UTC) dropped 100% of OKX daily records.
+  - Enforced `limit=min(per_page, 100)` for OKX Rubik API calls with graceful fallback (`okx: 0.0`) for unlisted swap contracts.
+  - Normalized DB query logic for `1d` to search both `'1d'` and `'1D'`, resolving empty DB cache hits.
+  - Upgraded smooth past/future boundary scaling between Binance and OKX to guarantee zero cliff jump at the 100-bar boundary, completely eliminating false `CAP` signals.
+  - Verified across `BTC-USDT`, `ETH-USDT`, and `SOL-USDT` on `1h`, `4h`, `1d` (Binance ~74-79%, OKX ~21-26%).
 - **Frontend Terminal Pure Refactoring (`web/app/page.tsx`)**:
   - Updated header subtitle to `CRYPTO MACRO & SIGNAL TERMINAL`.
   - Removed legacy `GridPanel` and `HistoryPanel` along with simulated local matching engine states, eliminating unused black space beneath the chart.

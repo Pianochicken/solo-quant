@@ -26,6 +26,8 @@ class DataFetcher:
         })
         self.exchange = self.okx
         self.latest_oi_breakdown = {"binance": 0, "okx": 0, "total": 0}
+        self._breakdown_cache: Dict[str, Dict[str, Any]] = {}
+        self._latest_valid_oi: Dict[str, Dict[str, float]] = {}
 
     def _ms_to_dt(self, ms: int) -> datetime:
         return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
@@ -320,6 +322,92 @@ class DataFetcher:
             agg_df.sort_values('time', inplace=True)
             return agg_df.to_dict('records')[-limit:]
 
+    def get_exchange_breakdown(self, symbol: str, current_price: Optional[float] = None) -> Dict[str, float]:
+        """
+        Lightweight live dual-exchange open interest breakdown (USD value).
+        Cached in-memory for 60 seconds per symbol.
+        """
+        now = time.time()
+        cached = self._breakdown_cache.get(symbol)
+        if cached and (now - cached.get('ts', 0) < 60):
+            return cached['data']
+
+        ccy = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[0]
+        binance_symbol = f"{ccy}/USDT:USDT"
+        okx_symbol = f"{ccy}-USDT-SWAP"
+
+        # 1. Fetch Binance Live OI
+        binance_usd = 0.0
+        try:
+            b_res = self.binance.fetch_open_interest(binance_symbol)
+            if b_res.get('openInterestValue'):
+                binance_usd = float(b_res['openInterestValue'])
+            elif isinstance(b_res.get('info'), dict) and b_res['info'].get('sumOpenInterestValue'):
+                binance_usd = float(b_res['info']['sumOpenInterestValue'])
+            else:
+                amount = float(b_res.get('openInterestAmount') or (b_res.get('info') or {}).get('openInterest') or 0.0)
+                if amount > 0:
+                    if not current_price or current_price <= 0:
+                        try:
+                            ticker = self.binance.fetch_ticker(binance_symbol)
+                            current_price = float((ticker or {}).get('last', 0))
+                        except Exception:
+                            pass
+                    if current_price and current_price > 0:
+                        binance_usd = amount * current_price
+        except Exception:
+            pass
+
+        # 2. Fetch OKX Live OI
+        okx_usd = 0.0
+        try:
+            o_res = self.okx.fetch_open_interest(okx_symbol)
+            info = o_res.get('info', {}) if isinstance(o_res.get('info'), dict) else {}
+            if info.get('oiUsd'):
+                okx_usd = float(info['oiUsd'])
+            elif o_res.get('openInterestValue'):
+                okx_usd = float(o_res['openInterestValue'])
+            else:
+                oi_ccy = float(info.get('oiCcy') or 0.0)
+                if oi_ccy > 0:
+                    if not current_price or current_price <= 0:
+                        try:
+                            ticker = self.okx.fetch_ticker(okx_symbol)
+                            current_price = float((ticker or {}).get('last', 0))
+                        except Exception:
+                            pass
+                    if current_price and current_price > 0:
+                        okx_usd = oi_ccy * current_price
+                else:
+                    amount = float(o_res.get('openInterestAmount') or 0.0)
+                    if amount > 0 and current_price and current_price > 0:
+                        okx_usd = amount * current_price
+        except Exception:
+            okx_usd = 0.0
+
+        # Fallback to latest valid values from historical series if live fetch returned 0
+        if binance_usd == 0 and symbol in self._latest_valid_oi:
+            binance_usd = self._latest_valid_oi[symbol].get('binance', 0.0)
+        if okx_usd == 0 and symbol in self._latest_valid_oi:
+            okx_usd = self._latest_valid_oi[symbol].get('okx', 0.0)
+
+        total_usd = binance_usd + okx_usd
+        breakdown = {
+            "binance": binance_usd,
+            "okx": okx_usd,
+            "total": total_usd
+        }
+
+        if total_usd > 0:
+            self._breakdown_cache[symbol] = {
+                'ts': now,
+                'data': breakdown
+            }
+            self._latest_valid_oi[symbol] = breakdown
+            self.latest_oi_breakdown = breakdown
+
+        return breakdown
+
     def fetch_open_interest(self, symbol: str, limit: int = 90, timeframe: str = '1h') -> list:
         ccy = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[0]
         binance_symbol = f"{ccy}/USDT:USDT"
@@ -336,8 +424,20 @@ class DataFetcher:
         query_limit = limit * tf_ratio
 
         with SessionLocal() as db:
-            db_okx = crud.get_market_data(db, symbol=db_symbol, timeframe=timeframe, exchange="okx", limit=query_limit)
-            db_okx = [x for x in db_okx if x.open_interest is not None]
+            if p_lower == '1d':
+                db_okx_lower = crud.get_market_data(db, symbol=db_symbol, timeframe='1d', exchange="okx", limit=query_limit)
+                db_okx_upper = crud.get_market_data(db, symbol=db_symbol, timeframe='1D', exchange="okx", limit=query_limit)
+                seen_ts = set()
+                db_okx = []
+                for x in sorted(db_okx_lower + db_okx_upper, key=lambda item: item.timestamp):
+                    if x.timestamp not in seen_ts and x.open_interest is not None:
+                        seen_ts.add(x.timestamp)
+                        db_okx.append(x)
+                if len(db_okx) > query_limit:
+                    db_okx = db_okx[-query_limit:]
+            else:
+                db_okx = crud.get_market_data(db, symbol=db_symbol, timeframe=p_lower, exchange="okx", limit=query_limit)
+                db_okx = [x for x in db_okx if x.open_interest is not None]
             
             missed_candles = 20 * tf_ratio
             if db_okx:
@@ -372,19 +472,30 @@ class DataFetcher:
                     params = {}
                     if since: params['until'] = since
                     try:
-                        res = self.okx.fetch_open_interest_history(okx_symbol, okx_tf, limit=per_page, params=params)
+                        res = self.okx.fetch_open_interest_history(okx_symbol, okx_tf, limit=min(per_page, 100), params=params)
                         if not res: break
                         for item in res:
                             ts = int(item['timestamp'])
-                            if (ts // 1000) % period_seconds != 0:
-                                continue # ensure alignment with requested interval bounds
+                            # Only filter intra-hour bounds for sub-daily timeframes; 1D from OKX is daily at 16:00 UTC
+                            if p_lower not in ['1d', '2d', '3d', '1w', '1m'] and period_seconds < 86400:
+                                if (ts // 1000) % period_seconds != 0:
+                                    continue # ensure alignment with requested interval bounds
                             
-                            val = float(item.get('openInterestValue') or item.get('openInterest') or item.get('oi') or 0)
+                            val = 0.0
+                            if item.get('openInterestValue'):
+                                val = float(item['openInterestValue'])
+                            elif isinstance(item.get('info'), dict) and item['info'].get('oiUsd'):
+                                val = float(item['info']['oiUsd'])
+                            elif isinstance(item.get('info'), list) and len(item['info']) >= 2:
+                                val = float(item['info'][1])
+                            elif item.get('openInterest'):
+                                val = float(item['openInterest'])
+                            
                             records.append({
                                 'timestamp': self._ms_to_dt(ts),
                                 'exchange': 'okx',
                                 'symbol': db_symbol,
-                                'timeframe': timeframe,
+                                'timeframe': p_lower,
                                 'open_interest': val
                             })
                         earliest_ts = min(item['timestamp'] for item in res)
@@ -392,7 +503,8 @@ class DataFetcher:
                         since = earliest_ts - 1
                         if len(res) < per_page: break
                         if page < max_pages - 1: time.sleep(0.2)
-                    except Exception as e: print(f"Error fetching data OKX: {e}"); break
+                    except Exception:
+                        break
                 if records:
                     with SessionLocal() as session:
                         crud.upsert_market_data(session, records)
@@ -402,26 +514,28 @@ class DataFetcher:
                 max_pages = min((limit_to_fetch + per_page - 1) // per_page, 10)
                 since = None
                 records = []
+                binance_tf = p_lower if p_lower in ['5m', '15m', '30m', '1h', '2h', '4h', '6h', '12h', '1d'] else '1h'
                 for page in range(max_pages):
                     params = {}
                     if since: params['endTime'] = since
                     try:
-                        res = self.binance.fetch_open_interest_history(binance_symbol, timeframe, limit=per_page, params=params)
+                        res = self.binance.fetch_open_interest_history(binance_symbol, binance_tf, limit=per_page, params=params)
                         if not res: break
                         for item in res:
-                            val = float(item.get('openInterestValue') or item.get('openInterest') or item.get('oi') or 0)
+                            val = float(item.get('openInterestValue') or (item.get('info') or {}).get('sumOpenInterestValue') or item.get('openInterest') or item.get('oi') or 0)
                             records.append({
                                 'timestamp': self._ms_to_dt(item['timestamp']),
                                 'exchange': 'binance',
                                 'symbol': db_symbol,
-                                'timeframe': timeframe,
+                                'timeframe': p_lower,
                                 'open_interest': val
                             })
                         earliest_ts = min(item['timestamp'] for item in res)
                         if since and earliest_ts >= since: break
                         since = earliest_ts - 1
                         if len(res) < per_page: break
-                    except Exception as e: print(f"Error fetching data: {e}"); break
+                    except Exception:
+                        break
                 if records:
                     with SessionLocal() as session:
                         crud.upsert_market_data(session, records)
@@ -430,15 +544,45 @@ class DataFetcher:
                 executor.submit(fetch_okx)
                 executor.submit(fetch_binance)
 
-            okx_data = crud.get_market_data(db, symbol=db_symbol, timeframe=timeframe, exchange="okx", limit=query_limit)
-            bin_data = crud.get_market_data(db, symbol=db_symbol, timeframe=timeframe, exchange="binance", limit=query_limit)
+            if p_lower == '1d':
+                okx_data_lower = crud.get_market_data(db, symbol=db_symbol, timeframe='1d', exchange="okx", limit=query_limit)
+                okx_data_upper = crud.get_market_data(db, symbol=db_symbol, timeframe='1D', exchange="okx", limit=query_limit)
+                seen_ts = set()
+                okx_data = []
+                for x in sorted(db_okx_lower + db_okx_upper, key=lambda item: item.timestamp):
+                    if x.timestamp not in seen_ts and x.open_interest is not None:
+                        seen_ts.add(x.timestamp)
+                        okx_data.append(x)
+                if len(okx_data) > query_limit:
+                    okx_data = okx_data[-query_limit:]
 
-            df_okx = pd.DataFrame([{ "time": int(x.timestamp.timestamp()), "value": x.open_interest or 0 } for x in okx_data])
-            df_bin = pd.DataFrame([{ "time": int(x.timestamp.timestamp()), "value": x.open_interest or 0 } for x in bin_data])
+                bin_data_lower = crud.get_market_data(db, symbol=db_symbol, timeframe='1d', exchange="binance", limit=query_limit)
+                bin_data_upper = crud.get_market_data(db, symbol=db_symbol, timeframe='1D', exchange="binance", limit=query_limit)
+                seen_ts_b = set()
+                bin_data = []
+                for x in sorted(bin_data_lower + bin_data_upper, key=lambda item: item.timestamp):
+                    if x.timestamp not in seen_ts_b and x.open_interest is not None:
+                        seen_ts_b.add(x.timestamp)
+                        bin_data.append(x)
+                if len(bin_data) > query_limit:
+                    bin_data = bin_data[-query_limit:]
+            else:
+                okx_data = crud.get_market_data(db, symbol=db_symbol, timeframe=p_lower, exchange="okx", limit=query_limit)
+                bin_data = crud.get_market_data(db, symbol=db_symbol, timeframe=p_lower, exchange="binance", limit=query_limit)
+
+            df_okx = pd.DataFrame([{ "time": int(x.timestamp.timestamp()), "value": x.open_interest or 0 } for x in okx_data if x.open_interest is not None])
+            df_bin = pd.DataFrame([{ "time": int(x.timestamp.timestamp()), "value": x.open_interest or 0 } for x in bin_data if x.open_interest is not None])
             
-            if not df_bin.empty: self.latest_oi_breakdown["binance"] = float(df_bin.iloc[-1]['value'])
-            if not df_okx.empty: self.latest_oi_breakdown["okx"] = float(df_okx.iloc[-1]['value'])
-            self.latest_oi_breakdown["total"] = self.latest_oi_breakdown["binance"] + self.latest_oi_breakdown["okx"]
+            if not df_bin.empty and not df_okx.empty:
+                b_last = float(df_bin.iloc[-1]['value'])
+                o_last = float(df_okx.iloc[-1]['value'])
+                if b_last > 0 or o_last > 0:
+                    self._latest_valid_oi[symbol] = {
+                        'binance': b_last,
+                        'okx': o_last,
+                        'total': b_last + o_last
+                    }
+                    self.latest_oi_breakdown = self._latest_valid_oi[symbol]
 
             if df_okx.empty and df_bin.empty:
                 return []
@@ -465,24 +609,36 @@ class DataFetcher:
             # Smooth scaling if one side is missing to prevent cliff jumps
             overlap = merged.dropna(subset=['value_okx', 'value_bin'])
             if not overlap.empty:
+                # Past boundary scaling (oldest overlapping point)
                 first_overlap = overlap.iloc[0]
                 okx_val_0 = float(first_overlap['value_okx'])
-                scale_ratio = ((okx_val_0 + float(first_overlap['value_bin'])) / okx_val_0) if okx_val_0 > 0 else 1.0
+                bin_val_0 = float(first_overlap['value_bin'])
+                scale_to_bin_past = ((okx_val_0 + bin_val_0) / bin_val_0) if bin_val_0 > 0 else 1.0
+                scale_to_okx_past = ((okx_val_0 + bin_val_0) / okx_val_0) if okx_val_0 > 0 else 1.0
 
+                # Future boundary scaling (newest overlapping point)
                 last_overlap = overlap.iloc[-1]
+                okx_val_last = float(last_overlap['value_okx'])
                 bin_val_last = float(last_overlap['value_bin'])
-                scale_ratio_bin = ((float(last_overlap['value_okx']) + bin_val_last) / bin_val_last) if bin_val_last > 0 else 1.0
+                scale_to_bin_future = ((okx_val_last + bin_val_last) / bin_val_last) if bin_val_last > 0 else 1.0
+                scale_to_okx_future = ((okx_val_last + bin_val_last) / okx_val_last) if okx_val_last > 0 else 1.0
+
+                first_overlap_time = first_overlap['time']
+                last_overlap_time = last_overlap['time']
 
                 values = []
                 for _, row in merged.iterrows():
                     v_okx = row['value_okx']
                     v_bin = row['value_bin']
+                    t = row['time']
                     if pd.notna(v_okx) and pd.notna(v_bin):
                         values.append(v_okx + v_bin)
-                    elif pd.notna(v_okx):
-                        values.append(v_okx * scale_ratio)
                     elif pd.notna(v_bin):
-                        values.append(v_bin * scale_ratio_bin)
+                        scale = scale_to_bin_past if t < first_overlap_time else scale_to_bin_future
+                        values.append(v_bin * scale)
+                    elif pd.notna(v_okx):
+                        scale = scale_to_okx_past if t < first_overlap_time else scale_to_okx_future
+                        values.append(v_okx * scale)
                     else:
                         values.append(0.0)
                 merged['value'] = values

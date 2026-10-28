@@ -192,6 +192,7 @@ def get_market_data(
             
             future_oi_raw = pool.submit(fetcher.fetch_open_interest, formatted_symbol, timeframe=indicator_period, limit=max(limit, 1000))
             future_oi_daily = pool.submit(fetcher.fetch_open_interest, formatted_symbol, timeframe='1D', limit=daily_limit)
+            future_breakdown = pool.submit(fetcher.get_exchange_breakdown, formatted_symbol)
             
             # Layer 3 MTF: fetch 4h data concurrently only when needed
             htf_needs_fetch = enable_mtf_filter and timeframe not in ('4h', '1d')
@@ -202,6 +203,7 @@ def get_market_data(
             
             data = future_data.result()
             orderbook = future_ob.result()
+            exchange_breakdown = future_breakdown.result()
             
             ls_ratio_history_raw = future_ls.result()
             ls_ratio_daily = future_ls_daily.result()
@@ -486,7 +488,7 @@ def get_market_data(
                 "market_regime_history": market_regime_history,
                 "composite_score": composite_score,
                 "composite_score_history": composite_score_history,
-                "exchange_breakdown": fetcher.latest_oi_breakdown,
+                "exchange_breakdown": exchange_breakdown,
                 "mtf_4h_regime": htf_regime_history[-1] if htf_regime_history else None,  # Layer 3 MTF
             }
         }
