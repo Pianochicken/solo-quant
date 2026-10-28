@@ -90,7 +90,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
         };
 
         const commonOptions = {
-            layout: { background: { type: ColorType.Solid, color: 'transparent' }, textColor: '#d1d5db' },
+            layout: { background: { type: ColorType.Solid, color: 'transparent' }, textColor: '#d1d5db', attributionLogo: false },
             grid: { vertLines: { color: '#27272a' }, horzLines: { color: '#27272a' } },
             timeScale: { visible: false, timeVisible: true, secondsVisible: false },
             crosshair: { mode: CrosshairMode.Normal },
@@ -101,7 +101,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
         const chart = createChart(chartContainerRef.current, {
             ...commonOptions,
             width: chartContainerRef.current.clientWidth,
-            height: 400,
+            height: 460,
             timeScale: { visible: true, timeVisible: true, secondsVisible: false },
         });
         chartRef.current = chart;
@@ -551,7 +551,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
         <div className="w-full flex flex-col gap-1 bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden shadow-lg p-1">
             {/* 1. Main Chart */}
             <div
-                className="relative w-full h-[400px]"
+                className="relative w-full h-[460px]"
                 onMouseLeave={() => setHoveredMarker(null)}
             >
                 {/* Marker Hover Tooltip */}

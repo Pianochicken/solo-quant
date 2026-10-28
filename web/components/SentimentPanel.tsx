@@ -77,6 +77,35 @@ export default function SentimentPanel({ indicators, timeframe = '1h', enablePro
                                 {regimeLabel}
                             </div>
                         </div>
+                        {indicators.mtf_4h_regime && (
+                            <div className="flex flex-col items-end">
+                                <span className="text-[10px] text-zinc-500 font-mono mb-1">MTF (4H)</span>
+                                {(() => {
+                                    const mtf = indicators.mtf_4h_regime;
+                                    if (mtf.regime === 'trending') {
+                                        if (mtf.direction === 'up') {
+                                            return (
+                                                <span className="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-emerald-950/70 border border-emerald-500/40 text-emerald-400 flex items-center gap-1 shadow-sm">
+                                                    4H: Trending ↑
+                                                </span>
+                                            );
+                                        } else {
+                                            return (
+                                                <span className="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-red-950/70 border border-red-500/40 text-red-400 flex items-center gap-1 shadow-sm">
+                                                    4H: Trending ↓
+                                                </span>
+                                            );
+                                        }
+                                    } else {
+                                        return (
+                                            <span className="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-amber-950/70 border border-amber-500/40 text-amber-400 flex items-center gap-1 shadow-sm">
+                                                4H: Ranging
+                                            </span>
+                                        );
+                                    }
+                                })()}
+                            </div>
+                        )}
                     </div>
 
                     <div className="grid grid-cols-3 gap-2 mt-3 pt-3 border-t border-zinc-800/50">
@@ -266,12 +295,20 @@ export default function SentimentPanel({ indicators, timeframe = '1h', enablePro
                             return (
                                 <div className="space-y-2">
                                     <div className="flex justify-between text-[10px] uppercase font-bold tracking-wider mb-1">
-                                        <span className="text-yellow-500">Binance {binancePct.toFixed(1)}%</span>
-                                        <span className="text-blue-500">OKX {okxPct.toFixed(1)}%</span>
+                                        <span className="text-yellow-500">
+                                            Binance {binance === 0 ? '—' : `${binancePct.toFixed(1)}%`}
+                                        </span>
+                                        <span className="text-blue-500">
+                                            OKX {okx === 0 ? '—' : `${okxPct.toFixed(1)}%`}
+                                        </span>
                                     </div>
                                     <div className="relative w-full h-2 bg-zinc-800 rounded-full overflow-hidden flex">
-                                        <div className="h-full bg-yellow-500" style={{ width: `${binancePct}%` }}></div>
-                                        <div className="h-full bg-blue-500" style={{ width: `${okxPct}%` }}></div>
+                                        {binancePct > 0 && (
+                                            <div className="h-full bg-yellow-500 transition-all duration-300" style={{ width: `${binancePct}%` }}></div>
+                                        )}
+                                        {okxPct > 0 && (
+                                            <div className="h-full bg-blue-500 transition-all duration-300" style={{ width: `${okxPct}%` }}></div>
+                                        )}
                                     </div>
                                 </div>
                             );
