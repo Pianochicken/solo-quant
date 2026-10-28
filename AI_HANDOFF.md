@@ -10,7 +10,7 @@ This document is the **Context Buffer** for AI Agents. It defines how the system
 **Solo-Quant** is a cryptocurrency algorithmic trading platform focused on Multi-indicator Confluence Analysis and Signal-Driven Backtesting.
 - **Backend**: Python 3.11, FastAPI, Pandas, NumPy, CCXT. (Run via `docker compose up api`)
 - **Frontend**: Next.js 16 (App Router), TypeScript, Tailwind CSS, Lightweight Charts. (Run via `docker compose up web`)
-- **Architecture**: Dual-mode (Grid-based Legacy vs. Signal-Driven Modern).
+- **Architecture**: Crypto Macro & Signal Terminal (Signal-Driven Quantitative Intelligence & Backtesting; legacy grid bot UI removed).
 
 ---
 
@@ -48,6 +48,15 @@ An event-driven notification pipeline embedded within the FastAPI container.
 - **BTC Macro Scanning Sequence**: Scans BTC first to cache and propagate `btc_macro_regime` to monitored altcoins.
 - **Message Format**: `sendPhoto` with TradingView-style 168-hour candlestick chart + detailed caption indicating timeframe (e.g. `[BTC/USDT 4h]`).
 - **Config API**: `GET/POST /notifications/config` (exposes `enable_mtf_filter`, `enable_protection`, `monitored_symbols`).
+
+### 2.3 Frontend Terminal Architecture (Crypto Macro & Signal Terminal)
+The frontend (`web/`) is streamlined into a high-conviction decision cockpit for market intelligence:
+- **Main Terminal (`web/app/page.tsx`)**: Pure signal & macro dashboard. Legacy `GridPanel` and `HistoryPanel` removed, eliminating empty black voids.
+- **Recent Signals Radar**: Right-column card displaying the latest 10 signals from `lsur_markers` with UTC timestamps (`MM/DD HH:mm`), strategy type badges (`🚀 BREAKOUT`, `⚡ STRUCTURE`, `🟢 BUY / 🔴 SELL`), asset-precision trigger prices (`getPricePrecision`), and monospace indicator reason pills.
+- **4H MTF Status Badge (`SentimentPanel.tsx`)**: Surfaces `mtf_4h_regime` in the `Market Regime` card header right side (`4H: Trending ↑` emerald, `4H: Trending ↓` red, `4H: Ranging` amber) to maintain macro direction awareness.
+- **Unified Terminal Loader**: Replaced fragmented multi-block loaders and artificial 600ms delays with a single full-workspace dark loading screen (radar pulse & asset/timeframe pill). On data arrival, all 3 panels (Chart, SentimentPanel, Recent Signals) hydrate atomically in the exact same render frame.
+- **Chart Polish (`AdvancedChart.tsx`)**: Removed TradingView attribution logo (`attributionLogo: false`) to prevent overlap with the 7th subchart (`Market Regime`), and expanded main price chart height to 460px (`h-[460px]`).
+- **Full Macro Defaults**: Frontend initializes with `enableProtection: true` and `enableMtfFilter: true`.
 
 ---
 

@@ -3,6 +3,22 @@
 All notable changes to the Solo-Quant project will be documented in this file.
 This file serves as a historical record to keep `AI_HANDOFF.md` clean and focused on current state and next steps.
 
+## [2026-10-28] v0.5.0 - Frontend Signal Terminal Refactoring & Macro Alignment
+- **Frontend Terminal Pure Refactoring (`web/app/page.tsx`)**:
+  - Updated header subtitle to `CRYPTO MACRO & SIGNAL TERMINAL`.
+  - Removed legacy `GridPanel` and `HistoryPanel` along with simulated local matching engine states, eliminating unused black space beneath the chart.
+  - Added **Recent Signals Radar** in the right column beneath `SentimentPanel`: lists latest 10 signals with formatted UTC timestamps (`MM/DD HH:mm`), strategy type badges (`🚀 BREAKOUT / BREAKDOWN`, `⚡ STRUCTURE ▲/▼`, `🟢 BUY / 🔴 SELL`), asset-precision trigger prices (`getPricePrecision`), and monospace indicator reason pills.
+  - **Unified Terminal Loader**: Replaced fragmented multi-block loaders and artificial 600ms delays with a single full-workspace dark loading screen (radar pulse animation & asset/timeframe pill). On data arrival, Chart, SentimentPanel, and Recent Signals hydrate atomically without flickering or empty states.
+- **4H MTF Confluence & Sentiment Panel (`web/components/SentimentPanel.tsx`)**:
+  - Integrated 4H MTF regime status badge (`mtf_4h_regime`) into the `Market Regime` header right side (`4H: Trending ↑` emerald, `4H: Trending ↓` red, `4H: Ranging` amber), providing instant macro trend awareness.
+  - Gracefully formatted single-source exchange liquidity when OKX or Binance has 0 volume (`—` instead of `0.0%`).
+- **Advanced Chart Polish (`web/components/AdvancedChart.tsx`)**:
+  - Added `attributionLogo: false` in `commonOptions.layout` to eliminate TradingView logo overlap with the 7th subchart (`Market Regime`).
+  - Expanded main price chart height from 400px to 460px (`h-[460px]`).
+- **Multi-Year Rolling Evaluation & IndicatorEngine v8**:
+  - `scripts/debug/evaluate_signal_quality.py`: Evaluated multi-year rolling windows across Bull, Bear, and Ranging regimes for BTC/ETH, confirming Full Macro E-Ratio > 1.15 across all horizons (1h: 1.18, 4h: 1.83, 1d: 1.15).
+  - Maintained Full Macro defaults (`enableProtection: true`, `enableMtfFilter: true`) across both dashboard and backtester.
+
 ## [2026-10-26] v0.4.0 - Full Macro Cross-Regime Architecture & Precision Tuning
 - **Signal Quality & Multi-Year Diagnostic Engine**:
   - `scripts/debug/evaluate_signal_quality.py`: Created an event-study rolling-window diagnostic script across multi-year data (1d 1000 bars, 4h 2200 bars, 1h 4320 bars) for core assets (BTC & ETH), producing scientific Tables A through D across Bull, Bear, and Ranging market regimes.
