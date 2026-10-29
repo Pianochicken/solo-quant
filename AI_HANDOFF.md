@@ -46,7 +46,7 @@ An event-driven notification pipeline embedded within the FastAPI container.
 - **Candle Close Confirmation**: Intra-bar 1h signals broadcast only if high conviction (`score >= 5.0` or structural `CAP`/`DIV`). Otherwise, alerts are broadcast only after the candle closes.
 - **Dedup**: Tracks `(signal_time, strategy_type)` to avoid intra-bar alerts cannibalizing final closed candle signals.
 - **BTC Macro Scanning Sequence**: Scans BTC first to cache and propagate `btc_macro_regime` to monitored altcoins.
-- **Message Format**: `sendPhoto` with TradingView-style 168-hour candlestick chart + detailed caption indicating timeframe (e.g. `[BTC/USDT 4h]`).
+- **Message Format**: `sendPhoto` with TradingView-style 168-hour candlestick chart + detailed caption indicating timeframe and timezone badge (e.g. `[BTC/USDT 4h]`, `(UTC+8)`). Notification timestamps and chart X-axis ticks align dynamically to `NEXT_PUBLIC_TIMEZONE_OFFSET` (defaulting to 0 / UTC, configurable via `.env`).
 - **Config API**: `GET/POST /notifications/config` (exposes `enable_mtf_filter`, `enable_protection`, `monitored_symbols`).
 
 ### 2.3 Frontend Terminal Architecture (Crypto Macro & Signal Terminal)

@@ -107,6 +107,8 @@ def generate_candlestick_chart(
     df: pd.DataFrame,
     signals: list[dict],
     output_path: str,
+    timeframe: str = "1h",
+    tz_label: str = "(UTC)",
 ) -> str:
     """Generate a 168-hour candlestick chart and save it to *output_path*.
 
@@ -116,6 +118,8 @@ def generate_candlestick_chart(
                      Volume is optional and is not plotted.
         signals:     List of {"time": datetime, "direction": "buy"|"sell"}.
         output_path: Absolute path for the output PNG.
+        timeframe:   Candle interval identifier (e.g. "1h", "4h").
+        tz_label:    Timezone indicator in title (defaults to "(UTC)").
 
     Returns:
         Absolute path of the saved PNG.
@@ -125,6 +129,8 @@ def generate_candlestick_chart(
     # ── Prepare DataFrame ─────────────────────────────────────────────────────
     df = df.copy()
     df["Date"] = pd.to_datetime(df["Date"])
+    if hasattr(df["Date"].dt, "tz") and df["Date"].dt.tz is not None:
+        df["Date"] = df["Date"].dt.tz_localize(None)
     df = df.sort_values("Date").reset_index(drop=True)
     df.set_index("Date", inplace=True)
 
@@ -144,10 +150,9 @@ def generate_candlestick_chart(
     t_end    = idx_arr[-1]
 
     for sig in signals:
-        t = pd.Timestamp(sig["time"])  # treat as UTC-naive (matches OHLCV Date index)
-        # Normalise to tz-naive so it is comparable with the tz-naive DatetimeIndex
+        t = pd.Timestamp(sig["time"])
         if t.tzinfo is not None:
-            t = t.tz_convert(None)
+            t = t.tz_localize(None)
 
         # Skip signals outside the visible window — prevents old signals
         # from snapping to the first/last candle via nearest-neighbour lookup.
@@ -231,8 +236,9 @@ def generate_candlestick_chart(
     _format_xticks(df, ax)
 
     # Title (top-left, subtle)
+    tf_upper = timeframe.upper()
     ax.set_title(
-        f"{symbol}  ·  1H  ·  168 candles  ·  EMA50 / EMA200",
+        f"{symbol}  ·  {tf_upper}  ·  {len(df)} candles  ·  EMA50 / EMA200 {tz_label}",
         loc="left", color=TEXT, fontsize=9, pad=8,
     )
 

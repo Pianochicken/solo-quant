@@ -198,6 +198,7 @@ async def scan_and_notify(timeframes: Optional[List[str]] = None):
                         price_data=price_data,
                         all_markers=markers,
                         symbol=symbol,
+                        timeframe=tf,
                     )
                     logger.info(f"  → Sent with chart: {message}")
                     notified_set.add((sig["time"], sig.get("strategy_type", "reversion")))

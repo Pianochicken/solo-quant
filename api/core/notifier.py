@@ -1,7 +1,7 @@
 import os
 import re
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import httpx
 import pandas as pd
 from pathlib import Path
@@ -10,6 +10,22 @@ from pathlib import Path
 from .utils.chart import generate_candlestick_chart
 
 logger = logging.getLogger(__name__)
+
+def get_timezone_offset() -> float:
+    """Return timezone offset in hours from environment (defaults to 0.0 for UTC)."""
+    val = os.getenv("NEXT_PUBLIC_TIMEZONE_OFFSET", "0")
+    try:
+        return float(val)
+    except ValueError:
+        return 0.0
+
+def get_timezone_label(offset: float) -> str:
+    """Return a label like '(UTC+8)' or '(UTC)'."""
+    if offset == 0:
+        return "(UTC)"
+    sign = "+" if offset > 0 else ""
+    formatted_offset = int(offset) if offset.is_integer() else offset
+    return f"(UTC{sign}{formatted_offset})"
 
 # --- Environment configuration ------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -74,6 +90,7 @@ async def send_signal_with_chart(
     price_data: list[dict],
     all_markers: list[dict],
     symbol: str,
+    timeframe: str = "1h",
     *,
     caption: str | None = None,
 ) -> bool:
@@ -86,6 +103,7 @@ async def send_signal_with_chart(
         all_markers: Full list of signal marker dicts from ``lsur_markers`` — each has
                      ``time`` (unix seconds), ``direction`` ("bullish"/"bearish").
         symbol:      Trading pair identifier (e.g. "BTC/USDT").
+        timeframe:   Candle timeframe (e.g. "1h", "4h").
         caption:     Optional override for the caption; defaults to *text*.
 
     Returns:
@@ -93,17 +111,19 @@ async def send_signal_with_chart(
     """
     from .utils.chart import generate_candlestick_chart
 
-    # -- Convert price_data (last 168 candles) to DataFrame --
+    # -- Convert price_data (last 168 candles) to DataFrame with configured timezone offset --
+    offset = get_timezone_offset()
+    tz_label = get_timezone_label(offset)
+
     df = pd.DataFrame(price_data)
-    df["Date"] = pd.to_datetime(df["time"], unit="s", utc=True).dt.tz_localize(None)
+    df["Date"] = pd.to_datetime(df["time"] + int(offset * 3600), unit="s")
     df = df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"})
     df = df[["Date", "Open", "High", "Low", "Close"]].sort_values("Date").tail(168).reset_index(drop=True)
 
-    # -- Convert lsur_markers to signals list (preserve color + direction for chart) --
+    # -- Convert lsur_markers to signals list (shifted by offset matching Date index) --
     signals = [
         {
-            # Use unit="s" so the Timestamp is UTC-naive, matching the OHLCV Date index
-            "time":      pd.Timestamp(m["time"], unit="s"),
+            "time":      pd.to_datetime(m["time"] + int(offset * 3600), unit="s"),
             "direction": "buy" if m.get("direction", "") == "bullish" else "sell",
             "color":     m.get("color", ""),          # hex colour from frontend (e.g. #0ea5e9)
         }
@@ -114,7 +134,7 @@ async def send_signal_with_chart(
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     output_path = artifacts_dir / f"{symbol.replace('/', '_')}_168h.png"
 
-    generate_candlestick_chart(symbol, df, signals, str(output_path))
+    generate_candlestick_chart(symbol, df, signals, str(output_path), timeframe=timeframe, tz_label=tz_label)
 
     return await send_telegram_message(
         text="",
@@ -123,7 +143,7 @@ async def send_signal_with_chart(
     )
 
 # ---------------------------------------------------------------------------
-# Existing plain‑text formatter (unchanged apart from imports)
+# Existing plain‑text formatter (dynamically aligned to timezone offset)
 # ---------------------------------------------------------------------------
 def format_signal_message(signal: dict, symbol: str, price: float, timeframe: str = "1h") -> str:
     """Format a confluence signal into a human-readable Telegram message."""
@@ -133,12 +153,12 @@ def format_signal_message(signal: dict, symbol: str, price: float, timeframe: st
     text_raw = signal.get("text", "")
     signal_time = signal.get("time", 0)
 
-    # Timezone handling
-    tz_offset = float(os.getenv("NEXT_PUBLIC_TIMEZONE_OFFSET", "0"))
+    # Timezone handling: dynamically derived from environment offset
+    offset = get_timezone_offset()
+    tz = timezone(timedelta(hours=offset))
+    tz_label = get_timezone_label(offset)
     if signal_time:
-        import datetime as dt_module
-        dt = datetime.fromtimestamp(signal_time, tz=timezone.utc)
-        dt = dt + dt_module.timedelta(hours=tz_offset)
+        dt = datetime.fromtimestamp(signal_time, tz=tz)
         time_str = dt.strftime("%Y/%m/%d %H:%M")
     else:
         time_str = "----/--/-- --:--"
@@ -169,4 +189,4 @@ def format_signal_message(signal: dict, symbol: str, price: float, timeframe: st
         score_str = match.group(1) if match else f"{score:g}"
         reason_str = f"{score_str} {text_raw.split('] ')[-1]}" if "] " in text_raw else score_str
 
-    return f"{emoji} {time_str} [{symbol} {timeframe}] {strategy_label} {action} @ {price_str} | {reason_str}"
+    return f"{emoji} {time_str} {tz_label} [{symbol} {timeframe}] {strategy_label} {action} @ {price_str} | {reason_str}"

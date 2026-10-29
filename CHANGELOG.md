@@ -4,6 +4,10 @@ All notable changes to the Solo-Quant project will be documented in this file.
 This file serves as a historical record to keep `AI_HANDOFF.md` clean and focused on current state and next steps.
 
 ## [2026-10-28] v0.5.0 - Frontend Signal Terminal Refactoring & Macro Alignment
+- **Telegram Notification & Chart Timezone Alignment (`NEXT_PUBLIC_TIMEZONE_OFFSET`)**:
+  - `api/core/notifier.py`: Formats signal timestamps using `NEXT_PUBLIC_TIMEZONE_OFFSET` with dynamic timezone badges (e.g. `(UTC+8)`, defaulting cleanly to `(UTC)`). Shifts chart OHLCV dates and signal markers by the configured offset to synchronize with text alerts.
+  - `api/core/utils/chart.py`: Updated `generate_candlestick_chart` to accept `timeframe` and `tz_label` (defaulting to `(UTC)`), rendering them dynamically in the chart header.
+  - `api/core/signal_scanner.py`: Passes active `timeframe` to `send_signal_with_chart`.
 - **Dual-Exchange Open Interest & Liquidity Breakdown Fix (`api/core/fetcher.py` & `api/main.py`)**:
   - Implemented lightweight `get_exchange_breakdown()` with 60s in-memory cache, accurately parsing Binance USD values (`openInterestValue`, `sumOpenInterestValue`, or `amount * price`) and OKX USD values (`oiUsd`, `openInterestValue`, or `oiCcy * price`).
   - Fixed OKX daily OI fetching bug where `(ts // 1000) % 86400 != 0` (57600 at 16:00 UTC) dropped 100% of OKX daily records.
