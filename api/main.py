@@ -1,7 +1,9 @@
 import asyncio
 import logging
+import threading
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 
 from fastapi import FastAPI, HTTPException
@@ -22,11 +24,9 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
-# Create tables if they don't exist yet
-Base.metadata.create_all(bind=engine)
-
 # --- APScheduler: Signal Notification Scheduler & Market Overview Pre-warmer ---
 scheduler = AsyncIOScheduler()
+_overview_lock = threading.Lock()
 
 
 @asynccontextmanager
@@ -34,12 +34,30 @@ async def lifespan(app: FastAPI):
     """FastAPI lifespan: start/stop the APScheduler for periodic signal scanning and market overview pre-warming."""
     from api.core.signal_scanner import scan_and_notify
 
+    # 1. Initialize DB tables with retry logic (up to 5 attempts)
+    for attempt in range(1, 6):
+        try:
+            Base.metadata.create_all(bind=engine)
+            logger.info("Database tables verified/created successfully.")
+            break
+        except Exception as e:
+            if attempt < 5:
+                logger.warning(f"Database connection attempt {attempt}/5 failed ({e}), retrying in 2s...")
+                await asyncio.sleep(2)
+            else:
+                logger.error(f"Failed to connect to database after 5 attempts: {e}")
+                raise
+
+    # 2. Schedule APScheduler background jobs with singleton constraints
     scheduler.add_job(
         scan_and_notify,
         trigger=CronTrigger(minute="0,15,30,45"),
         id="signal_scanner",
         name="Periodic Signal Scanner",
         replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=30,
     )
     scheduler.add_job(
         _background_refresh_market_overview,
@@ -48,12 +66,13 @@ async def lifespan(app: FastAPI):
         id="market_overview_refresher",
         name="Market Overview Pre-warmer",
         replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=30,
+        next_run_time=datetime.now(timezone.utc),
     )
     scheduler.start()
     logger.info("APScheduler started — signal scanner & market overview pre-warmer active.")
-
-    # Pre-warm market overview immediately in background on startup
-    asyncio.create_task(_background_refresh_market_overview())
 
     yield
     scheduler.shutdown()
@@ -77,7 +96,7 @@ app.add_middleware(
 
 # Global DataFetcher instance to maintain the in-memory cache
 _fetcher_instance = None
-_btc_macro_cache: Optional[Dict] = None
+_btc_macro_cache: Dict[str, Dict] = {}
 _market_overview_cache: Dict[str, Any] = {
     "timestamp": 0.0,
     "data": []
@@ -100,7 +119,7 @@ def clear_cache():
     """
     global _fetcher_instance, _btc_macro_cache, _market_overview_cache
     _fetcher_instance = DataFetcher()
-    _btc_macro_cache = None
+    _btc_macro_cache = {}
     _market_overview_cache = {"timestamp": 0.0, "data": []}
     return {"status": "success", "message": "Fetcher re-initialized and cache cleared successfully"}
 
@@ -429,7 +448,7 @@ def get_market_data(
         # Resolve effective BTC macro regime for altcoin threshold adjustments
         effective_btc_macro = btc_macro_regime
         if effective_btc_macro is None and 'BTC' not in formatted_symbol.upper() and _btc_macro_cache:
-            effective_btc_macro = _btc_macro_cache
+            effective_btc_macro = _btc_macro_cache.get(timeframe) or _btc_macro_cache.get('4h') or _btc_macro_cache.get('1h')
 
         # 6. Multi-Indicator Confluence Signals v8
         # Timeframe-adaptive thresholds, trend filter, per-bar rolling OI percentile, BTC macro regime
@@ -476,9 +495,9 @@ def get_market_data(
         )
         composite_score = composite_score_history[-1]['value'] if composite_score_history else 50.0
 
-        # Cache BTC macro regime if current symbol is BTC
-        if 'BTC' in formatted_symbol.upper():
-            _btc_macro_cache = {
+        # Cache BTC macro regime if current symbol is BTC and sufficiently warmed up (>= 250 bars)
+        if 'BTC' in formatted_symbol.upper() and data.get('price') and len(data['price']) >= 250:
+            _btc_macro_cache[timeframe] = {
                 'regime': market_regime.get('regime', 'ranging'),
                 'direction': market_regime.get('direction', 'neutral'),
                 'pulse': composite_score,
@@ -527,17 +546,38 @@ def get_market_data(
 OVERVIEW_SYMBOLS = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT', 'HYPE-USDT', 'CC-USDT']
 
 def _fetch_single_asset_overview(sym: str) -> Dict:
-    res_4h = get_market_data(sym, '4h', limit=50, enable_protection=True, include_orderbook=False, include_breakdown=False)
-    res_1h = get_market_data(sym, '1h', limit=50, enable_protection=True, enable_mtf_filter=False, include_orderbook=False, include_breakdown=False)
+    # Use limit=300 to ensure full indicator warmup (fetch_limit=1000 in get_market_data)
+    res_4h = get_market_data(sym, '4h', limit=300, enable_protection=True, include_orderbook=False, include_breakdown=False)
+    res_1h = get_market_data(sym, '1h', limit=300, enable_protection=True, enable_mtf_filter=False, include_orderbook=False, include_breakdown=False)
+    
+    # Truncate and keep only lean summary fields to avoid memory blowup
+    p_4h = res_4h.get('data', {}).get('price', [])
+    lean_res_4h = {
+        "price_tail": p_4h[-7:] if p_4h else [],
+        "rsi_4h": float(res_4h.get('indicators', {}).get('rsi_history', [])[-1]['value']) if res_4h.get('indicators', {}).get('rsi_history') else 50.0,
+        "oi_tail": res_4h.get('indicators', {}).get('open_interest', [])[-7:] if res_4h.get('indicators', {}).get('open_interest') else [],
+        "market_regime": res_4h.get('indicators', {}).get('market_regime', {}),
+        "markers": res_4h.get('indicators', {}).get('lsur_markers', [])[-10:] if res_4h.get('indicators', {}).get('lsur_markers') else [],
+    }
+    lean_res_1h = {
+        "markers": res_1h.get('indicators', {}).get('lsur_markers', [])[-10:] if res_1h.get('indicators', {}).get('lsur_markers') else [],
+    }
     return {
         "symbol_key": sym,
-        "res_4h": res_4h,
-        "res_1h": res_1h
+        "res_4h": lean_res_4h,
+        "res_1h": lean_res_1h
     }
 
 def _compute_and_cache_market_overview() -> List[Dict]:
     global _market_overview_cache
     now = time.time()
+
+    # Concurrency control: prevent overlapping pre-warms with thread lock
+    if not _overview_lock.acquire(blocking=False):
+        if _market_overview_cache.get("data"):
+            return _market_overview_cache["data"]
+        _overview_lock.acquire(blocking=True)
+
     try:
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
@@ -547,8 +587,7 @@ def _compute_and_cache_market_overview() -> List[Dict]:
         
         # Determine BTC 4h RSI base
         btc_res_4h = results_by_sym.get('BTC-USDT', {}).get('res_4h', {})
-        btc_rsi_list = btc_res_4h.get('indicators', {}).get('rsi_history', [])
-        btc_rsi_4h = float(btc_rsi_list[-1]['value']) if btc_rsi_list else 50.0
+        btc_rsi_4h = btc_res_4h.get('rsi_4h', 50.0)
 
         overview_list = []
         for sym in OVERVIEW_SYMBOLS:
@@ -558,12 +597,12 @@ def _compute_and_cache_market_overview() -> List[Dict]:
             res_4h = asset_data["res_4h"]
             res_1h = asset_data["res_1h"]
 
-            price_list = res_4h.get('data', {}).get('price', [])
+            price_list = res_4h.get('price_tail', [])
             price_now = price_list[-1]['close'] if price_list else 0.0
 
             # 24h Price Change % (6 bars in 4h)
             if len(price_list) >= 7:
-                p_24h = price_list[-7]['close']
+                p_24h = price_list[0]['close']
                 change_24h_pct = round(((price_now - p_24h) / p_24h) * 100, 2)
             elif len(price_list) > 1:
                 p_first = price_list[0]['close']
@@ -572,21 +611,20 @@ def _compute_and_cache_market_overview() -> List[Dict]:
                 change_24h_pct = 0.0
 
             # 4h RSI & Relative Strength vs BTC
-            rsi_list = res_4h.get('indicators', {}).get('rsi_history', [])
-            rsi_4h = round(float(rsi_list[-1]['value']), 1) if rsi_list else 50.0
+            rsi_4h = round(res_4h.get('rsi_4h', 50.0), 1)
             rs_vs_btc = 0.0 if sym == 'BTC-USDT' else round(rsi_4h - btc_rsi_4h, 1)
 
             # 24h Coin-denominated OI change %
-            oi_list = res_4h.get('indicators', {}).get('open_interest', [])
+            oi_list = res_4h.get('oi_tail', [])
             if len(oi_list) >= 7 and len(price_list) >= 7 and price_now > 0:
-                p_24h = price_list[-7]['close']
-                oi_coin_now = oi_list[-1]['value'] / price_now
-                oi_coin_24h = oi_list[-7]['value'] / p_24h if p_24h > 0 else 0.0
+                p_24h = price_list[0]['close']
+                oi_coin_now = (oi_list[-1]['value'] or 0.0) / price_now
+                oi_coin_24h = (oi_list[0]['value'] or 0.0) / p_24h if p_24h > 0 else 0.0
                 oi_coin_change_24h_pct = round(((oi_coin_now - oi_coin_24h) / oi_coin_24h) * 100, 2) if oi_coin_24h > 0 else 0.0
             elif len(oi_list) > 1 and len(price_list) > 1 and price_now > 0:
                 p_first = price_list[0]['close']
-                oi_coin_now = oi_list[-1]['value'] / price_now
-                oi_coin_24h = oi_list[0]['value'] / p_first if p_first > 0 else 0.0
+                oi_coin_now = (oi_list[-1]['value'] or 0.0) / price_now
+                oi_coin_24h = (oi_list[0]['value'] or 0.0) / p_first if p_first > 0 else 0.0
                 oi_coin_change_24h_pct = round(((oi_coin_now - oi_coin_24h) / oi_coin_24h) * 100, 2) if oi_coin_24h > 0 else 0.0
             else:
                 oi_coin_change_24h_pct = 0.0
@@ -604,7 +642,7 @@ def _compute_and_cache_market_overview() -> List[Dict]:
                 quadrant = 'weak_reduce'
 
             # 4h Market Regime
-            regime_dict = res_4h.get('indicators', {}).get('market_regime', {})
+            regime_dict = res_4h.get('market_regime', {})
             regime_state = regime_dict.get('regime', 'ranging')
             direction = regime_dict.get('direction', 'neutral')
             if regime_state == 'trending' and direction == 'up':
@@ -615,7 +653,7 @@ def _compute_and_cache_market_overview() -> List[Dict]:
                 regime_4h = 'ranging'
 
             # Latest Signal (combined 1h & 4h markers)
-            all_markers = (res_1h.get('indicators', {}).get('lsur_markers', []) or []) + (res_4h.get('indicators', {}).get('lsur_markers', []) or [])
+            all_markers = (res_1h.get('markers', []) or []) + (res_4h.get('markers', []) or [])
             latest_signal = None
             if all_markers:
                 all_markers.sort(key=lambda m: m.get('time', 0))
@@ -656,6 +694,8 @@ def _compute_and_cache_market_overview() -> List[Dict]:
         if _market_overview_cache.get("data"):
             return _market_overview_cache["data"]
         raise HTTPException(status_code=500, detail=f"Market overview failed: {str(e)}")
+    finally:
+        _overview_lock.release()
 
 async def _background_refresh_market_overview():
     """Background pre-warming task run by APScheduler every 30s."""

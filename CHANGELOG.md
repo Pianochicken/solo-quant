@@ -3,6 +3,28 @@
 All notable changes to the Solo-Quant project will be documented in this file.
 This file serves as a historical record to keep `AI_HANDOFF.md` clean and focused on current state and next steps.
 
+## [2026-10-30] v0.6.3 - Backend Architecture, DB Pool Lifecycle & Concurrency Hardening
+- **Short-Lived DB Sessions & Elimination of Connection Pool Starvation (`api/core/fetcher.py`)**:
+  - Refactored `fetch_market_data()`, `fetch_taker_volume()`, `fetch_open_interest()`, and `fetch_long_short_ratio()` to strictly enforce the Short-Lived Session pattern.
+  - Eliminated nested DB session acquisition across HTTP network I/O and child thread pools: sessions are opened only for cache-gap checks, closed before external requests, reopened briefly for batch upserts, and reopened only for final reads.
+- **Warmup Depth Guarantee & Timeframe-Isolated BTC Macro Cache (`api/main.py`)**:
+  - `_fetch_single_asset_overview()`: Upgraded query depth from `limit=50` to `limit=300` (`fetch_limit=1000`), guaranteeing full warmup for EMA200, 90-period LSUR Z-score, and daily OI percentiles. Truncated memory payloads to return only lean summary metrics.
+  - Isolated `_btc_macro_cache` by timeframe (`Dict[str, Dict]`) with fallback resolution (`timeframe` -> `4h` -> `1h`). Cache overwriting is strictly blocked unless the source series contains $\ge 250$ bars.
+  - Added global thread lock `_overview_lock = threading.Lock()` to prevent overlapping concurrent pre-warm tasks from thrashing system resources.
+- **Lifespan Startup & Scheduler Hardening (`api/main.py`)**:
+  - Moved `Base.metadata.create_all()` into `lifespan()` startup with 5 retries (2-second interval) to prevent crash loops when the database container starts slower than the API.
+  - Added `max_instances=1, coalesce=True, misfire_grace_time=30` to APScheduler jobs and unified pre-warm initialization via `next_run_time=datetime.now(timezone.utc)`, eliminating duplicated background tasks.
+- **Telegram Alert Resilience & Non-blocking Chart Generation (`api/core/notifier.py` & `api/core/signal_scanner.py`)**:
+  - Protected matplotlib chart rendering with `_chart_lock = threading.Lock()` and dispatched via `await asyncio.to_thread()`, keeping the FastAPI event loop unblocked.
+  - Added timeframe tags to output chart filenames (`{symbol}_{timeframe}_168h.png`) to eliminate race-condition file overwrites between 1h and 4h alerts.
+  - Added graceful degradation fallback: if image generation fails or photo upload encounters an error, automatically falls back to plain-text Telegram notification, guaranteeing 100% signal delivery.
+  - Updated `signal_scanner.py` to only mark signals as notified if `send_signal_with_chart()` returned `True`; failed alerts remain in queue for retry on subsequent scans.
+  - Set default timezone offset in `notifier.py` to `8.0` (UTC+8 / Asia/Taipei).
+- **Container Infrastructure & Build Time Configuration (`docker-compose.yml` & `web/Dockerfile`)**:
+  - Added PostgreSQL healthcheck (`pg_isready -U quant_user -d quant_db`) to `db` service and configured `fastapi` with `condition: service_healthy`.
+  - Configured `TZ=Asia/Taipei` and updated default `NEXT_PUBLIC_TIMEZONE_OFFSET` to `8` across `fastapi` and `nextjs` containers.
+  - Declared `ARG NEXT_PUBLIC_API_URL` and `ARG NEXT_PUBLIC_TIMEZONE_OFFSET` before `RUN npm run build` in `web/Dockerfile`, ensuring client-side build-time static variables hydrate correctly.
+
 ## [2026-10-30] v0.6.2 - Quant Engine & Pipeline Core Audit Repairs (Zero Look-Ahead & Math Parity)
 - **Elimination of MTF 4H Alignment Look-Ahead Bias (`api/core/indicators.py`)**:
   - In `calculate_confluence_signals()` Layer 3 MTF Confirmation, resolved the causal look-ahead leak where `bisect_right(htf_regime_times, t)` allowed open 1h candles to read 4h candles that had not yet closed.

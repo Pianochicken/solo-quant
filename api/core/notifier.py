@@ -1,6 +1,8 @@
 import os
 import re
 import logging
+import asyncio
+import threading
 from datetime import datetime, timezone, timedelta
 import httpx
 import pandas as pd
@@ -10,14 +12,15 @@ from pathlib import Path
 from .utils.chart import generate_candlestick_chart
 
 logger = logging.getLogger(__name__)
+_chart_lock = threading.Lock()
 
 def get_timezone_offset() -> float:
-    """Return timezone offset in hours from environment (defaults to 0.0 for UTC)."""
-    val = os.getenv("NEXT_PUBLIC_TIMEZONE_OFFSET", "0")
+    """Return timezone offset in hours from environment (defaults to 8.0 for UTC+8 / Taipei)."""
+    val = os.getenv("NEXT_PUBLIC_TIMEZONE_OFFSET", "8")
     try:
         return float(val)
     except ValueError:
-        return 0.0
+        return 8.0
 
 def get_timezone_label(offset: float) -> str:
     """Return a label like '(UTC+8)' or '(UTC)'."""
@@ -132,15 +135,30 @@ async def send_signal_with_chart(
 
     artifacts_dir = Path(os.getenv("ARTIFACTS_DIR", "/tmp/solo_quant_charts"))
     artifacts_dir.mkdir(parents=True, exist_ok=True)
-    output_path = artifacts_dir / f"{symbol.replace('/', '_')}_168h.png"
+    output_path = artifacts_dir / f"{symbol.replace('/', '_')}_{timeframe}_168h.png"
 
-    generate_candlestick_chart(symbol, df, signals, str(output_path), timeframe=timeframe, tz_label=tz_label)
+    def _render_chart():
+        with _chart_lock:
+            generate_candlestick_chart(symbol, df, signals, str(output_path), timeframe=timeframe, tz_label=tz_label)
 
-    return await send_telegram_message(
-        text="",
-        photo_path=str(output_path),
-        caption=caption or text,
-    )
+    photo_sent = False
+    try:
+        await asyncio.to_thread(_render_chart)
+        photo_sent = await send_telegram_message(
+            text="",
+            photo_path=str(output_path),
+            caption=caption or text,
+        )
+    except Exception as chart_err:
+        logger.error(f"Chart generation or photo delivery failed for {symbol} ({timeframe}): {chart_err}")
+        photo_sent = False
+
+    # Fallback to plain-text notification if chart generation or photo delivery fails
+    if not photo_sent:
+        logger.warning(f"Falling back to plain-text Telegram alert for {symbol} ({timeframe})")
+        return await send_telegram_message(text=caption or text)
+
+    return True
 
 # ---------------------------------------------------------------------------
 # Existing plain‑text formatter (dynamically aligned to timezone offset)

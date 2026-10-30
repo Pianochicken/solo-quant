@@ -10,6 +10,11 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quant_user -d quant_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   fastapi:
@@ -18,30 +23,35 @@ services:
       dockerfile: ./api/Dockerfile
     container_name: solo-quant-api
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     ports:
       - "8000:8000"
     volumes:
       - .:/app
     environment:
       - PYTHONUNBUFFERED=1
+      - TZ=Asia/Taipei
       - DATABASE_URL=postgresql+psycopg2://quant_user:quant_password@db:5432/quant_db
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
-      - NEXT_PUBLIC_TIMEZONE_OFFSET=${NEXT_PUBLIC_TIMEZONE_OFFSET:-0}
+      - NEXT_PUBLIC_TIMEZONE_OFFSET=${NEXT_PUBLIC_TIMEZONE_OFFSET:-8}
     restart: unless-stopped
 
   nextjs:
     build:
       context: ./web
       dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+        - NEXT_PUBLIC_TIMEZONE_OFFSET=${NEXT_PUBLIC_TIMEZONE_OFFSET:-8}
     container_name: solo-quant-web
     ports:
       - "3000:3000"
     environment:
-      # In local Docker, Next.js client-side still fetches from localhost:8000 (if host network) or explicitly via container port mapping
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
-      - NEXT_PUBLIC_TIMEZONE_OFFSET=${NEXT_PUBLIC_TIMEZONE_OFFSET:-0}
+      - TZ=Asia/Taipei
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      - NEXT_PUBLIC_TIMEZONE_OFFSET=${NEXT_PUBLIC_TIMEZONE_OFFSET:-8}
     depends_on:
       - fastapi
     restart: unless-stopped

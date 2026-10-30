@@ -190,20 +190,26 @@ async def scan_and_notify(timeframes: Optional[List[str]] = None):
                 price_by_time = {p["time"]: p["close"] for p in price_data} if price_data else {}
 
                 logger.info(f"  {symbol} ({tf}): {len(new_signals)} NEW signal(s) to notify!")
+                successfully_notified = []
                 for sig in new_signals:
                     sig_price = price_by_time.get(sig["time"], 0)
                     message = format_signal_message(sig, symbol, sig_price, timeframe=tf)
-                    await send_signal_with_chart(
+                    sent_ok = await send_signal_with_chart(
                         text=message,
                         price_data=price_data,
                         all_markers=markers,
                         symbol=symbol,
                         timeframe=tf,
                     )
-                    logger.info(f"  → Sent with chart: {message}")
-                    notified_set.add((sig["time"], sig.get("strategy_type", "reversion")))
+                    if sent_ok:
+                        logger.info(f"  → Sent successfully: {message}")
+                        notified_set.add((sig["time"], sig.get("strategy_type", "reversion")))
+                        successfully_notified.append(sig["time"])
+                    else:
+                        logger.warning(f"  ❌ Failed to send Telegram alert for {symbol} ({tf}) at {sig['time']}. Will retry on next scan.")
 
-                _last_notified[cache_key] = max(s["time"] for s in new_signals)
+                if successfully_notified:
+                    _last_notified[cache_key] = max(successfully_notified)
 
             except Exception as e:
                 logger.error(f"Error scanning {symbol} ({tf}): {e}", exc_info=True)
