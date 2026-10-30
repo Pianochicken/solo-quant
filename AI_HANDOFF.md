@@ -29,10 +29,11 @@ The core of the system generates `Bullish` and `Bearish` markers from `Indicator
     - **Extreme Inflection Exemption**: Exemptions to `no_long / no_short` strictly require 4-fold extreme resonance (`Structure` + `RSI < 28 / > 72` + `BB < 0.05 / > 0.95` + `score >= threshold + 1.5`). All timeframes achieve Full Macro E-Ratio > 1.15.
   - **Layer 1 Capitulation Detector (`CAP↑`/`CAP↓`)**: Dynamic OI drop thresholds (BTC -4.5%, Midcaps -7%, Alts -10%) + CVD accumulation + absorption price action (wick / candle body direction).
   - **Layer 2 CVD Divergence (`DIV↑`/`DIV↓`)**: Volume-price structural divergence with recency constraint (`min`/`max` within last 2 bars) and price action confirmation.
-  - **Layer 3 MTF Confirmation (`[4h✓]`)**: 4h regime direction blocks counter-trend reversion and breakout signals.
+  - **Layer 3 MTF Confirmation (`[4h✓]`)**: Causal 4h regime confirmation. Enforces $t_{\text{htf}} + \text{htf\_sec} \le t + \text{tf\_sec}$ so 1h candles only read closed 4h bars, completely eliminating look-ahead bias.
   - **Layer 4 BTC Macro Regime Filter**: BTC trending down or overbought (pulse ≥ 80) increases altcoin long threshold (+1.0); BTC trending up or oversold (pulse ≤ 20) increases altcoin short threshold (+1.0).
   - **Macro Leverage Multiplier**: Rolling OI percentile (90 bars) dynamically scales `CAP`/`DIV` structural weights (2.0x when OI pct ≥ 80 with extreme funding; 1.0x when OI pct ≤ 20).
-- **Position Lifecycle & Zero Look-Ahead Bias**: In `api/quant/signal_backtester.py`, `_process_exits()` strictly calls `pos.check_exit()` *before* `pos.update()`. Stop Loss -> Take Profit -> Trailing Stop (evaluated using previous-bar ratchet).
+- **Position Lifecycle & Zero Look-Ahead Bias**: In `api/quant/signal_backtester.py`, `_process_exits()` strictly calls `pos.check_exit()` *before* `pos.update()`. Stop Loss -> Take Profit -> Trailing Stop (evaluated using previous-bar ratchet). Entry fees are single-counted (deducted from balance at entry and aggregated at exit via `pos.fees_paid`, eliminating 1.5x fee inflation).
+- **Physical Execution Bounds & Gap Slippage**: In `Position.get_exit_price_for_reason()`, stop execution prices are physically bounded: Long SL/trailing stop cannot exceed `min(level, high)`; Short SL/trailing stop cannot breach `max(level, low)`. Opening gap-downs through stop levels fill at `open_price`. In `Position.update()`, ratcheted trailing stops are clamped to current `close` if price already retraced past the stop level.
 - **Trailing Stop Breakeven Floor**: In `Position.update()`, once trailing stop is active, enforces `new_trail >= entry_price * 1.002` (Long) and `new_trail <= entry_price * 0.998` (Short), completely eliminating loss exits after profit activation.
 - **Dynamic TP & Risk-Based Sizing**: Precomputed 14-period Wilder's ATR; 1.35x `take_profit_pct` multiplier applied to Structure and Breakout trades. Capital allocation safely divided by `max_positions` (`current_equity * 0.95 / max_positions`).
 - **Signal Quality Metrics**: Backtester computes Forward Return MFE/MAE (`avg_mfe_pct`, `avg_mae_pct`).
@@ -71,19 +72,21 @@ To prevent regressions, **ALL future AI Agents MUST adhere to these rules**:
 1. **Indicator Path-Dependence Parity (1000-candle Warmup)**:
    - *Rule*: **ALWAYS** fetch `limit=1000` candles for indicator calculation. When aggregating higher timeframes (e.g. 4h), query `limit * tf_ratio` raw points to guarantee a full 1000 aggregated bars.
 2. **Strict Time Alignment & Zero Look-Ahead Bias**:
-   - *Rule*: Indicators must be strictly causal (rolling windows `<= current_bar`). Trailing stops in backtesting must be evaluated against the previous bar's ratcheted price before applying current-bar highs/lows.
+   - *Rule*: Indicators must be strictly causal (rolling windows `<= current_bar`). Donchian warmup uses expanding windows shifted by 1 (no `bfill`). MTF alignment strictly enforces $t_{\text{htf}} + \text{htf\_sec} \le t + \text{tf\_sec}$ so 1h candles never observe unclosed 4h candles. Trailing stops in backtesting must be evaluated against the previous bar's ratcheted price before applying current-bar highs/lows.
 3. **Cross-Exchange OI Merging & Liquidity Sources**:
-   - *Gotcha*: Binance and OKX have different historical depth limits. Directly summing unaligned series causes artificial jumps at boundary points. Furthermore, OKX daily candles close at 16:00 UTC (modulo 86400 == 57600), so filtering by `ts % 86400 == 0` drops all daily data.
-   - *Rule*: For live breakdown, use `get_exchange_breakdown()` with in-memory caching. For historical series, outer-merge on timestamp, apply `ffill(limit=2)`, and apply bidirectional boundary scaling (`scale_to_bin_past` / `scale_to_bin_future`) to guarantee zero artificial cliff jumps.
+   - *Gotcha*: Binance and OKX have different historical depth limits. Directly summing or averaging unaligned series causes artificial jumps at boundary points (e.g. OKX 100-bar limit). Furthermore, OKX daily candles close at 16:00 UTC (modulo 86400 == 57600), so filtering by `ts % 86400 == 0` drops all daily data.
+   - *Rule*: For live breakdown, use `get_exchange_breakdown()` with in-memory caching. For historical OI and Long/Short series, outer-merge on timestamp, apply `ffill(limit=2)`, and apply causal overlap ratio scaling (`ffill().bfill().fillna(1.0)`) across overlapping ranges to guarantee zero artificial cliff jumps.
 4. **Local Time vs UTC Formatting**:
    - *Gotcha*: If timestamps have already been shifted for local timezone display (e.g., in `runSignalBacktest()`), frontend formatters must specify `{ timeZone: 'UTC' }` to avoid double-offset (+16h).
 5. **API Contract Validation (Frontend ↔ Backend)**:
    - *Rule*: Always verify that TypeScript interfaces mirror the exact field names returned by FastAPI before deploying UI changes.
-6. **PostgreSQL Concurrent Upsert Deadlock Prevention**:
-   - *Gotcha*: Bulk `INSERT ... ON CONFLICT DO UPDATE` across concurrent asynchronous transactions causes PostgreSQL deadlocks on index tuples if rows are inserted in varying order.
-   - *Rule*: Always sort records by primary index elements `(exchange, symbol, timeframe, timestamp)` before executing `stmt.on_conflict_do_update()`.
+6. **PostgreSQL Concurrent Upsert Deadlock & Cardinality Prevention**:
+   - *Gotcha*: Bulk `INSERT ... ON CONFLICT DO UPDATE` across concurrent asynchronous transactions causes PostgreSQL deadlocks on index tuples if rows are inserted in varying order. Furthermore, passing duplicate primary keys in the same batch triggers PostgreSQL `CardinalityViolation` (`ON CONFLICT DO UPDATE command cannot affect row a second time`).
+   - *Rule*: Always deduplicate records in memory by `(exchange, symbol, timeframe, timestamp)` and sort deterministically by primary index elements before executing `stmt.on_conflict_do_update()`. Normalize `timeframe` to lowercase.
 7. **Database Connection Pool Sizing**:
    - *Rule*: With parallel thread pools inside `get_market_data()` (10 worker threads) and background scanners, maintain `pool_size >= 20` and `max_overflow >= 30` (up to 50 concurrent DB connections) with `pool_pre_ping=True` in `api/db/database.py` to prevent `QueuePool limit reached` timeouts.
+8. **Physical Execution Bounds & Gap Slippage in Backtester**:
+   - *Rule*: Backtester exit execution must respect market physics: Long stops fill at `min(level, high)` and Short stops fill at `max(level, low)`. Opening gap-throughs fill at `open_price`. Trailing stops must clamp to candle close if intra-bar reversals breach the ratcheted level. Entry fees must only be aggregated upon position closing to prevent double-counting.
 
 ---
 

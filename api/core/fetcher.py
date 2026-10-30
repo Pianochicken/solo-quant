@@ -617,38 +617,32 @@ class DataFetcher:
             merged['value_bin'] = merged['value_bin'].ffill(limit=2)
 
             # Smooth scaling if one side is missing to prevent cliff jumps
-            overlap = merged.dropna(subset=['value_okx', 'value_bin'])
-            if not overlap.empty:
-                # Past boundary scaling (oldest overlapping point)
-                first_overlap = overlap.iloc[0]
-                okx_val_0 = float(first_overlap['value_okx'])
-                bin_val_0 = float(first_overlap['value_bin'])
-                scale_to_bin_past = ((okx_val_0 + bin_val_0) / bin_val_0) if bin_val_0 > 0 else 1.0
-                scale_to_okx_past = ((okx_val_0 + bin_val_0) / okx_val_0) if okx_val_0 > 0 else 1.0
-
-                # Future boundary scaling (newest overlapping point)
-                last_overlap = overlap.iloc[-1]
-                okx_val_last = float(last_overlap['value_okx'])
-                bin_val_last = float(last_overlap['value_bin'])
-                scale_to_bin_future = ((okx_val_last + bin_val_last) / bin_val_last) if bin_val_last > 0 else 1.0
-                scale_to_okx_future = ((okx_val_last + bin_val_last) / okx_val_last) if okx_val_last > 0 else 1.0
-
-                first_overlap_time = first_overlap['time']
-                last_overlap_time = last_overlap['time']
+            # Compute causal ratio at overlapping points (ffill past ratio, bfill only at earliest history)
+            overlap_mask = (merged['value_okx'].notna()) & (merged['value_bin'].notna())
+            if overlap_mask.any():
+                ratio_to_bin_arr = np.where(
+                    (merged['value_okx'].notna()) & (merged['value_bin'] > 0),
+                    (merged['value_okx'] + merged['value_bin']) / merged['value_bin'],
+                    np.nan
+                )
+                ratio_to_okx_arr = np.where(
+                    (merged['value_bin'].notna()) & (merged['value_okx'] > 0),
+                    (merged['value_okx'] + merged['value_bin']) / merged['value_okx'],
+                    np.nan
+                )
+                ratio_to_bin = pd.Series(ratio_to_bin_arr, index=merged.index).ffill().bfill().fillna(1.0)
+                ratio_to_okx = pd.Series(ratio_to_okx_arr, index=merged.index).ffill().bfill().fillna(1.0)
 
                 values = []
-                for _, row in merged.iterrows():
+                for idx, row in merged.iterrows():
                     v_okx = row['value_okx']
                     v_bin = row['value_bin']
-                    t = row['time']
                     if pd.notna(v_okx) and pd.notna(v_bin):
                         values.append(v_okx + v_bin)
                     elif pd.notna(v_bin):
-                        scale = scale_to_bin_past if t < first_overlap_time else scale_to_bin_future
-                        values.append(v_bin * scale)
+                        values.append(v_bin * ratio_to_bin.loc[idx])
                     elif pd.notna(v_okx):
-                        scale = scale_to_okx_past if t < first_overlap_time else scale_to_okx_future
-                        values.append(v_okx * scale)
+                        values.append(v_okx * ratio_to_okx.loc[idx])
                     else:
                         values.append(0.0)
                 merged['value'] = values
@@ -775,19 +769,65 @@ class DataFetcher:
             df_okx = pd.DataFrame([{ "time": int(x.timestamp.timestamp()), "value": x.long_short_ratio or 0 } for x in okx_data if x.long_short_ratio is not None])
             df_bin = pd.DataFrame([{ "time": int(x.timestamp.timestamp()), "value": x.long_short_ratio or 0 } for x in bin_data if x.long_short_ratio is not None])
             
-            merged = pd.concat([df_okx, df_bin])
-            if merged.empty: return []
+            if df_okx.empty and df_bin.empty:
+                return []
 
             period_seconds = 300
             if 'm' in period.lower(): period_seconds = int(period.lower().replace('m', '')) * 60
             elif 'h' in period.lower(): period_seconds = int(period.lower().replace('h', '')) * 3600
             elif 'd' in period.lower(): period_seconds = 86400
-            
-            merged['rounded_time'] = (merged['time'] // period_seconds) * period_seconds
-            agg_df = merged.groupby('rounded_time')['value'].mean().reset_index()
-            agg_df.rename(columns={'rounded_time': 'time'}, inplace=True)
-            agg_df.sort_values('time', inplace=True)
-            return agg_df.to_dict('records')[-limit:]
+
+            if not df_okx.empty:
+                df_okx['rounded_time'] = (df_okx['time'] // period_seconds) * period_seconds
+                df_okx = df_okx.groupby('rounded_time')['value'].mean().reset_index().rename(columns={'rounded_time': 'time'})
+            if not df_bin.empty:
+                df_bin['rounded_time'] = (df_bin['time'] // period_seconds) * period_seconds
+                df_bin = df_bin.groupby('rounded_time')['value'].mean().reset_index().rename(columns={'rounded_time': 'time'})
+
+            if df_okx.empty:
+                df_bin.sort_values('time', inplace=True)
+                return df_bin[['time', 'value']].to_dict('records')[-limit:]
+            elif df_bin.empty:
+                df_okx.sort_values('time', inplace=True)
+                return df_okx[['time', 'value']].to_dict('records')[-limit:]
+
+            merged = pd.merge(df_okx, df_bin, on='time', how='outer', suffixes=('_okx', '_bin')).sort_values('time')
+            merged.reset_index(drop=True, inplace=True)
+
+            overlap_mask = (merged['value_okx'].notna()) & (merged['value_bin'].notna())
+            if overlap_mask.any():
+                # Smooth scaling across exchange boundaries using causal overlap ratio
+                ratio_to_bin_arr = np.where(
+                    (merged['value_okx'].notna()) & (merged['value_bin'] > 0),
+                    ((merged['value_okx'] + merged['value_bin']) / 2.0) / merged['value_bin'],
+                    np.nan
+                )
+                ratio_to_okx_arr = np.where(
+                    (merged['value_bin'].notna()) & (merged['value_okx'] > 0),
+                    ((merged['value_okx'] + merged['value_bin']) / 2.0) / merged['value_okx'],
+                    np.nan
+                )
+                ratio_to_bin = pd.Series(ratio_to_bin_arr, index=merged.index).ffill().bfill().fillna(1.0)
+                ratio_to_okx = pd.Series(ratio_to_okx_arr, index=merged.index).ffill().bfill().fillna(1.0)
+
+                values = []
+                for idx, row in merged.iterrows():
+                    v_okx = row['value_okx']
+                    v_bin = row['value_bin']
+                    if pd.notna(v_okx) and pd.notna(v_bin):
+                        values.append((v_okx + v_bin) / 2.0)
+                    elif pd.notna(v_bin):
+                        values.append(v_bin * ratio_to_bin.loc[idx])
+                    elif pd.notna(v_okx):
+                        values.append(v_okx * ratio_to_okx.loc[idx])
+                    else:
+                        values.append(1.0)
+                merged['value'] = values
+            else:
+                merged['value'] = merged['value_okx'].fillna(merged['value_bin']).fillna(1.0)
+
+            merged.sort_values('time', inplace=True)
+            return merged[['time', 'value']].to_dict('records')[-limit:]
 
     def fetch_history(self, symbol: str, start_time: int, end_time: int, timeframe: str = '1h') -> List[Dict]:
         """ History Endpoint explicitly requested via Backend Backtest logic untouched. """

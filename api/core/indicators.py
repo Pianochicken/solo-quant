@@ -318,12 +318,17 @@ class IndicatorEngine:
         
         # rolling().max() over `period`, shifted by 1 to prevent look-ahead bias
         # (the band for the current bar is based on the max/min of the previous `period` bars)
-        df['upper'] = df['high'].rolling(window=period).max().shift(1)
-        df['lower'] = df['low'].rolling(window=period).min().shift(1)
+        roll_upper = df['high'].rolling(window=period).max().shift(1)
+        roll_lower = df['low'].rolling(window=period).min().shift(1)
+
+        # For warmup period (< period bars), use expanding max/min of past bars shifted by 1
+        # Fill bar 0 with bar 0's own high/low so future points are never backfilled into bar 0
+        exp_upper = df['high'].expanding().max().shift(1)
+        exp_lower = df['low'].expanding().min().shift(1)
+
+        df['upper'] = roll_upper.combine_first(exp_upper).fillna(df['high'])
+        df['lower'] = roll_lower.combine_first(exp_lower).fillna(df['low'])
         df['middle'] = (df['upper'] + df['lower']) / 2.0
-        
-        # backfill first few points
-        df.bfill(inplace=True)
         
         return [{'time': int(r['time']), 'upper': float(r['upper']), 'lower': float(r['lower']), 'middle': float(r['middle'])} for _, r in df.iterrows()]
 
@@ -917,10 +922,22 @@ class IndicatorEngine:
         # We use a simple sorted list + bisect for O(log n) lookup per bar.
         htf_regime_times: List[int] = []
         htf_regime_list: List[Dict] = []
+        tf_sec_map = {
+            '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800,
+            '1h': 3600, '2h': 7200, '4h': 14400, '6h': 21600, '12h': 43200,
+            '1d': 86400, '1w': 604800,
+        }
+        tf_sec = tf_sec_map.get(str(timeframe).lower(), 3600)
+        htf_sec = 14400
         if higher_tf_regime_history:
             sorted_htf = sorted(higher_tf_regime_history, key=lambda x: x['time'])
             htf_regime_times = [r['time'] for r in sorted_htf]
             htf_regime_list = sorted_htf
+            if len(htf_regime_times) >= 2:
+                diffs = [htf_regime_times[k+1] - htf_regime_times[k] for k in range(min(5, len(htf_regime_times)-1))]
+                positive_diffs = [d for d in diffs if d > 0]
+                if positive_diffs:
+                    htf_sec = min(positive_diffs)
         
         # Rolling OI percentile series (Macro Leverage Multiplier)
         oi_pct_series = IndicatorEngine.calculate_oi_percentile_series(oi_aligned, window=90) if oi_aligned else []
@@ -1398,11 +1415,13 @@ class IndicatorEngine:
             #   4h trending + direction='down' → block bullish signals
             #   4h trending + direction='up'   → block bearish signals
             #   4h neutral / ranging           → both directions allowed
+            # Causal alignment: A HTF candle is fully closed only when htf_open + htf_sec <= t + tf_sec.
+            # Thus max_valid_htf_open = t if tf_sec >= htf_sec else (t + tf_sec - htf_sec).
             htf_regime_ok_bull = True
             htf_regime_ok_bear = True
             if htf_regime_times:
-                # Find the latest HTF bar whose time <= current bar time (backward-fill)
-                idx_htf = bisect.bisect_right(htf_regime_times, t) - 1
+                max_valid_htf_open = t if tf_sec >= htf_sec else (t + tf_sec - htf_sec)
+                idx_htf = bisect.bisect_right(htf_regime_times, max_valid_htf_open) - 1
                 if idx_htf >= 0:
                     htf = htf_regime_list[idx_htf]
                     if htf.get('regime') == 'trending' and htf.get('direction') == 'down':

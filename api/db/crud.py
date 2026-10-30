@@ -14,16 +14,36 @@ def upsert_market_data(db: Session, records: List[dict]):
     if not records:
         return
 
-    # Sort records by primary index elements to prevent PostgreSQL deadlocks during concurrent upserts
-    sorted_records = sorted(
-        records,
-        key=lambda r: (
+    # 1. Lowercase timeframe and deduplicate within batch by primary key
+    dedup_dict = {}
+    for r in records:
+        r['timeframe'] = str(r.get('timeframe', '')).lower()
+        pk = (
             str(r.get('exchange', '')),
             str(r.get('symbol', '')),
             str(r.get('timeframe', '')),
-            r.get('timestamp') or 0
+            r.get('timestamp')
         )
-    )
+        if pk in dedup_dict:
+            # Merge fields: non-None fields overwrite earlier fields
+            for k, v in r.items():
+                if v is not None:
+                    dedup_dict[pk][k] = v
+        else:
+            dedup_dict[pk] = dict(r)
+
+    # 2. Sort records by primary index elements to prevent PostgreSQL deadlocks during concurrent upserts
+    def get_sort_key(r):
+        ts = r.get('timestamp')
+        ts_sec = ts.timestamp() if hasattr(ts, 'timestamp') else float(ts or 0)
+        return (
+            str(r.get('exchange', '')),
+            str(r.get('symbol', '')),
+            str(r.get('timeframe', '')),
+            ts_sec
+        )
+
+    sorted_records = sorted(dedup_dict.values(), key=get_sort_key)
 
     # Keep track of all keys present across all records
     record_keys = set()
@@ -98,12 +118,39 @@ def get_market_data(
 
 def upsert_funding_rates(db: Session, records: List[dict]):
     """
-    Upsert funding rate data.
+    Upsert funding rate data with batch deduplication and deterministic primary key sorting.
     """
     if not records:
         return
 
-    stmt = insert(FundingRate).values(records)
+    # 1. Deduplicate within batch by primary key (exchange, symbol, timestamp)
+    dedup_dict = {}
+    for r in records:
+        pk = (
+            str(r.get('exchange', '')),
+            str(r.get('symbol', '')),
+            r.get('timestamp')
+        )
+        if pk in dedup_dict:
+            for k, v in r.items():
+                if v is not None:
+                    dedup_dict[pk][k] = v
+        else:
+            dedup_dict[pk] = dict(r)
+
+    # 2. Sort deterministically by primary index elements
+    def get_sort_key(r):
+        ts = r.get('timestamp')
+        ts_sec = ts.timestamp() if hasattr(ts, 'timestamp') else float(ts or 0)
+        return (
+            str(r.get('exchange', '')),
+            str(r.get('symbol', '')),
+            ts_sec
+        )
+
+    sorted_records = sorted(dedup_dict.values(), key=get_sort_key)
+
+    stmt = insert(FundingRate).values(sorted_records)
     update_dict = {"funding_rate": stmt.excluded.funding_rate}
 
     upsert_stmt = stmt.on_conflict_do_update(

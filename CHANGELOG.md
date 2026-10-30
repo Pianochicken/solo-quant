@@ -3,6 +3,30 @@
 All notable changes to the Solo-Quant project will be documented in this file.
 This file serves as a historical record to keep `AI_HANDOFF.md` clean and focused on current state and next steps.
 
+## [2026-10-30] v0.6.2 - Quant Engine & Pipeline Core Audit Repairs (Zero Look-Ahead & Math Parity)
+- **Elimination of MTF 4H Alignment Look-Ahead Bias (`api/core/indicators.py`)**:
+  - In `calculate_confluence_signals()` Layer 3 MTF Confirmation, resolved the causal look-ahead leak where `bisect_right(htf_regime_times, t)` allowed open 1h candles to read 4h candles that had not yet closed.
+  - Precalculated `tf_sec` and `htf_sec` and enforced strict causal boundary alignment: $t_{\text{htf}} + \text{htf\_sec} \le t + \text{tf\_sec} \implies \text{max\_valid\_htf\_open} = t + \text{tf\_sec} - \text{htf\_sec}$. Higher timeframe regime is only consumed once fully finalized relative to current candle close.
+- **Donchian Channel Warmup Future Leak Prevention (`api/core/indicators.py`)**:
+  - In `calculate_donchian_channel()`, purged `df.bfill(inplace=True)` which leaked future 20th-bar extremes back to bar 0.
+  - Implemented expanding window shifted by 1 (`df['high'].shift(1).expanding(min_periods=1).max()`) combined with rolling window, backing up bar 0 with its own high/low without future contamination.
+- **Eradication of Backtest Fee Double-Counting (`api/quant/signal_backtester.py`)**:
+  - In `SignalBacktester._open_position()`, removed duplicate `self.total_fees_paid += entry_fee`.
+  - Position fees (`pos.fees_paid = entry_fee + exit_fee`) are tracked within `Position.close()` and aggregated at trade exit in `_close_position()`, eliminating the 1.5x fee inflation on backtest metrics.
+- **Ghost Execution Fill Prevention & Gap Slippage Constraints (`api/quant/position.py` & `api/quant/signal_backtester.py`)**:
+  - Clamped `new_trail` in `Position.update()` to current `close` if the candle has already retraced below/above the calculated stop, preventing floating phantom stops.
+  - In `Position.get_exit_price_for_reason()`, constrained execution prices within physical market bounds: Long SL/trailing stop cannot exceed `min(level, high)`; Short SL/trailing stop cannot breach `max(level, low)`.
+  - Introduced `open_price` awareness into `Position.check_exit()` and fill calculation: detects opening gap-down/gap-up through stop levels and executes at `open_price` (realistic gap slippage).
+- **Causal Data Ingestion & Boundary Cliff Elimination (`api/core/fetcher.py`)**:
+  - `fetch_open_interest()`: Replaced intra-interval future scaling (`scale_to_bin_future`) with causal ratio derivation on overlapping points using `pd.Series.ffill().bfill().fillna(1.0)`.
+  - `fetch_long_short_ratio()`: Grouped by `rounded_time` individually per exchange, outer-merged on timestamp, and applied causal overlap ratio scaling before averaging, eliminating the 100-bar cliff drop caused by OKX's 100-bar limit vs Binance's 1000-bar history.
+- **Database Upsert In-Batch Deduplication & Deadlock Prevention (`api/db/crud.py`)**:
+  - `upsert_market_data()` & `upsert_funding_rates()`: Implemented in-batch composite primary key deduplication via in-memory dictionary prior to DB execution, preventing PostgreSQL `CardinalityViolation` crashes (`ON CONFLICT DO UPDATE command cannot affect row a second time`).
+  - Added deterministic primary key sorting and normalized `timeframe.lower()` to eliminate PostgreSQL transaction lock-order inversion and deadlocks.
+- **Automated Verification & Review Slices Packaging (`api/tests/test_audit_fixes.py` & `scripts/`)**:
+  - Created `api/tests/test_audit_fixes.py` covering Donchian warmup causal bounds, fee single-counting, ghost fill prevention/gap slippage, and MTF causal alignment. All 40 pytest tests pass (100%).
+  - Added `scripts/export_slices.py` and `scripts/export_for_agent.py` to package thematic review slices (Slice A: Quant, Slice B: Backend, Slice C: Frontend) in XML and Markdown formats, updating `.gitignore` to prevent tracking generated review bundles.
+
 ## [2026-10-30] v0.6.1 - Background Market Overview Pre-warmer, Concurrent Lean Queries & Multi-Asset InfoTooltip System
 - **Macro Radar & Quadrant Strip Comprehensive Tooltips (`web/components/InfoTooltip.tsx` & `web/app/page.tsx`)**:
   - `web/components/InfoTooltip.tsx`: Upgraded component with custom `width`, `className`, `iconClassName`, responsive viewport clamping, and `e.stopPropagation()` / `e.preventDefault()` event isolation so hovering/clicking tooltips inside clickable card buttons never inadvertently triggers card selection.

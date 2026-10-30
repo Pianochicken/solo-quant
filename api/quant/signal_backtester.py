@@ -107,13 +107,14 @@ class SignalBacktester:
             return self._empty_result()
 
         for candle in self.price_data:
+            open_price = candle.get('open')
             high = candle['high']
             low = candle['low']
             close = candle['close']
             time = candle['time']
 
             # --- Step 1 & 2: Update positions and check exits ---
-            self._process_exits(high, low, close, time)
+            self._process_exits(high, low, close, time, open_price=open_price)
 
             # --- Step 3: Check for new signals ---
             signal = self.signal_map.get(time)
@@ -133,7 +134,7 @@ class SignalBacktester:
 
     # ─── Internal: Exit Processing ──────────────────────────────────
 
-    def _process_exits(self, high: float, low: float, close: float, time: int) -> None:
+    def _process_exits(self, high: float, low: float, close: float, time: int, open_price: Optional[float] = None) -> None:
         """
         Check exits first using previous bar's trailing stop, then update tracking.
         Prevents look-ahead bias (no same-candle ratchet-and-trigger).
@@ -141,9 +142,9 @@ class SignalBacktester:
         still_open = []
         for pos in self.open_positions:
             # Check exit conditions
-            exit_reason = pos.check_exit(high, low, close)
+            exit_reason = pos.check_exit(high, low, close, open_price=open_price)
             if exit_reason:
-                exit_price = pos.get_exit_price_for_reason(exit_reason, high, low)
+                exit_price = pos.get_exit_price_for_reason(exit_reason, high, low, open_price=open_price)
                 self._close_position(pos, exit_price, time, exit_reason)
             else:
                 pos.update(high, low, close)
@@ -278,7 +279,6 @@ class SignalBacktester:
 
         # Deduct entry cost from balance
         entry_fee = cost * self.config.fee_rate
-        self.total_fees_paid += entry_fee  # entry fee tracked separately
         self.balance -= (cost + entry_fee)
 
         pos = Position(

@@ -44,3 +44,12 @@ __pycache__
 
 # Ignore downloaded CVD history data
 scripts/data/*.csv
+
+# AI Agent Review Bundles
+codebase_for_agent.md
+solo_quant_core.zip
+latest_commit.diff
+latest_changes.diff
+slice_*.xml
+slice_*.md
+

@@ -74,6 +74,9 @@ class Position:
                 new_trail = self.highest_since_entry * (1 - self.trailing_stop_pct / 100)
                 # Breakeven Floor: prevent exiting below entry price + 0.2%
                 new_trail = max(new_trail, self.entry_price * 1.002)
+                # Prevent trailing stop from being set above current bar's close if close has already dropped below it
+                if close < new_trail:
+                    new_trail = close
                 if new_trail > self.trailing_stop_price:
                     self.trailing_stop_price = new_trail
 
@@ -92,10 +95,13 @@ class Position:
                 new_trail = self.lowest_since_entry * (1 + self.trailing_stop_pct / 100)
                 # Breakeven Floor: prevent exiting above entry price - 0.2%
                 new_trail = min(new_trail, self.entry_price * 0.998)
+                # Prevent trailing stop from being set below current bar's close if close has already risen above it
+                if close > new_trail:
+                    new_trail = close
                 if self.trailing_stop_price == 0.0 or new_trail < self.trailing_stop_price:
                     self.trailing_stop_price = new_trail
 
-    def check_exit(self, high: float, low: float, close: float) -> Optional[str]:
+    def check_exit(self, high: float, low: float, close: float, open_price: Optional[float] = None) -> Optional[str]:
         """
         Check if any exit condition is hit during this candle.
         
@@ -110,25 +116,25 @@ class Position:
             return None
 
         if self.side == 'long':
-            # Stop Loss: price drops to or below SL level
-            if low <= self.stop_loss:
+            # Stop Loss: gap down on open or price drops to/below SL level
+            if (open_price is not None and open_price <= self.stop_loss) or low <= self.stop_loss:
                 return 'sl'
-            # Take Profit: price rises to or above TP level
-            if high >= self.take_profit:
+            # Take Profit: gap up on open or price rises to/above TP level
+            if (open_price is not None and open_price >= self.take_profit) or high >= self.take_profit:
                 return 'tp'
             # Trailing Stop: price drops to or below trailing level
-            if self.trailing_active and low <= self.trailing_stop_price:
+            if self.trailing_active and ((open_price is not None and open_price <= self.trailing_stop_price) or low <= self.trailing_stop_price):
                 return 'trailing'
 
         else:  # short
-            # Stop Loss: price rises to or above SL level
-            if high >= self.stop_loss:
+            # Stop Loss: gap up on open or price rises to/above SL level
+            if (open_price is not None and open_price >= self.stop_loss) or high >= self.stop_loss:
                 return 'sl'
-            # Take Profit: price drops to or below TP level
-            if low <= self.take_profit:
+            # Take Profit: gap down on open or price drops to/below TP level
+            if (open_price is not None and open_price <= self.take_profit) or low <= self.take_profit:
                 return 'tp'
             # Trailing Stop: price rises to or above trailing level
-            if self.trailing_active and high >= self.trailing_stop_price:
+            if self.trailing_active and ((open_price is not None and open_price >= self.trailing_stop_price) or high >= self.trailing_stop_price):
                 return 'trailing'
 
         return None
@@ -168,27 +174,41 @@ class Position:
         self.realized_pnl = raw_pnl - self.fees_paid
         return self.realized_pnl
 
-    def get_exit_price_for_reason(self, reason: str, high: float, low: float) -> float:
+    def get_exit_price_for_reason(self, reason: str, high: float, low: float, open_price: Optional[float] = None) -> float:
         """
         Determine the exact fill price for a given exit reason.
-        
-        In a real exchange, SL/TP are limit orders that fill at the order price.
-        In backtesting, we simulate this by filling at the trigger level.
+        Enforces realistic market execution constraints (gap slippage and high/low bounds).
         """
         if self.side == 'long':
             if reason == 'sl':
-                return self.stop_loss
-            elif reason == 'tp':
-                return self.take_profit
+                fill = min(self.stop_loss, high)
+                if open_price is not None and open_price < self.stop_loss:
+                    fill = open_price
+                return fill
             elif reason == 'trailing':
-                return self.trailing_stop_price
+                fill = min(self.trailing_stop_price, high)
+                if open_price is not None and open_price < self.trailing_stop_price:
+                    fill = open_price
+                return fill
+            elif reason == 'tp':
+                if open_price is not None and open_price > self.take_profit:
+                    return open_price
+                return self.take_profit
         else:  # short
             if reason == 'sl':
-                return self.stop_loss
-            elif reason == 'tp':
-                return self.take_profit
+                fill = max(self.stop_loss, low)
+                if open_price is not None and open_price > self.stop_loss:
+                    fill = open_price
+                return fill
             elif reason == 'trailing':
-                return self.trailing_stop_price
+                fill = max(self.trailing_stop_price, low)
+                if open_price is not None and open_price > self.trailing_stop_price:
+                    fill = open_price
+                return fill
+            elif reason == 'tp':
+                if open_price is not None and open_price < self.take_profit:
+                    return open_price
+                return self.take_profit
 
         # Fallback: close price (for signal_reverse, etc.)
         return (high + low) / 2
