@@ -22,6 +22,12 @@ export interface IndicatorData {
         direction: string;
         adx: number;
     } | null;
+    donchian_channel?: {
+        time: number;
+        upper: number;
+        lower: number;
+        middle: number;
+    }[];
 }
 
 export interface SignalConfig {
@@ -30,6 +36,8 @@ export interface SignalConfig {
     enableProtection: boolean;
     useDynamicProfiles: boolean;
     enableMtfFilter: boolean;  // Layer 3: 4h regime MTF confirmation
+    minScore?: number;
+    signalTypes?: string;      // e.g. "structure,reversion,breakout"
 }
 
 export interface MarketData {
@@ -87,6 +95,12 @@ export async function getMarketData(symbol: string, timeframe: string = '1h', li
         let url = `${API_BASE}/market/${safeSymbol}?timeframe=${timeframe}&limit=${limit}`;
         if (config) {
             url += `&ranging_threshold=${config.rangingThreshold}&trending_threshold=${config.trendingThreshold}&enable_protection=${config.enableProtection}&use_dynamic_profiles=${config.useDynamicProfiles}&enable_mtf_filter=${config.enableMtfFilter ?? false}`;
+            if (config.minScore !== undefined) {
+                url += `&min_score=${config.minScore}`;
+            }
+            if (config.signalTypes !== undefined) {
+                url += `&signal_types=${encodeURIComponent(config.signalTypes)}`;
+            }
         }
         const res = await fetch(url);
         if (!res.ok) throw new Error('Failed to fetch market data');
@@ -97,6 +111,39 @@ export async function getMarketData(symbol: string, timeframe: string = '1h', li
             shiftTimes(data, tzOffsetSec);
         }
         return data;
+    } catch (error) {
+        console.error(error);
+        throw error;
+    }
+}
+
+// --- Market Overview & Quadrant Radar API ---
+
+export interface MarketOverviewItem {
+    symbol: string;
+    symbol_slug: string;
+    price: number;
+    change_24h_pct: number;
+    rsi_4h: number;
+    rs_vs_btc: number;
+    oi_coin_change_24h_pct: number;
+    quadrant: 'strong_add' | 'weak_add' | 'strong_reduce' | 'weak_reduce' | 'neutral';
+    regime_4h: 'trending_up' | 'trending_down' | 'ranging';
+    latest_signal?: {
+        direction: string;
+        time: number;
+        text: string;
+        score: number;
+        archetype: string;
+        hours_ago: number;
+    } | null;
+}
+
+export async function getMarketOverview(): Promise<MarketOverviewItem[]> {
+    try {
+        const res = await fetch(`${API_BASE}/api/market_overview`);
+        if (!res.ok) throw new Error('Failed to fetch market overview');
+        return res.json();
     } catch (error) {
         console.error(error);
         throw error;
@@ -218,6 +265,8 @@ export interface SignalBacktestParams {
     enable_protection: boolean;
     use_dynamic_profiles: boolean;
     enable_mtf_filter: boolean;  // Layer 3: 4h regime MTF confirmation
+    min_score?: number;
+    signal_types?: string;
 }
 
 export interface SignalBacktestMetrics {

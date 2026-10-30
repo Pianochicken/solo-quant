@@ -4,7 +4,7 @@ Defines all tunable parameters and empirical risk profiles for the signal-based 
 """
 
 from dataclasses import dataclass
-from typing import Dict, Any
+from typing import Dict, Any, Optional, List
 
 
 OPTIMAL_RISK_PROFILES: Dict[str, Dict[str, Dict[str, float]]] = {
@@ -75,9 +75,13 @@ class SignalStrategyConfig:
     enable_protection: bool = True
     enable_mtf_filter: bool = True
     use_dynamic_profiles: bool = True
+    min_score: float = 0.0
+    allowed_types: Optional[List[str]] = None
 
     def validate(self) -> None:
         """Validate configuration values."""
+        if self.min_score < 0:
+            raise ValueError("min_score must be >= 0")
         if self.investment <= 0:
             raise ValueError("investment must be > 0")
         if self.risk_per_trade_pct <= 0 or self.risk_per_trade_pct > 100:

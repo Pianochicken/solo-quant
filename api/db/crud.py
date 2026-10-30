@@ -14,13 +14,24 @@ def upsert_market_data(db: Session, records: List[dict]):
     if not records:
         return
 
+    # Sort records by primary index elements to prevent PostgreSQL deadlocks during concurrent upserts
+    sorted_records = sorted(
+        records,
+        key=lambda r: (
+            str(r.get('exchange', '')),
+            str(r.get('symbol', '')),
+            str(r.get('timeframe', '')),
+            r.get('timestamp') or 0
+        )
+    )
+
     # Keep track of all keys present across all records
     record_keys = set()
-    for r in records:
+    for r in sorted_records:
         record_keys.update(r.keys())
 
     # Create the insert statement
-    stmt = insert(MarketDataPoint).values(records)
+    stmt = insert(MarketDataPoint).values(sorted_records)
 
     # Define the fields to update on conflict (only update if explicitly provided)
     update_dict = {

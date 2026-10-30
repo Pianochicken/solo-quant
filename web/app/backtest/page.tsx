@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { SignalBacktestParams, SignalBacktestResult, runSignalBacktest } from '@/lib/api';
-import { ArrowLeft, Play, Calculator, Activity, TrendingUp, TrendingDown, DollarSign, Target, Shield, Crosshair, BarChart3, Percent, ArrowDownUp, Zap } from 'lucide-react';
+import { ArrowLeft, Play, Calculator, Activity, TrendingUp, TrendingDown, DollarSign, Target, Shield, Crosshair, BarChart3, Percent, ArrowDownUp, Zap, Radio, Filter } from 'lucide-react';
 import { createChart, ColorType, AreaSeries, CandlestickSeries, createSeriesMarkers } from 'lightweight-charts';
 import { InfoTooltip } from '@/components/InfoTooltip';
 import Link from 'next/link';
@@ -80,6 +80,12 @@ export default function BacktestPage() {
     const [enableProtection, setEnableProtection] = useState(true);
     const [enableMtfFilter, setEnableMtfFilter] = useState(true);
     const [autoRiskProfile, setAutoRiskProfile] = useState(true);
+    const [minScore, setMinScore] = useState<number>(0);
+    const [allowedTypes, setAllowedTypes] = useState({
+        structure: true,
+        reversion: true,
+        breakout: true,
+    });
 
     const [loading, setLoading] = useState(false);
     const [signalResult, setSignalResult] = useState<SignalBacktestResult | null>(null);
@@ -224,6 +230,11 @@ export default function BacktestPage() {
                 enable_protection: enableProtection,
                 use_dynamic_profiles: useDynamicProfiles,
                 enable_mtf_filter: enableMtfFilter,
+                min_score: minScore,
+                signal_types: Object.entries(allowedTypes)
+                    .filter(([_, v]) => v)
+                    .map(([k]) => k)
+                    .join(','),
             };
             const res = await runSignalBacktest(params);
             setSignalResult(res);
@@ -375,6 +386,71 @@ export default function BacktestPage() {
                                     <span className="text-[10px] text-zinc-500 font-mono">Perps 0.05%</span>
                                 </label>
                                 <input type="number" step="0.01" value={feeRate} onChange={e => setFeeRate(e.target.value)} className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 outline-none font-mono" />
+                            </div>
+
+                            {/* === Signal Filters (Archetypes & Score) === */}
+                            <div className="border-t border-zinc-800/80 pt-3 space-y-3">
+                                <div className="flex justify-between items-center">
+                                    <p className="text-[10px] uppercase tracking-wider text-purple-400 font-bold flex items-center gap-1">
+                                        <Filter className="w-3 h-3" /> Signal Filters 訊號過濾
+                                    </p>
+                                    <span className="text-[10px] font-mono text-zinc-500">
+                                        {minScore > 0 ? `>= ${minScore}分` : '全部'}
+                                    </span>
+                                </div>
+
+                                {/* Min Confluence Score */}
+                                <div>
+                                    <label className="block text-xs text-zinc-500 mb-1 flex items-center justify-between">
+                                        <span>最低共振分數 (Min Score)</span>
+                                        <span className="text-[10px] font-mono text-zinc-400">
+                                            {minScore === 0 ? 'Default 依週期預設' : `>= ${minScore}`}
+                                        </span>
+                                    </label>
+                                    <select
+                                        value={minScore}
+                                        onChange={e => setMinScore(parseFloat(e.target.value))}
+                                        className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 outline-none font-mono"
+                                    >
+                                        <option value="0">Default (依週期預設)</option>
+                                        <option value="3.5">3.5 分以上</option>
+                                        <option value="4.0">4.0 分以上 (嚴格共振)</option>
+                                        <option value="4.5">4.5 分以上 (極高確定性)</option>
+                                        <option value="5.0">5.0 分以上 (頂級拐點)</option>
+                                    </select>
+                                </div>
+
+                                {/* Signal Archetypes Checkboxes */}
+                                <div className="space-y-1.5 pt-1">
+                                    <span className="block text-[11px] text-zinc-400 font-medium">允許交易之訊號原型：</span>
+                                    <label className="flex items-center gap-2 cursor-pointer text-xs text-zinc-300">
+                                        <input
+                                            type="checkbox"
+                                            checked={allowedTypes.structure}
+                                            onChange={e => setAllowedTypes({ ...allowedTypes, structure: e.target.checked })}
+                                            className="w-3.5 h-3.5 rounded border-zinc-700 bg-zinc-900 text-purple-600 focus:ring-purple-500"
+                                        />
+                                        <span>⚡ 結構拐點 (Structure: CAP/DIV)</span>
+                                    </label>
+                                    <label className="flex items-center gap-2 cursor-pointer text-xs text-zinc-300">
+                                        <input
+                                            type="checkbox"
+                                            checked={allowedTypes.reversion}
+                                            onChange={e => setAllowedTypes({ ...allowedTypes, reversion: e.target.checked })}
+                                            className="w-3.5 h-3.5 rounded border-zinc-700 bg-zinc-900 text-purple-600 focus:ring-purple-500"
+                                        />
+                                        <span>🔁 均線回踩與回歸 (Reversion / Pullback)</span>
+                                    </label>
+                                    <label className="flex items-center gap-2 cursor-pointer text-xs text-zinc-300">
+                                        <input
+                                            type="checkbox"
+                                            checked={allowedTypes.breakout}
+                                            onChange={e => setAllowedTypes({ ...allowedTypes, breakout: e.target.checked })}
+                                            className="w-3.5 h-3.5 rounded border-zinc-700 bg-zinc-900 text-purple-600 focus:ring-purple-500"
+                                        />
+                                        <span>🚀 順勢突破 (Breakout)</span>
+                                    </label>
+                                </div>
                             </div>
 
                             {/* === Risk & Position Management === */}

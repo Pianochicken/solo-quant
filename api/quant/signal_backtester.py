@@ -38,11 +38,34 @@ class SignalBacktester:
         """
         self.config = config
         self.price_data = price_data
-        self.signals = signals
+
+        # Filter signals if config specifies min_score or allowed_types
+        filtered_signals = []
+        allowed_set = {t.lower().strip() for t in config.allowed_types} if config.allowed_types is not None else None
+
+        for sig in signals:
+            score = float(sig.get('score', 0.0))
+            if config.min_score > 0.0 and score < config.min_score:
+                continue
+
+            archetype = sig.get('archetype')
+            if not archetype:
+                strat_type = sig.get('strategy_type', '')
+                text = sig.get('text', '')
+                is_breakout = (strat_type == 'breakout') or ('BREAKOUT' in text) or ('🚀' in text)
+                is_structure = (not is_breakout) and ('CAP' in text or 'DIV' in text)
+                archetype = 'breakout' if is_breakout else ('structure' if is_structure else 'reversion')
+
+            if allowed_set is not None and archetype not in allowed_set:
+                continue
+
+            filtered_signals.append(sig)
+
+        self.signals = filtered_signals
 
         # Build signal lookup: {time_ms: signal_dict}
         self.signal_map: Dict[int, Dict] = {}
-        for sig in signals:
+        for sig in self.signals:
             self.signal_map[sig['time']] = sig
 
         # Precompute 14-period ATR

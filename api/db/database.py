@@ -14,8 +14,15 @@ SQLALCHEMY_DATABASE_URL = os.getenv(
 if SQLALCHEMY_DATABASE_URL.startswith("postgresql://"):
     SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
 
-# Create SQLAlchemy engine
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
+# Create SQLAlchemy engine with robust connection pool settings for concurrent multi-threaded requests
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    pool_size=20,
+    max_overflow=30,
+    pool_timeout=60,
+    pool_recycle=1800,
+    pool_pre_ping=True
+)
 
 # Create SessionLocal class for creating database sessions
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

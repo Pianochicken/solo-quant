@@ -53,6 +53,10 @@ An event-driven notification pipeline embedded within the FastAPI container.
 The frontend (`web/`) is streamlined into a high-conviction decision cockpit for market intelligence:
 - **Main Terminal (`web/app/page.tsx`)**: Pure signal & macro dashboard. Legacy `GridPanel` and `HistoryPanel` removed, eliminating empty black voids.
 - **Recent Signals Radar**: Right-column card displaying the latest 10 signals from `lsur_markers` with UTC timestamps (`MM/DD HH:mm`), strategy type badges (`🚀 BREAKOUT`, `⚡ STRUCTURE`, `🟢 BUY / 🔴 SELL`), asset-precision trigger prices (`getPricePrecision`), and monospace indicator reason pills.
+- **Five-Coin Macro & Quadrant Strip (`web/app/page.tsx` & `/api/market_overview`)**: Top horizontal radar bar rendering 5 micro-cards (BTC, ETH, SOL, HYPE, CC) displaying 24h price change %, 4h RSI, relative strength vs BTC (`rs_vs_btc`), 24h coin-denominated open interest change % (`oi_coin_change_24h_pct`), 4-quadrant state badges (`🔥 強勢加倉` / `🩸 弱勢加倉` / `⚡ 強勢減倉` / `🧊 弱勢減倉` / `⚪ 中性盤整`), 4H regime, and latest signal. Clicking any card switches the active symbol. Equipped with rich, non-intrusive `InfoTooltip` explainers on every metric (24h Price Change, Quadrant triggers, RS vs BTC, 24h Coin OI %, 4H Regime, and Latest Signal with elapsed hours).
+- **Background Pre-warmer & Ultra-Low Latency Overview (`api/main.py`)**: APScheduler runs `_background_refresh_market_overview` every 30s in the background, keeping memory cache warm. User page reloads hit cache in **< 6ms** (reduced from 5–8 seconds). Cold cache misses execute concurrently using a 5-worker thread pool with lean data fetching (`include_orderbook=False`, `include_breakdown=False`, and `limit=50`).
+- **Structural Overlays (`AdvancedChart.tsx`)**: Main price chart legend bar includes one-click toggles for `Donchian 通道` (cyan dashed bands) and `VP POC 籌碼峰` (40-bin volume-weighted Point of Control horizontal amber line `#f59e0b`).
+- **Signal Archetype & Minimum Score Filters (`web/components/SignalSettingsModal.tsx` & `web/app/backtest/page.tsx`)**: Checkboxes for `Structure (CAP/DIV)`, `Reversion / Pullback`, `Breakout`, and dropdown for `Min Confluence Score` (Default, 3.5, 4.0, 4.5, 5.0) wired through both the live terminal and backtester.
 - **4H MTF Status Badge (`SentimentPanel.tsx`)**: Surfaces `mtf_4h_regime` in the `Market Regime` card header right side (`4H: Trending ↑` emerald, `4H: Trending ↓` red, `4H: Ranging` amber) to maintain macro direction awareness.
 - **Unified Terminal Loader**: Replaced fragmented multi-block loaders and artificial 600ms delays with a single full-workspace dark loading screen (radar pulse & asset/timeframe pill). On data arrival, all 3 panels (Chart, SentimentPanel, Recent Signals) hydrate atomically in the exact same render frame.
 - **Chart Polish (`AdvancedChart.tsx`)**: Removed TradingView attribution logo (`attributionLogo: false`) to prevent overlap with the 7th subchart (`Market Regime`), and expanded main price chart height to 460px (`h-[460px]`).
@@ -75,6 +79,11 @@ To prevent regressions, **ALL future AI Agents MUST adhere to these rules**:
    - *Gotcha*: If timestamps have already been shifted for local timezone display (e.g., in `runSignalBacktest()`), frontend formatters must specify `{ timeZone: 'UTC' }` to avoid double-offset (+16h).
 5. **API Contract Validation (Frontend ↔ Backend)**:
    - *Rule*: Always verify that TypeScript interfaces mirror the exact field names returned by FastAPI before deploying UI changes.
+6. **PostgreSQL Concurrent Upsert Deadlock Prevention**:
+   - *Gotcha*: Bulk `INSERT ... ON CONFLICT DO UPDATE` across concurrent asynchronous transactions causes PostgreSQL deadlocks on index tuples if rows are inserted in varying order.
+   - *Rule*: Always sort records by primary index elements `(exchange, symbol, timeframe, timestamp)` before executing `stmt.on_conflict_do_update()`.
+7. **Database Connection Pool Sizing**:
+   - *Rule*: With parallel thread pools inside `get_market_data()` (10 worker threads) and background scanners, maintain `pool_size >= 20` and `max_overflow >= 30` (up to 50 concurrent DB connections) with `pool_pre_ping=True` in `api/db/database.py` to prevent `QueuePool limit reached` timeouts.
 
 ---
 

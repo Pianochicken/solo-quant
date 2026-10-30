@@ -759,6 +759,8 @@ class IndicatorEngine:
         use_dynamic_profiles: bool = True,
         higher_tf_regime_history: List[Dict] = None,  # Layer 3: e.g. 4h regime history for MTF confirmation
         btc_macro_regime: Optional[Dict] = None,      # Layer 4: BTC macro regime filter for altcoins
+        min_score: float = 0.0,
+        allowed_types: Optional[List[str]] = None,
     ) -> List[Dict]:
         """
         Multi-Indicator Confluence Signal System v8: Macro & Inflection Precision Upgrade.
@@ -1600,7 +1602,36 @@ class IndicatorEngine:
                         })
                         last_bear_idx = i
         
-        return markers, latest_regime
+        # Tag archetypes and apply min_score & allowed_types filters
+        filtered_markers = []
+        allowed_set = {t.lower().strip() for t in allowed_types} if allowed_types is not None else None
+
+        for m in markers:
+            strat_type = m.get('strategy_type', '')
+            text = m.get('text', '')
+            score = float(m.get('score', 0.0))
+
+            is_breakout = (strat_type == 'breakout') or ('BREAKOUT' in text) or ('🚀' in text)
+            is_structure = (not is_breakout) and ('CAP' in text or 'DIV' in text)
+            
+            if is_breakout:
+                archetype = 'breakout'
+            elif is_structure:
+                archetype = 'structure'
+            else:
+                archetype = 'reversion'
+            
+            m['archetype'] = archetype
+
+            if min_score > 0.0 and score < min_score:
+                continue
+
+            if allowed_set is not None and archetype not in allowed_set:
+                continue
+
+            filtered_markers.append(m)
+
+        return filtered_markers, latest_regime
 
     @staticmethod
     def calculate_composite_score(

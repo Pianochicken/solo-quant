@@ -1,6 +1,6 @@
 
 import React, { useEffect, useRef } from 'react';
-import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickSeries, HistogramSeries, LineSeries, Time, CrosshairMode, createSeriesMarkers } from 'lightweight-charts';
+import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickSeries, HistogramSeries, LineSeries, Time, CrosshairMode, createSeriesMarkers, LineStyle } from 'lightweight-charts';
 import { InfoTooltip } from './InfoTooltip';
 import { getThresholds } from '@/lib/thresholds';
 import { getPricePrecision } from '@/lib/utils';
@@ -26,6 +26,7 @@ interface AdvancedChartProps {
         composite_score?: { time: number; value: number }[];
         funding_history?: { time: number; value: number }[];
         market_regime_history?: { time: number; regime: string; direction: string }[];
+        donchian_channel?: { time: number; upper: number; lower: number; middle?: number }[];
     } | null;
     gridLines?: number[];
 }
@@ -59,11 +60,16 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
     const pulseSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
     const regimeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
 
-    // Overlay Refs
+    // Overlay Refs & Toggles
+    const [showDonchian, setShowDonchian] = React.useState(false);
+    const [showPoc, setShowPoc] = React.useState(false);
     const gridLinesRef = useRef<any[]>([]);
     const markersPluginRef = useRef<any>(null);
     const emaFastSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
     const emaSlowSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+    const donchianUpperSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+    const donchianLowerSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+    const pocLineRef = useRef<any>(null);
 
     // Legend State
     const [rsiLegendValue, setRsiLegendValue] = React.useState<number | null>(null);
@@ -126,6 +132,24 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
         emaSlowSeriesRef.current = chart.addSeries(LineSeries, {
             color: '#a855f7',  // Purple for EMA200
             lineWidth: 1,
+            crosshairMarkerVisible: false,
+            priceLineVisible: false,
+            lastValueVisible: false,
+        });
+
+        // Donchian Bands on Price Chart
+        donchianUpperSeriesRef.current = chart.addSeries(LineSeries, {
+            color: '#06b6d4', // Cyan
+            lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+            crosshairMarkerVisible: false,
+            priceLineVisible: false,
+            lastValueVisible: false,
+        });
+        donchianLowerSeriesRef.current = chart.addSeries(LineSeries, {
+            color: '#06b6d4', // Cyan
+            lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
             crosshairMarkerVisible: false,
             priceLineVisible: false,
             lastValueVisible: false,
@@ -324,6 +348,84 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
             emaSlowSeriesRef.current.setData(
                 indicators.ema_slow.map(item => ({ time: item.time as Time, value: item.value }))
             );
+        }
+
+        // Update Donchian Channel Lines
+        if (showDonchian) {
+            let donchianList = (indicators as any)?.donchian_channel;
+            if (!donchianList || donchianList.length === 0) {
+                const period = (timeframe === '15m' || timeframe === '1h') ? 48 : 20;
+                donchianList = [];
+                const pLen = data.price.length;
+                for (let i = 0; i < pLen; i++) {
+                    if (i < 1) continue;
+                    const start = Math.max(0, i - period);
+                    let maxH = -Infinity;
+                    let minL = Infinity;
+                    for (let j = start; j < i; j++) {
+                        if (data.price[j].high > maxH) maxH = data.price[j].high;
+                        if (data.price[j].low < minL) minL = data.price[j].low;
+                    }
+                    if (maxH !== -Infinity && minL !== Infinity) {
+                        donchianList.push({ time: data.price[i].time, upper: maxH, lower: minL });
+                    }
+                }
+            }
+            if (donchianUpperSeriesRef.current && donchianLowerSeriesRef.current) {
+                donchianUpperSeriesRef.current.setData(
+                    donchianList.map((d: any) => ({ time: d.time as Time, value: d.upper }))
+                );
+                donchianLowerSeriesRef.current.setData(
+                    donchianList.map((d: any) => ({ time: d.time as Time, value: d.lower }))
+                );
+            }
+        } else {
+            if (donchianUpperSeriesRef.current) donchianUpperSeriesRef.current.setData([]);
+            if (donchianLowerSeriesRef.current) donchianLowerSeriesRef.current.setData([]);
+        }
+
+        // Update VP POC Line
+        if (mainSeriesRef.current) {
+            if (pocLineRef.current) {
+                mainSeriesRef.current.removePriceLine(pocLineRef.current);
+                pocLineRef.current = null;
+            }
+            if (showPoc && data.price && data.price.length > 0) {
+                let minPrice = Infinity;
+                let maxPrice = -Infinity;
+                for (const p of data.price) {
+                    if (p.low < minPrice) minPrice = p.low;
+                    if (p.high > maxPrice) maxPrice = p.high;
+                }
+                if (minPrice < maxPrice) {
+                    const binCount = 40;
+                    const binSize = (maxPrice - minPrice) / binCount;
+                    const bins = new Float64Array(binCount);
+                    for (const p of data.price) {
+                        const mid = (p.high + p.low) / 2;
+                        const vol = p.volume || 1;
+                        const binIdx = Math.min(binCount - 1, Math.max(0, Math.floor((mid - minPrice) / binSize)));
+                        bins[binIdx] += vol;
+                    }
+                    let maxVol = -1;
+                    let pocBin = 0;
+                    for (let b = 0; b < binCount; b++) {
+                        if (bins[b] > maxVol) {
+                            maxVol = bins[b];
+                            pocBin = b;
+                        }
+                    }
+                    const pocPrice = minPrice + (pocBin + 0.5) * binSize;
+                    pocLineRef.current = mainSeriesRef.current.createPriceLine({
+                        price: pocPrice,
+                        color: '#f59e0b',
+                        lineWidth: 2,
+                        lineStyle: LineStyle.Dashed,
+                        axisLabelVisible: true,
+                        title: 'POC 籌碼峰',
+                    });
+                }
+            }
         }
 
         // Helper to perfectly align indicator timelines with the main price chart
@@ -545,7 +647,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
             unsubscribeHandlers.forEach(unsub => unsub());
         };
 
-    }, [data, indicators, gridLines]);
+    }, [data, indicators, gridLines, showDonchian, showPoc, timeframe]);
 
     return (
         <div className="w-full flex flex-col gap-1 bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden shadow-lg p-1">
@@ -572,6 +674,32 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
                     <span className="flex items-center">Price<InfoTooltip text="K線圖：顯示價格走勢。綠色為上漲，紅色為下跌。箭頭標記為多指標匯合信號。橙色線 = EMA50，紫色線 = EMA200" /></span>
                     <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-orange-500 inline-block"></span><span className="text-[10px]">EMA50</span></span>
                     <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-purple-500 inline-block"></span><span className="text-[10px]">EMA200</span></span>
+
+                    {/* Donchian & Volume Profile POC Overlays */}
+                    <button
+                        type="button"
+                        onClick={() => setShowDonchian(prev => !prev)}
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-medium transition-colors border ${
+                            showDonchian
+                                ? 'bg-cyan-950/80 text-cyan-300 border-cyan-500/50 shadow-sm'
+                                : 'bg-zinc-800/80 text-zinc-400 border-zinc-700 hover:text-zinc-200'
+                        }`}
+                        title="開關唐奇安通道上下軌 (Donchian Channels)"
+                    >
+                        {showDonchian ? '✓ Donchian 通道' : 'Donchian 通道'}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => setShowPoc(prev => !prev)}
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-medium transition-colors border ${
+                            showPoc
+                                ? 'bg-amber-950/80 text-amber-300 border-amber-500/50 shadow-sm'
+                                : 'bg-zinc-800/80 text-zinc-400 border-zinc-700 hover:text-zinc-200'
+                        }`}
+                        title="開關最大籌碼密集峰水平線 (Volume Profile POC)"
+                    >
+                        {showPoc ? '✓ VP POC 籌碼峰' : 'VP POC 籌碼峰'}
+                    </button>
                 </div>
                 <div ref={chartContainerRef} className="w-full h-full" />
                 <div className="absolute top-2 right-2 z-10 flex gap-2">

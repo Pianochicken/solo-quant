@@ -25,13 +25,13 @@ logging.basicConfig(
 # Create tables if they don't exist yet
 Base.metadata.create_all(bind=engine)
 
-# --- APScheduler: Signal Notification Scheduler ---
+# --- APScheduler: Signal Notification Scheduler & Market Overview Pre-warmer ---
 scheduler = AsyncIOScheduler()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """FastAPI lifespan: start/stop the APScheduler for periodic signal scanning."""
+    """FastAPI lifespan: start/stop the APScheduler for periodic signal scanning and market overview pre-warming."""
     from api.core.signal_scanner import scan_and_notify
 
     scheduler.add_job(
@@ -41,8 +41,20 @@ async def lifespan(app: FastAPI):
         name="Periodic Signal Scanner",
         replace_existing=True,
     )
+    scheduler.add_job(
+        _background_refresh_market_overview,
+        trigger="interval",
+        seconds=30,
+        id="market_overview_refresher",
+        name="Market Overview Pre-warmer",
+        replace_existing=True,
+    )
     scheduler.start()
-    logger.info("APScheduler started — signal scanner runs at :00, :15, :30, :45 every hour.")
+    logger.info("APScheduler started — signal scanner & market overview pre-warmer active.")
+
+    # Pre-warm market overview immediately in background on startup
+    asyncio.create_task(_background_refresh_market_overview())
+
     yield
     scheduler.shutdown()
     logger.info("APScheduler shut down.")
@@ -66,6 +78,10 @@ app.add_middleware(
 # Global DataFetcher instance to maintain the in-memory cache
 _fetcher_instance = None
 _btc_macro_cache: Optional[Dict] = None
+_market_overview_cache: Dict[str, Any] = {
+    "timestamp": 0.0,
+    "data": []
+}
 
 def get_fetcher() -> DataFetcher:
     global _fetcher_instance
@@ -82,9 +98,10 @@ def clear_cache():
     """
     Clears the in-memory cache and re-initializes DataFetcher.
     """
-    global _fetcher_instance, _btc_macro_cache
+    global _fetcher_instance, _btc_macro_cache, _market_overview_cache
     _fetcher_instance = DataFetcher()
     _btc_macro_cache = None
+    _market_overview_cache = {"timestamp": 0.0, "data": []}
     return {"status": "success", "message": "Fetcher re-initialized and cache cleared successfully"}
 
 # --- Notification Config Endpoints ---
@@ -147,6 +164,10 @@ def get_market_data(
     use_dynamic_profiles: bool = True,
     enable_mtf_filter: bool = False,  # Layer 3: enable 4h regime MTF confirmation
     btc_macro_regime: Optional[Dict] = None,  # Layer 4: BTC macro regime filter for altcoins
+    min_score: float = 0.0,
+    signal_types: Optional[str] = "structure,reversion,breakout",
+    include_orderbook: bool = True,
+    include_breakdown: bool = True,
 ):
     """
     Get generic market data (Price + Funding + Sentiment).
@@ -179,20 +200,21 @@ def get_market_data(
         
         # 1. Fetch Basic Data and Indicator Data Concurrently
         import concurrent.futures
-        daily_limit = max(limit, 1200)
+        fetch_limit = limit if limit <= 100 else max(limit, 1000)
+        daily_limit = limit if limit <= 100 else max(limit, 1200)
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
             future_data = pool.submit(fetcher.fetch_market_data, formatted_symbol, timeframe, limit)
-            future_ob = pool.submit(fetcher.fetch_order_book_depth, formatted_symbol, limit=400)
+            future_ob = pool.submit(fetcher.fetch_order_book_depth, formatted_symbol, limit=400) if include_orderbook else None
             
-            future_ls = pool.submit(fetcher.fetch_long_short_ratio, formatted_symbol, period=indicator_period, limit=max(limit, 1000))
+            future_ls = pool.submit(fetcher.fetch_long_short_ratio, formatted_symbol, period=indicator_period, limit=fetch_limit)
             future_ls_daily = pool.submit(fetcher.fetch_long_short_ratio, formatted_symbol, period='1D', limit=daily_limit)
             
-            future_taker = pool.submit(fetcher.fetch_taker_volume, formatted_symbol, period=indicator_period, limit=max(limit, 1000))
+            future_taker = pool.submit(fetcher.fetch_taker_volume, formatted_symbol, period=indicator_period, limit=fetch_limit)
             future_taker_daily = pool.submit(fetcher.fetch_taker_volume, formatted_symbol, period='1D', limit=daily_limit)
             
-            future_oi_raw = pool.submit(fetcher.fetch_open_interest, formatted_symbol, timeframe=indicator_period, limit=max(limit, 1000))
+            future_oi_raw = pool.submit(fetcher.fetch_open_interest, formatted_symbol, timeframe=indicator_period, limit=fetch_limit)
             future_oi_daily = pool.submit(fetcher.fetch_open_interest, formatted_symbol, timeframe='1D', limit=daily_limit)
-            future_breakdown = pool.submit(fetcher.get_exchange_breakdown, formatted_symbol)
+            future_breakdown = pool.submit(fetcher.get_exchange_breakdown, formatted_symbol) if include_breakdown else None
             
             # Layer 3 MTF: fetch 4h data concurrently only when needed
             htf_needs_fetch = enable_mtf_filter and timeframe not in ('4h', '1d')
@@ -202,8 +224,8 @@ def get_market_data(
             future_htf_taker = pool.submit(fetcher.fetch_taker_volume, formatted_symbol, period='1H', limit=htf_taker_limit) if htf_needs_fetch else None
             
             data = future_data.result()
-            orderbook = future_ob.result()
-            exchange_breakdown = future_breakdown.result()
+            orderbook = future_ob.result() if future_ob else {"bids": [], "asks": [], "timestamp": int(time.time() * 1000)}
+            exchange_breakdown = future_breakdown.result() if future_breakdown else {"binance": 50.0, "okx": 50.0}
             
             ls_ratio_history_raw = future_ls.result()
             ls_ratio_daily = future_ls_daily.result()
@@ -411,6 +433,7 @@ def get_market_data(
 
         # 6. Multi-Indicator Confluence Signals v8
         # Timeframe-adaptive thresholds, trend filter, per-bar rolling OI percentile, BTC macro regime
+        parsed_allowed_types = [t.strip().lower() for t in signal_types.split(',')] if signal_types else None
         confluence_markers, market_regime = IndicatorEngine.calculate_confluence_signals(
             price_data=data['price'],
             lsur_z_aligned=lsur_z_aligned,
@@ -433,6 +456,8 @@ def get_market_data(
             use_dynamic_profiles=use_dynamic_profiles,
             higher_tf_regime_history=htf_regime_history,  # Layer 3 MTF (None if disabled)
             btc_macro_regime=effective_btc_macro,         # Layer 4 BTC macro regime
+            min_score=min_score,
+            allowed_types=parsed_allowed_types,
         )
         
         # 7 & 8. Composite Score (Market Pulse) v5 & History
@@ -490,12 +515,173 @@ def get_market_data(
                 "composite_score_history": composite_score_history,
                 "exchange_breakdown": exchange_breakdown,
                 "mtf_4h_regime": htf_regime_history[-1] if htf_regime_history else None,  # Layer 3 MTF
+                "donchian_channel": donchian,
             }
         }
     except Exception as e:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+# --- Five-Coin Macro Overview & Quadrant Strip Cache & API ---
+OVERVIEW_SYMBOLS = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT', 'HYPE-USDT', 'CC-USDT']
+
+def _fetch_single_asset_overview(sym: str) -> Dict:
+    res_4h = get_market_data(sym, '4h', limit=50, enable_protection=True, include_orderbook=False, include_breakdown=False)
+    res_1h = get_market_data(sym, '1h', limit=50, enable_protection=True, enable_mtf_filter=False, include_orderbook=False, include_breakdown=False)
+    return {
+        "symbol_key": sym,
+        "res_4h": res_4h,
+        "res_1h": res_1h
+    }
+
+def _compute_and_cache_market_overview() -> List[Dict]:
+    global _market_overview_cache
+    now = time.time()
+    try:
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+            results_raw = list(pool.map(_fetch_single_asset_overview, OVERVIEW_SYMBOLS))
+
+        results_by_sym = {r["symbol_key"]: r for r in results_raw}
+        
+        # Determine BTC 4h RSI base
+        btc_res_4h = results_by_sym.get('BTC-USDT', {}).get('res_4h', {})
+        btc_rsi_list = btc_res_4h.get('indicators', {}).get('rsi_history', [])
+        btc_rsi_4h = float(btc_rsi_list[-1]['value']) if btc_rsi_list else 50.0
+
+        overview_list = []
+        for sym in OVERVIEW_SYMBOLS:
+            asset_data = results_by_sym.get(sym)
+            if not asset_data:
+                continue
+            res_4h = asset_data["res_4h"]
+            res_1h = asset_data["res_1h"]
+
+            price_list = res_4h.get('data', {}).get('price', [])
+            price_now = price_list[-1]['close'] if price_list else 0.0
+
+            # 24h Price Change % (6 bars in 4h)
+            if len(price_list) >= 7:
+                p_24h = price_list[-7]['close']
+                change_24h_pct = round(((price_now - p_24h) / p_24h) * 100, 2)
+            elif len(price_list) > 1:
+                p_first = price_list[0]['close']
+                change_24h_pct = round(((price_now - p_first) / p_first) * 100, 2)
+            else:
+                change_24h_pct = 0.0
+
+            # 4h RSI & Relative Strength vs BTC
+            rsi_list = res_4h.get('indicators', {}).get('rsi_history', [])
+            rsi_4h = round(float(rsi_list[-1]['value']), 1) if rsi_list else 50.0
+            rs_vs_btc = 0.0 if sym == 'BTC-USDT' else round(rsi_4h - btc_rsi_4h, 1)
+
+            # 24h Coin-denominated OI change %
+            oi_list = res_4h.get('indicators', {}).get('open_interest', [])
+            if len(oi_list) >= 7 and len(price_list) >= 7 and price_now > 0:
+                p_24h = price_list[-7]['close']
+                oi_coin_now = oi_list[-1]['value'] / price_now
+                oi_coin_24h = oi_list[-7]['value'] / p_24h if p_24h > 0 else 0.0
+                oi_coin_change_24h_pct = round(((oi_coin_now - oi_coin_24h) / oi_coin_24h) * 100, 2) if oi_coin_24h > 0 else 0.0
+            elif len(oi_list) > 1 and len(price_list) > 1 and price_now > 0:
+                p_first = price_list[0]['close']
+                oi_coin_now = oi_list[-1]['value'] / price_now
+                oi_coin_24h = oi_list[0]['value'] / p_first if p_first > 0 else 0.0
+                oi_coin_change_24h_pct = round(((oi_coin_now - oi_coin_24h) / oi_coin_24h) * 100, 2) if oi_coin_24h > 0 else 0.0
+            else:
+                oi_coin_change_24h_pct = 0.0
+
+            # Quadrant logic (±3.0% threshold)
+            if abs(oi_coin_change_24h_pct) < 3.0:
+                quadrant = 'neutral'
+            elif rs_vs_btc >= 0 and oi_coin_change_24h_pct >= 3.0:
+                quadrant = 'strong_add'
+            elif rs_vs_btc < 0 and oi_coin_change_24h_pct >= 3.0:
+                quadrant = 'weak_add'
+            elif rs_vs_btc >= 0 and oi_coin_change_24h_pct <= -3.0:
+                quadrant = 'strong_reduce'
+            else:
+                quadrant = 'weak_reduce'
+
+            # 4h Market Regime
+            regime_dict = res_4h.get('indicators', {}).get('market_regime', {})
+            regime_state = regime_dict.get('regime', 'ranging')
+            direction = regime_dict.get('direction', 'neutral')
+            if regime_state == 'trending' and direction == 'up':
+                regime_4h = 'trending_up'
+            elif regime_state == 'trending' and direction == 'down':
+                regime_4h = 'trending_down'
+            else:
+                regime_4h = 'ranging'
+
+            # Latest Signal (combined 1h & 4h markers)
+            all_markers = (res_1h.get('indicators', {}).get('lsur_markers', []) or []) + (res_4h.get('indicators', {}).get('lsur_markers', []) or [])
+            latest_signal = None
+            if all_markers:
+                all_markers.sort(key=lambda m: m.get('time', 0))
+                latest_m = all_markers[-1]
+                m_time = latest_m.get('time', 0)
+                m_time_sec = m_time / 1000 if m_time > 1e11 else m_time
+                hours_ago = max(0.0, round((now - m_time_sec) / 3600, 1))
+                latest_signal = {
+                    "direction": latest_m.get('direction', 'neutral'),
+                    "time": m_time,
+                    "text": latest_m.get('text', ''),
+                    "score": latest_m.get('score', 0),
+                    "archetype": latest_m.get('archetype', 'reversion'),
+                    "hours_ago": hours_ago,
+                }
+
+            overview_list.append({
+                "symbol": sym.replace('-', '/'),
+                "symbol_slug": sym,
+                "price": price_now,
+                "change_24h_pct": change_24h_pct,
+                "rsi_4h": rsi_4h,
+                "rs_vs_btc": rs_vs_btc,
+                "oi_coin_change_24h_pct": oi_coin_change_24h_pct,
+                "quadrant": quadrant,
+                "regime_4h": regime_4h,
+                "latest_signal": latest_signal
+            })
+
+        _market_overview_cache = {
+            "timestamp": now,
+            "data": overview_list
+        }
+        return overview_list
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        if _market_overview_cache.get("data"):
+            return _market_overview_cache["data"]
+        raise HTTPException(status_code=500, detail=f"Market overview failed: {str(e)}")
+
+async def _background_refresh_market_overview():
+    """Background pre-warming task run by APScheduler every 30s."""
+    try:
+        await asyncio.to_thread(_compute_and_cache_market_overview)
+    except Exception as e:
+        logger.warning(f"Background market overview pre-warm failed: {e}")
+
+@app.get("/api/market_overview")
+@app.get("/market_overview")
+def get_market_overview():
+    """
+    Lightweight batch summary endpoint for BTC, ETH, SOL, HYPE, CC:
+    - Relative BTC strength (4h RSI difference)
+    - 24h Coin-denominated OI change %
+    - Quadrant: strong_add / weak_add / strong_reduce / weak_reduce / neutral
+    - 4h Market Regime
+    - Latest signal across 1h/4h
+    Pre-warmed in background every 30 seconds. Cached for up to 90 seconds.
+    """
+    global _market_overview_cache
+    now = time.time()
+    if _market_overview_cache.get("data") and (now - _market_overview_cache["timestamp"] < 90.0):
+        return _market_overview_cache["data"]
+
+    return _compute_and_cache_market_overview()
 
 # --- Quant / Grid Trading Endpoints ---
 from pydantic import BaseModel
@@ -831,6 +1017,8 @@ class SignalBacktestParams(BaseModel):
     enable_protection: bool = True
     use_dynamic_profiles: bool = True
     enable_mtf_filter: bool = True  # Layer 3: 4h regime MTF confirmation
+    min_score: float = 0.0
+    signal_types: str = "structure,reversion,breakout"
 
 @app.post("/quant/signal-backtest")
 def run_signal_backtest(params: SignalBacktestParams):
@@ -864,6 +1052,8 @@ def run_signal_backtest(params: SignalBacktestParams):
             enable_protection=params.enable_protection,
             use_dynamic_profiles=params.use_dynamic_profiles,
             enable_mtf_filter=params.enable_mtf_filter,  # Layer 3 MTF
+            min_score=params.min_score,
+            signal_types=params.signal_types,
         )
 
         history = market_res["data"]["price"]
@@ -893,6 +1083,8 @@ def run_signal_backtest(params: SignalBacktestParams):
             enable_protection=params.enable_protection,
             enable_mtf_filter=params.enable_mtf_filter,
             use_dynamic_profiles=params.use_dynamic_profiles,
+            min_score=params.min_score,
+            allowed_types=[s.strip().lower() for s in params.signal_types.split(",") if s.strip()] if params.signal_types else None,
         )
         config.validate()
 

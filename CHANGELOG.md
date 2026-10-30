@@ -3,6 +3,53 @@
 All notable changes to the Solo-Quant project will be documented in this file.
 This file serves as a historical record to keep `AI_HANDOFF.md` clean and focused on current state and next steps.
 
+## [2026-10-30] v0.6.1 - Background Market Overview Pre-warmer, Concurrent Lean Queries & Multi-Asset InfoTooltip System
+- **Macro Radar & Quadrant Strip Comprehensive Tooltips (`web/components/InfoTooltip.tsx` & `web/app/page.tsx`)**:
+  - `web/components/InfoTooltip.tsx`: Upgraded component with custom `width`, `className`, `iconClassName`, responsive viewport clamping, and `e.stopPropagation()` / `e.preventDefault()` event isolation so hovering/clicking tooltips inside clickable card buttons never inadvertently triggers card selection.
+  - `web/app/page.tsx`: Embedded rich interactive tooltips explaining:
+    - **Header**: Overview of the 5-asset macro radar, RS vs BTC, 24h Coin OI, Quadrants, and Regime.
+    - **24h Price Change %**: 24h calculation benchmarked against the 6th preceding 4h candle.
+    - **Quadrant Badges**: Exact mathematical trigger conditions and institutional market interpretations for each state:
+      - 🔥 強勢加倉 (Strong Add): RS > 0 & 24h Coin OI > +3% (leading momentum backed by expanding contracts)
+      - 🩸 弱勢加倉 (Weak Add): RS < 0 & 24h Coin OI > +3% (lagging price with contract buildup, bottom-fishing or trap)
+      - ⚡ 強勢減倉 (Strong Reduce): RS > 0 & 24h Coin OI < -3% (price outperforming but contracts unwinding, take-profit)
+      - 🧊 弱勢減倉 (Weak Reduce): RS < 0 & 24h Coin OI < -3% (lagging price with deleveraging/liquidations)
+      - ⚪ 中性盤整 (Neutral): 24h Coin OI change within ±3%
+    - **RS vs BTC**: Relative Strength ($RSI_{4h}(\text{Asset}) - RSI_{4h}(\text{BTC})$), explaining positive vs negative values.
+    - **24h Coin OI %**: Coin-denominated OI ($\frac{\text{USD OI}}{\text{Price}}$), isolating contract volume from price bias.
+    - **4H Regime**: 4h macro trend classification ($↗$ Uptrend, $↘$ Downtrend, $⇄$ Ranging) and its role in MTF counter-trend filtering.
+    - **Latest Signal**: Archetype tagging (`Breakout`, `Structure`, `Reversion`), direction ($↑$/$↓$), and elapsed hours (`xx.x h`).
+- **Endpoint Latency & Architecture Optimization (`api/main.py`)**:
+  - **Background Pre-warmer**: Added `_background_refresh_market_overview` scheduled via APScheduler every 30s. Automatically warms cache at startup so user visits and page reloads hit warm memory in **~5ms** (down from 5–8 seconds).
+  - **Lean Overview Fetching**: Added `include_orderbook=False` and `include_breakdown=False` to `get_market_data()`. Skipped 10 redundant orderbook snapshot network calls (400 levels) and exchange breakdown CCXT calls.
+  - **Adaptive Query Depth**: When `limit <= 100`, sets `fetch_limit=limit` and `daily_limit=limit`, eliminating massive 1200-candle DB scans and pandas merges on shallow overview requests.
+  - **Parallel Asset Computation**: Upgraded `_compute_and_cache_market_overview()` to fetch the 5 assets concurrently using `concurrent.futures.ThreadPoolExecutor(max_workers=5)`. Cold cache miss latency reduced from ~7,000ms to < 400ms.
+- **Verification & Testing**:
+  - All 36 unit/integration tests in `api/tests/test_signal_strategy.py` pass cleanly (100%).
+  - Next.js production build (`npm run build`) succeeded with zero TypeScript errors.
+  - Live `/api/market_overview` response time verified at **0.0058s (5.8ms)**.
+
+## [2026-10-30] v0.6.0 - Signal Archetype Filters, Multi-Asset Quadrant Radar Strip & Structural Overlays
+- **Signal Archetype & Minimum Score Filtering (`indicators.py`, `signal_strategy.py`, `signal_backtester.py`, `main.py`, `web/`)**:
+  - `api/core/indicators.py`: Added `min_score: float = 0.0` and `allowed_types: Optional[List[str]] = None` to `calculate_confluence_signals()`. Emitted markers are tagged with their archetype (`'breakout'`, `'structure'`, `'reversion'`) and filtered accordingly.
+  - `api/quant/signal_strategy.py` & `api/quant/signal_backtester.py`: Added `min_score` and `allowed_types` to `SignalStrategyConfig` and filtered `signals` in `SignalBacktester.__init__()`.
+  - `api/main.py`: Updated `get_market_data()` and `/quant/signal-backtest` to accept `min_score` and `signal_types` (comma-separated string).
+  - `web/components/SignalSettingsModal.tsx` & `web/app/backtest/page.tsx`: Added 3 archetype checkboxes (`⚡ 結構拐點 (Structure: CAP/DIV)`, `🔁 均線回踩與回歸 (Reversion / Pullback)`, `🚀 順勢突破 (Breakout)`) and a `Min Confluence Score` selector (`Default`, `3.5`, `4.0`, `4.5`, `5.0`).
+- **Five-Coin Macro Strength & Quadrant Radar (`GET /api/market_overview`, `web/app/page.tsx`)**:
+  - `api/main.py`: Implemented `/api/market_overview` (and `/market_overview`) with 60-second in-memory caching. Computes latest close price, 24h price change %, 4h RSI(14), relative strength vs BTC (`rs_vs_btc = round(rsi_4h - btc_rsi_4h, 1)`), 24h coin-denominated open interest change % (`oi_usd / close`), 4-quadrant state (`strong_add`, `weak_add`, `strong_reduce`, `weak_reduce`, `neutral`), 4h market regime, and latest triggered signal across 1h/4h.
+  - `web/app/page.tsx`: Added top "Multi-Asset Macro & Quadrant Strip" rendering 5 responsive micro-cards (BTC, ETH, SOL, HYPE, CC) displaying Line 1 (Symbol + Price + 24h change %), Line 2 (Quadrant Badge + RS vs BTC + 24h Coin OI %), and Line 3 (4H Regime + latest signal with hours ago). Clicking any card switches the active symbol. Auto-refreshes every 60 seconds.
+- **Main Chart Structural Visualizations: Donchian & Volume Profile POC (`web/components/AdvancedChart.tsx`)**:
+  - Added clickable toggle buttons `[Donchian 通道]` and `[VP POC 籌碼峰]` in the main price chart legend bar.
+  - `Donchian 通道`: Renders dashed cyan upper and lower channel boundaries based on `indicators.donchian_channel` (or client-side rolling 48/20 bar calculation).
+  - `VP POC 籌碼峰`: Bins loaded candle price range into 40 bins, sums trading volume per bin, and draws a horizontal dashed amber line (`#f59e0b`, `POC 籌碼峰`) at the maximum volume price level.
+- **Database Upsert Concurrency Hardening (`api/db/crud.py`)**:
+  - Added deterministic primary index sorting `(exchange, symbol, timeframe, timestamp)` to `upsert_market_data()` before executing PostgreSQL `INSERT ... ON CONFLICT DO UPDATE`, completely preventing transaction deadlocks during concurrent multi-asset fetches.
+- **Database & Network Connection Pool Upgrades (`api/db/database.py` & `api/core/fetcher.py`)**:
+  - `api/db/database.py`: Expanded SQLAlchemy QueuePool settings to `pool_size=20, max_overflow=30, pool_timeout=60, pool_recycle=1800, pool_pre_ping=True` (up to 50 concurrent DB connections), eliminating `TimeoutError: QueuePool limit reached` during simultaneous foreground requests and background scanner runs.
+  - `api/core/fetcher.py`: Mounted `HTTPAdapter(pool_connections=50, pool_maxsize=50)` on CCXT's OKX and Binance HTTP sessions, preventing `urllib3.connectionpool` connection discarding warnings and improving SSL connection reuse.
+- **Test Suite**:
+  - Added `test_signal_filtering_min_score_and_types` and `test_market_overview_endpoint` to `api/tests/test_signal_strategy.py`. All 36 tests pass.
+
 ## [2026-10-28] v0.5.0 - Frontend Signal Terminal Refactoring & Macro Alignment
 - **Strategy Backtester & Optimal Risk Profiles Upgrade (`web/app/backtest/page.tsx` & `api/quant/signal_strategy.py`)**:
   - `api/quant/signal_strategy.py`: Added empirical `OPTIMAL_RISK_PROFILES` for BTC, ETH, SOL, CC, and HYPE across 1h, 4h, and 1d timeframes. Updated `SignalStrategyConfig` defaults: `stop_loss_pct=1.4`, `take_profit_pct=1.5`, `trailing_activation_pct=0.65`, `trailing_stop_pct=0.30`, `max_positions=1`, `fee_rate=0.0005` (0.05%), and enabled Full Macro filters.

@@ -611,6 +611,60 @@ class TestBreakevenAndDynamicTP:
         for t, val in bt.atr_map.items():
             assert val > 0
 
+    def test_signal_filtering_min_score_and_types(self):
+        candles = [
+            {'time': 1000, 'open': 100, 'high': 101, 'low': 99, 'close': 100},
+            {'time': 2000, 'open': 100, 'high': 102, 'low': 99, 'close': 101},
+            {'time': 3000, 'open': 101, 'high': 103, 'low': 100, 'close': 102},
+        ]
+        signals = [
+            {'time': 1000, 'direction': 'bullish', 'score': 3.0, 'text': '⚡(2G) 3/10 [R] RSI+EMA', 'strategy_type': 'reversion'},
+            {'time': 2000, 'direction': 'bullish', 'score': 4.5, 'text': '⚡(3G) 4.5/10 [R] CAP+DIV', 'strategy_type': 'reversion'},
+            {'time': 3000, 'direction': 'bullish', 'score': 5.0, 'text': '🚀 [BREAKOUT] DONCHIAN', 'strategy_type': 'breakout'},
+        ]
+        # Test min_score filter
+        cfg_min_score = SignalStrategyConfig(min_score=4.0)
+        bt1 = SignalBacktester(cfg_min_score, candles, signals)
+        assert len(bt1.signals) == 2
+        assert bt1.signals[0]['time'] == 2000
+        assert bt1.signals[1]['time'] == 3000
+
+        # Test allowed_types filter: breakout only
+        cfg_bo = SignalStrategyConfig(allowed_types=['breakout'])
+        bt2 = SignalBacktester(cfg_bo, candles, signals)
+        assert len(bt2.signals) == 1
+        assert bt2.signals[0]['time'] == 3000
+
+        # Test allowed_types filter: structure only
+        cfg_struct = SignalStrategyConfig(allowed_types=['structure'])
+        bt3 = SignalBacktester(cfg_struct, candles, signals)
+        assert len(bt3.signals) == 1
+        assert bt3.signals[0]['time'] == 2000
+
+        # Test allowed_types filter: reversion only
+        cfg_rev = SignalStrategyConfig(allowed_types=['reversion'])
+        bt4 = SignalBacktester(cfg_rev, candles, signals)
+        assert len(bt4.signals) == 1
+        assert bt4.signals[0]['time'] == 1000
+
+    def test_market_overview_endpoint(self):
+        from api.main import get_market_overview
+        overview = get_market_overview()
+        assert isinstance(overview, list)
+        assert len(overview) == 5
+        symbols = [item['symbol'] for item in overview]
+        assert 'BTC/USDT' in symbols
+        assert 'ETH/USDT' in symbols
+        assert 'SOL/USDT' in symbols
+        assert 'HYPE/USDT' in symbols
+        assert 'CC/USDT' in symbols
+
+        btc_item = next(item for item in overview if item['symbol'] == 'BTC/USDT')
+        assert btc_item['rs_vs_btc'] == 0.0
+        assert 'quadrant' in btc_item
+        assert btc_item['quadrant'] in ['strong_add', 'weak_add', 'strong_reduce', 'weak_reduce', 'neutral']
+        assert 'regime_4h' in btc_item
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

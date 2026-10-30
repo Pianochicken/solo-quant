@@ -24,6 +24,16 @@ class DataFetcher:
                 'defaultType': 'future',
             }
         })
+        # Increase HTTPAdapter connection pool to prevent urllib3 connection discarding warnings during parallel calls
+        from requests.adapters import HTTPAdapter
+        adapter = HTTPAdapter(pool_connections=50, pool_maxsize=50)
+        if hasattr(self.okx, 'session'):
+            self.okx.session.mount('https://', adapter)
+            self.okx.session.mount('http://', adapter)
+        if hasattr(self.binance, 'session'):
+            self.binance.session.mount('https://', adapter)
+            self.binance.session.mount('http://', adapter)
+
         self.exchange = self.okx
         self.latest_oi_breakdown = {"binance": 0, "okx": 0, "total": 0}
         self._breakdown_cache: Dict[str, Dict[str, Any]] = {}
