@@ -817,12 +817,12 @@ class SignalBacktestParams(BaseModel):
     timeframe: str = '1h'
     # Risk & Position Management
     risk_per_trade_pct: float = 2.0
-    take_profit_pct: float = 4.0
-    stop_loss_pct: float = 2.0
-    trailing_stop_pct: float = 1.5
-    trailing_activation_pct: float = 1.0
-    max_positions: int = 3
-    fee_rate: float = 0.0008
+    take_profit_pct: float = 1.5
+    stop_loss_pct: float = 1.4
+    trailing_stop_pct: float = 0.30
+    trailing_activation_pct: float = 0.65
+    max_positions: int = 1
+    fee_rate: float = 0.0005
     allow_short: bool = True
     reverse_on_signal: bool = True
     # Confluence Signal Tuning
@@ -830,7 +830,7 @@ class SignalBacktestParams(BaseModel):
     trending_threshold: int = 3
     enable_protection: bool = True
     use_dynamic_profiles: bool = True
-    enable_mtf_filter: bool = False  # Layer 3: 4h regime MTF confirmation
+    enable_mtf_filter: bool = True  # Layer 3: 4h regime MTF confirmation
 
 @app.post("/quant/signal-backtest")
 def run_signal_backtest(params: SignalBacktestParams):
@@ -842,12 +842,23 @@ def run_signal_backtest(params: SignalBacktestParams):
     try:
         formatted_symbol = params.symbol.replace('-', '/')
         
-        # 1. Fetch exactly the same data as the main page chart to ensure 100% signal consistency
-        # We use limit=1000 to match the main page's warmup period perfectly.
+        # 1. Dynamically calculate required K-line count based on timeframe + 250 warmup bars
+        if params.timeframe == '1h':
+            required_candles = params.duration_days * 24 + 250
+        elif params.timeframe == '4h':
+            required_candles = params.duration_days * 6 + 250
+        elif params.timeframe == '1d':
+            required_candles = params.duration_days + 250
+        else:
+            required_candles = params.duration_days * 24 + 250
+
+        fetch_limit = max(1000, required_candles)
+
+        # 2. Fetch data with full warmup coverage for indicator consistency
         market_res = get_market_data(
             symbol=params.symbol,
             timeframe=params.timeframe,
-            limit=1000,
+            limit=fetch_limit,
             ranging_threshold=params.ranging_threshold,
             trending_threshold=params.trending_threshold,
             enable_protection=params.enable_protection,
@@ -861,7 +872,7 @@ def run_signal_backtest(params: SignalBacktestParams):
         if not history:
             raise HTTPException(status_code=404, detail="No historical data found")
 
-        # 2. Compute actual start time for the backtest
+        # 3. Compute actual start time for the backtest window
         import time
         end_time = int(time.time() * 1000)
         actual_start_time = end_time - (params.duration_days * 24 * 3600 * 1000)
@@ -879,6 +890,9 @@ def run_signal_backtest(params: SignalBacktestParams):
             fee_rate=params.fee_rate,
             allow_short=params.allow_short,
             reverse_on_signal=params.reverse_on_signal,
+            enable_protection=params.enable_protection,
+            enable_mtf_filter=params.enable_mtf_filter,
+            use_dynamic_profiles=params.use_dynamic_profiles,
         )
         config.validate()
 

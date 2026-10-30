@@ -4,6 +4,12 @@ All notable changes to the Solo-Quant project will be documented in this file.
 This file serves as a historical record to keep `AI_HANDOFF.md` clean and focused on current state and next steps.
 
 ## [2026-10-28] v0.5.0 - Frontend Signal Terminal Refactoring & Macro Alignment
+- **Strategy Backtester & Optimal Risk Profiles Upgrade (`web/app/backtest/page.tsx` & `api/quant/signal_strategy.py`)**:
+  - `api/quant/signal_strategy.py`: Added empirical `OPTIMAL_RISK_PROFILES` for BTC, ETH, SOL, CC, and HYPE across 1h, 4h, and 1d timeframes. Updated `SignalStrategyConfig` defaults: `stop_loss_pct=1.4`, `take_profit_pct=1.5`, `trailing_activation_pct=0.65`, `trailing_stop_pct=0.30`, `max_positions=1`, `fee_rate=0.0005` (0.05%), and enabled Full Macro filters.
+  - `api/main.py`: Updated `/quant/signal-backtest` to dynamically calculate required candle count based on timeframe (`1h` -> `days * 24 + 250`, `4h` -> `days * 6 + 250`, `1d` -> `days + 250`), guaranteeing complete indicator warmup before slicing to requested backtest window.
+  - `web/app/backtest/page.tsx`: Purged legacy Grid Strategy tabs and dead parameters. Added `timeframe` selector (`1h`, `4h`, `1d`) linked to adaptive duration ranges. Added `Auto Risk Profile` toggle to automatically populate MFE/MAE optimal risk parameters upon switching symbol or timeframe. Replaced static presets with dynamic multiplier buttons (🎯 實證最佳基準 / 🚀 波段放大 1.4x).
+- **Altcoins Quality & Dual-Exchange Liquidity Diagnostic (`scripts/debug/evaluate_altcoins_quality.py`)**:
+  - Validated forward signal quality and liquidity health for ETH, SOL, HYPE, and CC across 1h, 4h, and 1d, producing `scripts/debug/altcoins_evaluation_report.md`.
 - **Telegram Notification & Chart Timezone Alignment (`NEXT_PUBLIC_TIMEZONE_OFFSET`)**:
   - `api/core/notifier.py`: Formats signal timestamps using `NEXT_PUBLIC_TIMEZONE_OFFSET` with dynamic timezone badges (e.g. `(UTC+8)`, defaulting cleanly to `(UTC)`). Shifts chart OHLCV dates and signal markers by the configured offset to synchronize with text alerts.
   - `api/core/utils/chart.py`: Updated `generate_candlestick_chart` to accept `timeframe` and `tz_label` (defaulting to `(UTC)`), rendering them dynamically in the chart header.

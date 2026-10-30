@@ -181,6 +181,24 @@ class TestSignalStrategyConfig:
         config = SignalStrategyConfig()
         assert config.investment == 10000.0
         assert config.risk_per_trade_pct == 2.0
+        assert config.take_profit_pct == 1.5
+        assert config.stop_loss_pct == 1.4
+        assert config.trailing_stop_pct == 0.30
+        assert config.trailing_activation_pct == 0.65
+        assert config.max_positions == 1
+        assert config.fee_rate == 0.0005
+
+    def test_optimal_risk_profiles(self):
+        from api.quant.signal_strategy import OPTIMAL_RISK_PROFILES
+        for sym in ['BTC', 'ETH', 'SOL', 'CC', 'HYPE']:
+            assert sym in OPTIMAL_RISK_PROFILES
+            for tf in ['1h', '4h', '1d']:
+                assert tf in OPTIMAL_RISK_PROFILES[sym]
+                p = OPTIMAL_RISK_PROFILES[sym][tf]
+                assert p['stop_loss_pct'] > 0
+                assert p['take_profit_pct'] > 0
+                assert p['trailing_activation_pct'] > 0
+                assert p['trailing_stop_pct'] > 0
 
     def test_validation_errors(self):
         with pytest.raises(ValueError):

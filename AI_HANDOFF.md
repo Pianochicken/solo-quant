@@ -57,6 +57,7 @@ The frontend (`web/`) is streamlined into a high-conviction decision cockpit for
 - **Unified Terminal Loader**: Replaced fragmented multi-block loaders and artificial 600ms delays with a single full-workspace dark loading screen (radar pulse & asset/timeframe pill). On data arrival, all 3 panels (Chart, SentimentPanel, Recent Signals) hydrate atomically in the exact same render frame.
 - **Chart Polish (`AdvancedChart.tsx`)**: Removed TradingView attribution logo (`attributionLogo: false`) to prevent overlap with the 7th subchart (`Market Regime`), and expanded main price chart height to 460px (`h-[460px]`).
 - **Full Macro Defaults**: Frontend initializes with `enableProtection: true` and `enableMtfFilter: true`.
+- **Strategy Backtester (`web/app/backtest/page.tsx`)**: Upgraded to a pure Signal Strategy Terminal. Removed legacy Grid tabs. Added multi-timeframe selector (`1h`, `4h`, `1d`) linked to adaptive durations, integrated empirical `OPTIMAL_RISK_PROFILES` (Auto Risk Profile toggle), dynamic relative multiplier buttons (🎯 實證最佳基準 / 🚀 波段放大 1.4x), and unified default position limit (max 1) and fee rate (0.05%).
 
 ---
 
