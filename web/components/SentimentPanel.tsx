@@ -276,45 +276,44 @@ export default function SentimentPanel({ indicators, timeframe = '1h', enablePro
                 </div>
 
                 {/* Global Liquidity Data Flow Card */}
-                {indicators.exchange_breakdown && (
-                    <div className="bg-zinc-950/50 rounded-lg p-3 border border-zinc-800 flex flex-col col-span-2 mt-2">
-                        <div className="flex justify-between items-center mb-2">
-                            <div className="text-xs text-zinc-500 flex items-center gap-1">
-                                <Layers className="w-3 h-3" /> Liquidity Sources<InfoTooltip text="全球流動性比例：顯示當前指標的數據來源組成。Binance 與 OKX 的數據皆「僅」來自其各自的「USDT 本位永續合約 (USDT-Margined Perpetuals)」，不包含 USDC 或幣本位。這代表最核心的零售與機構投機資金流向。" />
+                {indicators.exchange_breakdown && (() => {
+                    const { binance = 0, okx = 0, total } = indicators.exchange_breakdown;
+                    const safeTotal = total || (binance + okx) || 0;
+                    const binancePct = safeTotal > 0 ? (binance / safeTotal) * 100 : 0;
+                    const okxPct = safeTotal > 0 ? (okx / safeTotal) * 100 : 0;
+
+                    return (
+                        <div className="bg-zinc-950/50 rounded-lg p-3 border border-zinc-800 flex flex-col col-span-2 mt-2">
+                            <div className="flex justify-between items-center mb-2">
+                                <div className="text-xs text-zinc-500 flex items-center gap-1">
+                                    <Layers className="w-3 h-3" /> Liquidity Sources<InfoTooltip text="全球流動性比例：顯示當前指標的數據來源組成。Binance 與 OKX 的數據皆「僅」來自其各自的「USDT 本位永續合約 (USDT-Margined Perpetuals)」，不包含 USDC 或幣本位。這代表最核心的零售與機構投機資金流向。" />
+                                </div>
+                                <div className="text-xs font-mono font-medium text-zinc-400">
+                                    Total: ${(safeTotal / 1e9).toFixed(2)}B
+                                </div>
                             </div>
-                            <div className="text-xs font-mono font-medium text-zinc-400">
-                                Total: ${(indicators.exchange_breakdown.total / 1e9).toFixed(2)}B
+                            
+                            <div className="space-y-2">
+                                <div className="flex justify-between text-[10px] uppercase font-bold tracking-wider mb-1">
+                                    <span className="text-yellow-500">
+                                        Binance {binance === 0 ? '—' : `${binancePct.toFixed(1)}%`}
+                                    </span>
+                                    <span className="text-blue-500">
+                                        OKX {okx === 0 ? '—' : `${okxPct.toFixed(1)}%`}
+                                    </span>
+                                </div>
+                                <div className="relative w-full h-2 bg-zinc-800 rounded-full overflow-hidden flex">
+                                    {binancePct > 0 && (
+                                        <div className="h-full bg-yellow-500 transition-all duration-300" style={{ width: `${binancePct}%` }}></div>
+                                    )}
+                                    {okxPct > 0 && (
+                                        <div className="h-full bg-blue-500 transition-all duration-300" style={{ width: `${okxPct}%` }}></div>
+                                    )}
+                                </div>
                             </div>
                         </div>
-                        
-                        {(() => {
-                            const { binance, okx, total } = indicators.exchange_breakdown;
-                            const binancePct = total > 0 ? (binance / total) * 100 : 0;
-                            const okxPct = total > 0 ? (okx / total) * 100 : 0;
-                            
-                            return (
-                                <div className="space-y-2">
-                                    <div className="flex justify-between text-[10px] uppercase font-bold tracking-wider mb-1">
-                                        <span className="text-yellow-500">
-                                            Binance {binance === 0 ? '—' : `${binancePct.toFixed(1)}%`}
-                                        </span>
-                                        <span className="text-blue-500">
-                                            OKX {okx === 0 ? '—' : `${okxPct.toFixed(1)}%`}
-                                        </span>
-                                    </div>
-                                    <div className="relative w-full h-2 bg-zinc-800 rounded-full overflow-hidden flex">
-                                        {binancePct > 0 && (
-                                            <div className="h-full bg-yellow-500 transition-all duration-300" style={{ width: `${binancePct}%` }}></div>
-                                        )}
-                                        {okxPct > 0 && (
-                                            <div className="h-full bg-blue-500 transition-all duration-300" style={{ width: `${okxPct}%` }}></div>
-                                        )}
-                                    </div>
-                                </div>
-                            );
-                        })()}
-                    </div>
-                )}
+                    );
+                })()}
             </div>
         </div>
     );

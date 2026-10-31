@@ -1,6 +1,6 @@
 export interface IndicatorData {
     lsur_z_score: number;
-    lsur_history: { time: number; value: number } | null;
+    lsur_history: { time: number; value: number }[] | null;
     cvd_history: { time: number; value: number }[];
     open_interest: { time: number; value: number }[];
     oi_percentile: number;
@@ -10,6 +10,7 @@ export interface IndicatorData {
     rsi_history?: { time: number; value: number }[];
     composite_score?: number;
     composite_score_history?: { time: number; value: number }[];
+    lsur_markers?: { time: number; position: string; color: string; shape: string; text: string }[];
     market_regime?: any;
     market_regime_history?: any;
     exchange_breakdown?: {
@@ -20,7 +21,8 @@ export interface IndicatorData {
     mtf_4h_regime?: {
         regime: string;
         direction: string;
-        adx: number;
+        adx?: number;
+        bb_width?: number;
     } | null;
     donchian_channel?: {
         time: number;
@@ -88,7 +90,13 @@ export function shiftTimes(obj: any, offsetSec: number) {
     }
 }
 
-export async function getMarketData(symbol: string, timeframe: string = '1h', limit: number = 100, config?: SignalConfig): Promise<MarketData> {
+export async function getMarketData(
+    symbol: string,
+    timeframe: string = '1h',
+    limit: number = 100,
+    config?: SignalConfig,
+    options?: { signal?: AbortSignal }
+): Promise<MarketData> {
     const safeSymbol = symbol.replace('/', '-');
 
     try {
@@ -102,7 +110,7 @@ export async function getMarketData(symbol: string, timeframe: string = '1h', li
                 url += `&signal_types=${encodeURIComponent(config.signalTypes)}`;
             }
         }
-        const res = await fetch(url);
+        const res = await fetch(url, { signal: options?.signal });
         if (!res.ok) throw new Error('Failed to fetch market data');
         
         const data = await res.json();
@@ -112,7 +120,9 @@ export async function getMarketData(symbol: string, timeframe: string = '1h', li
         }
         return data;
     } catch (error) {
-        console.error(error);
+        if ((error as any)?.name !== 'AbortError') {
+            console.error(error);
+        }
         throw error;
     }
 }
@@ -143,7 +153,12 @@ export async function getMarketOverview(): Promise<MarketOverviewItem[]> {
     try {
         const res = await fetch(`${API_BASE}/api/market_overview`);
         if (!res.ok) throw new Error('Failed to fetch market overview');
-        return res.json();
+        const data: MarketOverviewItem[] = await res.json();
+        const tzOffsetSec = getTimezoneOffsetSec();
+        if (tzOffsetSec !== 0) {
+            shiftTimes(data, tzOffsetSec);
+        }
+        return data;
     } catch (error) {
         console.error(error);
         throw error;

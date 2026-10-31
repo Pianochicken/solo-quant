@@ -3,6 +3,29 @@
 All notable changes to the Solo-Quant project will be documented in this file.
 This file serves as a historical record to keep `AI_HANDOFF.md` clean and focused on current state and next steps.
 
+## [2026-10-31] v0.6.4 - Frontend Terminal O(1) Performance, DOM Semantics & State Alignment
+- **Crosshair Sync O(1) Hash Map Optimization (`web/components/AdvancedChart.tsx`)**:
+  - Replaced $O(N)$ linear `Array.find()` across 7 charts and 1,000 candles with precomputed `Map<number, any>` lookups (`priceMap`, `rsiMap`, `cvdMap`, `oiMap`, `fundingMap`, `pulseMap`, `regimeMap`, `markersMap`).
+  - Crosshair mouse movement querying reduced from $O(7N)$ down to $O(1)$ constant time, completely eliminating UI lag and cursor jitter during hovering.
+  - Wrapped `AdvancedChart` with `React.memo` to eliminate unnecessary canvas re-renders during background polling.
+- **TimeScale Re-entrancy Lock (`web/components/AdvancedChart.tsx`)**:
+  - Introduced `isSyncingRef` mutex lock around `timeScale.subscribeVisibleLogicalRangeChange()`.
+  - Calling `setVisibleLogicalRange()` on sibling charts is guarded by `isSyncingRef.current = true` with immediate asynchronous unlock `setTimeout(() => { isSyncingRef.current = false; }, 0)`, breaking recursive range update cascades.
+- **HTML5 DOM Semantics & Interactive Event Isolation (`web/app/page.tsx`)**:
+  - Refactored five-coin macro cards from invalid nested `<button>` tags (which wrapped 6 `<InfoTooltip>` button triggers) into accessible `<div role="button" tabIndex={0}>` with Enter/Space keyboard handlers.
+  - Eliminated HTML5 specification violations and resolved mobile/touchscreen event bubbling conflicts.
+- **Network Race Condition Protection via AbortController (`web/app/page.tsx`)**:
+  - Added `AbortController` in `fetchData` effect and passed `signal` into `getMarketData()`.
+  - Rapidly switching symbols or timeframes now immediately cancels pending inflight requests, preventing out-of-order network responses from overwriting current market views.
+- **Type Contract & Timezone Alignment (`web/lib/api.ts`)**:
+  - Corrected `lsur_history` from single object to `{ time: number; value: number }[] | null`.
+  - Formally aligned `composite_score` (number), `composite_score_history` (array), and `lsur_markers` in `IndicatorData`.
+  - Made `mtf_4h_regime.adx` and `bb_width` optional numbers to match backend JSON serialization.
+  - Added `tzOffsetSec` adjustment in `getMarketOverview()` via `shiftTimes()`, aligning macro card signal timestamps with local user timezone.
+- **Defensive Rendering & Boundary Fixes (`web/components/SentimentPanel.tsx` & `web/app/backtest/page.tsx`)**:
+  - `SentimentPanel.tsx`: Added `safeTotal = total || (binance + okx) || 0` fallback to prevent `NaN` crashes when liquidity totals are null or zero.
+  - `web/app/backtest/page.tsx`: In `runBacktest()`, passing `'none'` when all signal archetypes are deselected instead of empty string `''`, preventing backend fallback to default all-signal whitelist.
+
 ## [2026-10-30] v0.6.3 - Backend Architecture, DB Pool Lifecycle & Concurrency Hardening
 - **Short-Lived DB Sessions & Elimination of Connection Pool Starvation (`api/core/fetcher.py`)**:
   - Refactored `fetch_market_data()`, `fetch_taker_volume()`, `fetch_open_interest()`, and `fetch_long_short_ratio()` to strictly enforce the Short-Lived Session pattern.

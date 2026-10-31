@@ -231,10 +231,12 @@ export default function BacktestPage() {
                 use_dynamic_profiles: useDynamicProfiles,
                 enable_mtf_filter: enableMtfFilter,
                 min_score: minScore,
-                signal_types: Object.entries(allowedTypes)
-                    .filter(([_, v]) => v)
-                    .map(([k]) => k)
-                    .join(','),
+                signal_types: (() => {
+                    const selected = Object.entries(allowedTypes)
+                        .filter(([_, v]) => v)
+                        .map(([k]) => k);
+                    return selected.length === 0 ? 'none' : selected.join(',');
+                })(),
             };
             const res = await runSignalBacktest(params);
             setSignalResult(res);

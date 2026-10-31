@@ -14,7 +14,7 @@ interface AdvancedChartProps {
     } | null;
     indicators: {
         lsur_z_score: number;
-        lsur_history: any[];
+        lsur_history: { time: number; value: number }[] | null;
         lsur_z_history?: { time: number; value: number }[];
         lsur_markers?: { time: number; position: string; color: string; shape: string; text: string }[];
         cvd_history: { time: number; value: number }[];
@@ -23,7 +23,8 @@ interface AdvancedChartProps {
         ema_slow?: { time: number; value: number }[];
         trend_state?: 'uptrend' | 'downtrend' | 'neutral';
         rsi_history?: { time: number; value: number }[];
-        composite_score?: { time: number; value: number }[];
+        composite_score?: number;
+        composite_score_history?: { time: number; value: number }[];
         funding_history?: { time: number; value: number }[];
         market_regime_history?: { time: number; regime: string; direction: string }[];
         donchian_channel?: { time: number; upper: number; lower: number; middle?: number }[];
@@ -31,8 +32,9 @@ interface AdvancedChartProps {
     gridLines?: number[];
 }
 
-export default function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines = [] }: AdvancedChartProps) {
+function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines = [] }: AdvancedChartProps) {
     const T = getThresholds(timeframe);
+    const isSyncingRef = useRef(false);
     // Container Refs
     const chartContainerRef = useRef<HTMLDivElement>(null);
     const rsiContainerRef = useRef<HTMLDivElement>(null);
@@ -257,11 +259,14 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
         charts.forEach((c1, i) => {
             const timeScale = c1.timeScale();
             timeScale.subscribeVisibleLogicalRangeChange((range) => {
-                if (range) {
-                    charts.forEach((c2, j) => {
-                        if (i !== j) c2.timeScale().setVisibleLogicalRange(range);
-                    });
-                }
+                if (isSyncingRef.current || !range) return;
+                isSyncingRef.current = true;
+                charts.forEach((c2, j) => {
+                    if (i !== j) c2.timeScale().setVisibleLogicalRange(range);
+                });
+                setTimeout(() => {
+                    isSyncingRef.current = false;
+                }, 0);
             });
         });
 
@@ -536,21 +541,47 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
             regimeSeriesRef.current.setData(regimeData);
         }
 
-        // SYNC LEGENDS AND CROSSHAIR Bidirectionally
+        // SYNC LEGENDS AND CROSSHAIR Bidirectionally (O(1) Map Lookups)
+        const priceMap = new Map<number, any>();
+        (data.price || []).forEach(p => priceMap.set(p.time as number, p));
+
+        const rsiMap = new Map<number, any>();
+        rsiData.forEach(p => rsiMap.set(p.time as number, p));
+
+        const cvdMap = new Map<number, any>();
+        cvdData.forEach(p => cvdMap.set(p.time as number, p));
+
+        const oiMap = new Map<number, any>();
+        oiData.forEach(p => oiMap.set(p.time as number, p));
+
+        const fundingMap = new Map<number, any>();
+        fundingData.forEach(p => fundingMap.set(p.time as number, p));
+
+        const pulseMap = new Map<number, any>();
+        pulseData.forEach(p => pulseMap.set(p.time as number, p));
+
+        const regimeMap = new Map<number, any>();
+        regimeData.forEach(p => regimeMap.set(p.time as number, p));
+
+        const markersMap = new Map<number, any>();
+        if (indicators?.lsur_markers) {
+            indicators.lsur_markers.forEach(m => markersMap.set(m.time, m));
+        }
+
         const chartsArray = [
-            { api: chartRef.current, series: mainSeriesRef.current, data: data.price },
-            { api: rsiChartRef.current, series: rsiSeriesRef.current, data: rsiData },
-            { api: cvdChartRef.current, series: cvdSeriesRef.current, data: cvdData },
-            { api: oiChartRef.current, series: oiSeriesRef.current, data: oiData },
-            { api: fundingChartRef.current, series: fundingSeriesRef.current, data: fundingData },
-            { api: pulseChartRef.current, series: pulseSeriesRef.current, data: pulseData },
-            { api: regimeChartRef.current, series: regimeSeriesRef.current, data: regimeData }
+            { api: chartRef.current, series: mainSeriesRef.current, map: priceMap },
+            { api: rsiChartRef.current, series: rsiSeriesRef.current, map: rsiMap },
+            { api: cvdChartRef.current, series: cvdSeriesRef.current, map: cvdMap },
+            { api: oiChartRef.current, series: oiSeriesRef.current, map: oiMap },
+            { api: fundingChartRef.current, series: fundingSeriesRef.current, map: fundingMap },
+            { api: pulseChartRef.current, series: pulseSeriesRef.current, map: pulseMap },
+            { api: regimeChartRef.current, series: regimeSeriesRef.current, map: regimeMap }
         ];
 
         const syncCrosshairHandler = (sourceChartApi: IChartApi, param: any) => {
             // Handle Marker Tooltip (show when hovering over a marker time)
-            if (param.time && param.point && indicators?.lsur_markers && sourceChartApi === chartRef.current) {
-                const marker = indicators.lsur_markers.find(m => m.time === param.time);
+            if (param.time && param.point && markersMap.size > 0 && sourceChartApi === chartRef.current) {
+                const marker = markersMap.get(param.time as number);
                 if (marker && marker.text) {
                     setHoveredMarker({
                         x: param.point.x,
@@ -585,7 +616,7 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
             chartsArray.forEach(c => {
                 if (!c.api || !c.series) return;
 
-                const pointData = c.data.find((p: any) => p.time === param.time);
+                const pointData = c.map.get(param.time as number);
 
                 // Update Legend state based on chart type
                 if (c.api === rsiChartRef.current) setRsiLegendValue(pointData ? pointData.value : null);
@@ -787,3 +818,5 @@ export default function AdvancedChart({ symbol, timeframe = '1h', data, indicato
         </div>
     );
 }
+
+export default React.memo(AdvancedChart);

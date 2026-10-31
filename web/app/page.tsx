@@ -168,6 +168,7 @@ export default function Dashboard() {
   // Fetch Data Loop
   useEffect(() => {
     let isMounted = true;
+    const controller = new AbortController();
 
     const fetchData = async () => {
       try {
@@ -177,7 +178,7 @@ export default function Dashboard() {
           setFetching(true);
         }
 
-        const market = await getMarketData(symbol, timeframe, 1000, signalConfig);
+        const market = await getMarketData(symbol, timeframe, 1000, signalConfig, { signal: controller.signal });
         if (!isMounted) return;
 
         setData(market);
@@ -187,7 +188,7 @@ export default function Dashboard() {
         setLoading(false);
         setFetching(false);
       } catch (e: any) {
-        if (!isMounted) return;
+        if (!isMounted || e.name === 'AbortError') return;
         console.error(e);
         setError(e.message || "Failed to fetch data");
         setLoading(false);
@@ -200,6 +201,7 @@ export default function Dashboard() {
     const interval = setInterval(fetchData, 15000);
     return () => {
       isMounted = false;
+      controller.abort();
       clearInterval(interval);
     };
   }, [symbol, timeframe, signalConfig]);
@@ -379,10 +381,18 @@ export default function Dashboard() {
             }
 
             return (
-              <button
+              <div
                 key={item.symbol}
+                role="button"
+                tabIndex={0}
                 onClick={() => setSymbol(item.symbol)}
-                className={`p-3 rounded-xl border text-left transition-all flex flex-col gap-2 relative overflow-hidden group ${
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setSymbol(item.symbol);
+                  }
+                }}
+                className={`p-3 rounded-xl border text-left transition-all flex flex-col gap-2 relative overflow-hidden group cursor-pointer ${
                   isSelected
                     ? 'bg-purple-950/30 border-purple-500 shadow-lg shadow-purple-900/30 ring-1 ring-purple-500'
                     : 'bg-zinc-900/70 border-zinc-800 hover:border-zinc-700 hover:bg-zinc-850'
@@ -485,7 +495,7 @@ export default function Dashboard() {
                     />
                   </div>
                 </div>
-              </button>
+              </div>
             );
           })}
         </div>
