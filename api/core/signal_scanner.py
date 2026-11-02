@@ -189,11 +189,23 @@ async def scan_and_notify(timeframes: Optional[List[str]] = None):
 
                 price_by_time = {p["time"]: p["close"] for p in price_data} if price_data else {}
 
+                # Retrieve macro info from market overview cache if available
+                macro_info = None
+                try:
+                    from api.main import _market_overview_cache
+                    cached_data = _market_overview_cache.get("data", [])
+                    for item in cached_data:
+                        if item.get("symbol") == symbol or item.get("symbol_slug") == symbol.replace('/', '-'):
+                            macro_info = item
+                            break
+                except Exception:
+                    pass
+
                 logger.info(f"  {symbol} ({tf}): {len(new_signals)} NEW signal(s) to notify!")
                 successfully_notified = []
                 for sig in new_signals:
                     sig_price = price_by_time.get(sig["time"], 0)
-                    message = format_signal_message(sig, symbol, sig_price, timeframe=tf)
+                    message = format_signal_message(sig, symbol, sig_price, timeframe=tf, macro_info=macro_info)
                     sent_ok = await send_signal_with_chart(
                         text=message,
                         price_data=price_data,

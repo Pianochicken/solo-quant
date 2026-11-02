@@ -1,8 +1,10 @@
 import os
 import re
+import html
 import logging
 import asyncio
 import threading
+from typing import Optional
 from datetime import datetime, timezone, timedelta
 import httpx
 import pandas as pd
@@ -10,6 +12,7 @@ from pathlib import Path
 
 # Local import for chart generation
 from .utils.chart import generate_candlestick_chart
+from api.quant.signal_strategy import OPTIMAL_RISK_PROFILES
 
 logger = logging.getLogger(__name__)
 _chart_lock = threading.Lock()
@@ -161,10 +164,16 @@ async def send_signal_with_chart(
     return True
 
 # ---------------------------------------------------------------------------
-# Existing plain‑text formatter (dynamically aligned to timezone offset)
+# Tactical signal formatter with TP1/TP2/SL targets and macro quadrant status
 # ---------------------------------------------------------------------------
-def format_signal_message(signal: dict, symbol: str, price: float, timeframe: str = "1h") -> str:
-    """Format a confluence signal into a human-readable Telegram message."""
+def format_signal_message(
+    signal: dict,
+    symbol: str,
+    price: float,
+    timeframe: str = "1h",
+    macro_info: Optional[dict] = None,
+) -> str:
+    """Format a confluence signal into an actionable Telegram message with TP1/TP2/SL and quadrant status."""
     direction = signal.get("direction", "bullish")
     strategy_type = signal.get("strategy_type", "reversion")
     score = signal.get("score", 0)
@@ -195,8 +204,15 @@ def format_signal_message(signal: dict, symbol: str, price: float, timeframe: st
     else:
         strategy_label = "Reversion"
 
-    # Price formatting
-    price_str = f"${price:,.2f}" if price >= 1 else f"${price:.6f}"
+    def fmt_price(p: float) -> str:
+        if p >= 100:
+            return f"${p:,.2f}"
+        elif p >= 1:
+            return f"${p:,.3f}"
+        else:
+            return f"${p:,.6f}"
+
+    price_str = fmt_price(price) if price > 0 else "—"
 
     # Reason string
     if strategy_type == "breakout":
@@ -207,4 +223,79 @@ def format_signal_message(signal: dict, symbol: str, price: float, timeframe: st
         score_str = match.group(1) if match else f"{score:g}"
         reason_str = f"{score_str} {text_raw.split('] ')[-1]}" if "] " in text_raw else score_str
 
-    return f"{emoji} {time_str} {tz_label} [{symbol} {timeframe}] {strategy_label} {action} @ {price_str} | {reason_str}"
+    safe_reason_str = html.escape(reason_str)
+
+    # --- Target SL / TP1 / TP2 Calculation ---
+    coin = symbol.split('/')[0].split('-')[0].upper()
+    p_cfg = (
+        OPTIMAL_RISK_PROFILES.get(coin, {}).get(timeframe)
+        or OPTIMAL_RISK_PROFILES.get(coin, {}).get('1h')
+        or OPTIMAL_RISK_PROFILES['BTC']['1h']
+    )
+    sl_pct = p_cfg['stop_loss_pct']
+    tp_pct = p_cfg['take_profit_pct']
+    act_pct = p_cfg['trailing_activation_pct']
+
+    # Breakout & Structure signals get 1.15x TP expansion
+    is_breakout = (strategy_type == "breakout") or ("BREAKOUT" in text_raw) or ("🚀" in text_raw)
+    is_structure = ("CAP" in text_raw) or ("DIV" in text_raw)
+    if is_breakout or is_structure:
+        tp_pct *= 1.15
+
+    if price > 0:
+        if direction == "bullish":
+            tp1_price = price * (1 + act_pct / 100)
+            tp2_price = price * (1 + tp_pct / 100)
+            sl_price = price * (1 - sl_pct / 100)
+            points_block = (
+                f"🎯 <b>戰術掛單點位</b>:\n"
+                f"• TP1 (減半推保本): {fmt_price(tp1_price)} (+{act_pct:.2f}%)\n"
+                f"• TP2 (波段目標): {fmt_price(tp2_price)} (+{tp_pct:.2f}%)\n"
+                f"• SL (安全止損): {fmt_price(sl_price)} (-{sl_pct:.2f}%)"
+            )
+        else:
+            tp1_price = price * (1 - act_pct / 100)
+            tp2_price = price * (1 - tp_pct / 100)
+            sl_price = price * (1 + sl_pct / 100)
+            points_block = (
+                f"🎯 <b>戰術掛單點位</b>:\n"
+                f"• TP1 (減半推保本): {fmt_price(tp1_price)} (-{act_pct:.2f}%)\n"
+                f"• TP2 (波段目標): {fmt_price(tp2_price)} (-{tp_pct:.2f}%)\n"
+                f"• SL (安全止損): {fmt_price(sl_price)} (+{sl_pct:.2f}%)"
+            )
+    else:
+        points_block = ""
+
+    # --- Macro Quadrant Status ---
+    macro_block = ""
+    if macro_info:
+        quadrant_map = {
+            'strong_add': '🔥 強勢加倉',
+            'weak_add': '🩸 弱勢加倉',
+            'strong_reduce': '⚡ 強勢減倉',
+            'weak_reduce': '🧊 弱勢減倉',
+            'neutral': '⚪ 中性盤整',
+        }
+        quad_badge = quadrant_map.get(macro_info.get('quadrant', 'neutral'), '⚪ 中性盤整')
+        rs_val = macro_info.get('rs_vs_btc', 0)
+        oi_val = macro_info.get('oi_coin_change_24h_pct', 0)
+        rs_str = f"+{rs_val}" if rs_val > 0 else f"{rs_val}"
+        oi_str = f"+{oi_val:.1f}%" if oi_val > 0 else f"{oi_val:.1f}%"
+        reg_4h = macro_info.get('regime_4h', '')
+        reg_str = '4H ↗ 趨勢多' if reg_4h == 'trending_up' else ('4H ↘ 趨勢空' if reg_4h == 'trending_down' else '4H ⇄ 盤整')
+        macro_block = (
+            f"📊 <b>籌碼四象限定位</b>: {quad_badge}\n"
+            f"• 4H 宏觀: {reg_str} | RS vs BTC: {rs_str} | 24h 幣本位OI: {oi_str}"
+        )
+
+    lines = [
+        f"{emoji} <b>[{symbol} {timeframe}] {strategy_label} {action}</b> @ {price_str}",
+        f"⏰ 時間: {time_str} {tz_label}",
+        f"⚡ 訊號: {safe_reason_str}",
+    ]
+    if points_block:
+        lines.append(f"\n{points_block}")
+    if macro_block:
+        lines.append(f"\n{macro_block}")
+
+    return "\n".join(lines)

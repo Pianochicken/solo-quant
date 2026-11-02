@@ -136,34 +136,76 @@ class SignalBacktester:
 
     def _process_exits(self, high: float, low: float, close: float, time: int, open_price: Optional[float] = None) -> None:
         """
-        Check exits first using previous bar's trailing stop, then update tracking.
-        Prevents look-ahead bias (no same-candle ratchet-and-trigger).
+        Check exits using realistic physical timeline:
+        Step A: Check existing SL/TP/Trailing from previous bars (or open gap).
+        Step B: If not exited in Step A:
+          1. Check TP1 partial exit (if reached trailing_activation_pct)
+          2. Update trailing stop with new high/low
+          3. Physical law check (High before Close):
+             If trailing stop is active and candle close retraced through trailing_stop_price,
+             trigger trailing exit on this same candle at trailing_stop_price!
         """
         still_open = []
         for pos in self.open_positions:
-            # Check exit conditions
+            # Step A: Check full exit conditions from previous state or open
             exit_reason = pos.check_exit(high, low, close, open_price=open_price)
             if exit_reason:
                 exit_price = pos.get_exit_price_for_reason(exit_reason, high, low, open_price=open_price)
                 self._close_position(pos, exit_price, time, exit_reason)
-            else:
-                pos.update(high, low, close)
-                still_open.append(pos)
+                continue
+
+            # Step B: If not exited in Step A
+            # 1. Check partial take profit (TP1) if not yet triggered
+            tp1_fill = pos.check_partial_tp(high, low, open_price=open_price)
+            if tp1_fill is not None:
+                ratio = getattr(self.config, 'partial_tp_ratio', 0.5)
+                closed_size, part_pnl, part_fee = pos.execute_partial_tp(
+                    tp1_fill, fee_rate=self.config.fee_rate, ratio=ratio
+                )
+                self.total_fees_paid += part_fee
+
+                closed_cost = pos.entry_price * closed_size
+                if pos.side == 'long':
+                    part_raw_pnl = (tp1_fill - pos.entry_price) * closed_size
+                else:
+                    part_raw_pnl = (pos.entry_price - tp1_fill) * closed_size
+                part_exit_fee = tp1_fill * closed_size * self.config.fee_rate
+                returned_cash = closed_cost + part_raw_pnl - part_exit_fee
+                self.balance += returned_cash
+
+                self.trades.append({
+                    "time": time,
+                    "side": f"close_{pos.side}",
+                    "price": tp1_fill,
+                    "amount": closed_size,
+                    "fee": part_fee,
+                    "realized_pnl": round(part_pnl, 4),
+                    "exit_reason": "tp1_partial",
+                    "position_id": pos.id,
+                    "equity": self._calculate_equity(close),
+                })
+
+            # 2. Update trailing stop for cross-candle tracking
+            pos.update(high, low, close)
+            still_open.append(pos)
 
         self.open_positions = still_open
 
     def _close_position(self, pos: Position, exit_price: float, time: int, reason: str) -> None:
         """Close a position and record the trade."""
-        pnl = pos.close(exit_price, time, reason, fee_rate=self.config.fee_rate)
-        self.total_fees_paid += pos.fees_paid
+        remaining_pnl = pos.close(exit_price, time, reason, fee_rate=self.config.fee_rate)
+        remaining_fees = pos.fees_paid - pos.partial_fees_paid
+        self.total_fees_paid += remaining_fees
 
-        # Return capital: for Long, we get back exit_price * size; for Short, entry + pnl
+        # Unified cash return formula: closed_cost + raw_pnl - exit_fee
+        closed_cost = pos.cost
         if pos.side == 'long':
-            self.balance += exit_price * pos.size - (exit_price * pos.size * self.config.fee_rate)
+            raw_pnl = (exit_price - pos.entry_price) * pos.size
         else:
-            # Short: we initially "locked" the notional; now settle PnL
-            self.balance += pos.cost + pnl + (pos.cost * self.config.fee_rate)
-            # The entry fee was already deducted from balance at open; pnl already subtracts both fees
+            raw_pnl = (pos.entry_price - exit_price) * pos.size
+        exit_fee = exit_price * pos.size * self.config.fee_rate
+        returned_cash = closed_cost + raw_pnl - exit_fee
+        self.balance += returned_cash
 
         self.closed_positions.append(pos)
         self.trades.append({
@@ -171,8 +213,8 @@ class SignalBacktester:
             "side": f"close_{pos.side}",
             "price": exit_price,
             "amount": pos.size,
-            "fee": pos.fees_paid,
-            "realized_pnl": round(pnl, 4),
+            "fee": remaining_fees,
+            "realized_pnl": round(remaining_pnl, 4),
             "exit_reason": reason,
             "position_id": pos.id,
             "equity": self._calculate_equity(exit_price),
@@ -242,13 +284,13 @@ class SignalBacktester:
         Size = risk_amount / SL_distance
         Capped by available balance.
         """
-        # Determine TP percentage (Structure and Breakout signals get 1.35x TP expansion)
+        # Determine TP percentage (Structure and Breakout signals get 1.15x TP expansion)
         tp_pct = self.config.take_profit_pct
         if signal:
             sig_text = signal.get('text', '')
             sig_type = signal.get('strategy_type', '')
             if sig_type == 'breakout' or '🚀' in sig_text or 'Structure' in sig_text or 'CAP' in sig_text or 'DIV' in sig_text:
-                tp_pct *= 1.35
+                tp_pct *= 1.15
 
         # Calculate TP/SL levels
         if side == 'long':
@@ -290,6 +332,7 @@ class SignalBacktester:
             stop_loss=stop_loss,
             trailing_stop_pct=self.config.trailing_stop_pct,
             trailing_activation_pct=self.config.trailing_activation_pct,
+            enable_partial_tp=getattr(self.config, 'enable_partial_tp', False),
         )
 
         # Record entry trade
@@ -398,7 +441,8 @@ class SignalBacktester:
 
         # Average win/loss %
         def pnl_pct(pos: Position) -> float:
-            return (pos.realized_pnl / pos.cost * 100) if pos.cost > 0 else 0.0
+            base_cost = getattr(pos, 'initial_cost', pos.cost)
+            return (pos.realized_pnl / base_cost * 100) if base_cost > 0 else 0.0
 
         avg_win_pct = np.mean([pnl_pct(p) for p in wins]) if wins else 0.0
         avg_loss_pct = np.mean([pnl_pct(p) for p in losses]) if losses else 0.0

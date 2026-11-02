@@ -87,16 +87,16 @@ def test_ghost_fill_prevention_and_gap_slippage():
         trailing_activation_pct=5.0
     )
 
-    # Bar 1: Price pumped to 108 (activating trail) then dumped to 102
-    pos.update(high=108.0, low=101.0, close=102.0)
+    # Bar 0: Wick spiked to 108 (reaches trailing_activation_pct of 5.0%)
+    # Trailing stop activates at 105.84 (108 * 0.98)
+    pos.update(high=108.0, low=101.0, close=106.5)
     assert pos.trailing_active is True
-    # Trail stop price should be capped so it doesn't float above close (102.0)
-    assert pos.trailing_stop_price <= 102.0
+    assert round(pos.trailing_stop_price, 2) == 105.84
 
-    # Bar 2: Market gaps down to 98 (below trailing stop price of ~102)
+    # Bar 2: Market gaps down to 98 (below trailing stop price of ~105.84)
     # With open=98, high=100, low=97
     exit_price = pos.get_exit_price_for_reason('trailing', high=100.0, low=97.0, open_price=98.0)
-    # Must fill at open_price (98.0), NOT ghost price of 105.8 or 102.0!
+    # Must fill at open_price (98.0), NOT ghost price of 105.84!
     assert exit_price == 98.0
 
     # Normal stop loss gap down test:

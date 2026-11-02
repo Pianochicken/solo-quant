@@ -31,6 +31,14 @@ class Position:
     id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     cost: float = 0.0       # entry_price * size (USDT notional)
 
+    # Partial TP state (Two-stage TP1 + Breakeven Runner)
+    enable_partial_tp: bool = False
+    partial_tp_done: bool = False
+    initial_size: float = 0.0
+    initial_cost: float = 0.0
+    partial_realized_pnl: float = 0.0
+    partial_fees_paid: float = 0.0
+
     # Trailing Stop state
     trailing_active: bool = False
     trailing_stop_price: float = 0.0
@@ -47,6 +55,8 @@ class Position:
 
     def __post_init__(self):
         self.cost = self.entry_price * self.size
+        self.initial_size = self.size
+        self.initial_cost = self.cost
         if self.side == 'long':
             self.highest_since_entry = self.entry_price
         else:
@@ -54,52 +64,48 @@ class Position:
 
     def update(self, high: float, low: float, close: float) -> None:
         """
-        Update trailing stop tracking with the latest candle data for the NEXT bar's exit check.
+        Update trailing stop tracking with the latest candle data.
+        Cross-candle tracking with safe clamping to prevent underwater gap-through
+        while avoiding premature exit on current candle.
         """
         if self.is_closed:
             return
 
         if self.side == 'long':
-            # Track the highest high since entry
             if high > self.highest_since_entry:
                 self.highest_since_entry = high
 
-            # Activate trailing once profit exceeds activation threshold
             unrealized_pct = (self.highest_since_entry - self.entry_price) / self.entry_price * 100
-            if not self.trailing_active and unrealized_pct >= self.trailing_activation_pct:
+            if unrealized_pct >= self.trailing_activation_pct:
                 self.trailing_active = True
+                candidate_trail = max(self.highest_since_entry * (1 - self.trailing_stop_pct / 100), self.entry_price * 1.002)
+                # If close dipped below candidate_trail, clamp trailing_stop_price below close
+                # so next candle does not gap-through above market, while never dipping below stop_loss
+                if close <= candidate_trail:
+                    safe_trail = max(self.stop_loss, close * 0.999)
+                else:
+                    safe_trail = candidate_trail
 
-            # Update trailing stop price (ratchets up, never down)
-            if self.trailing_active:
-                new_trail = self.highest_since_entry * (1 - self.trailing_stop_pct / 100)
-                # Breakeven Floor: prevent exiting below entry price + 0.2%
-                new_trail = max(new_trail, self.entry_price * 1.002)
-                # Prevent trailing stop from being set above current bar's close if close has already dropped below it
-                if close < new_trail:
-                    new_trail = close
-                if new_trail > self.trailing_stop_price:
-                    self.trailing_stop_price = new_trail
+                if safe_trail > self.trailing_stop_price:
+                    self.trailing_stop_price = safe_trail
 
         else:  # short
-            # Track the lowest low since entry
             if low < self.lowest_since_entry:
                 self.lowest_since_entry = low
 
-            # Activate trailing once profit exceeds activation threshold
             unrealized_pct = (self.entry_price - self.lowest_since_entry) / self.entry_price * 100
-            if not self.trailing_active and unrealized_pct >= self.trailing_activation_pct:
+            if unrealized_pct >= self.trailing_activation_pct:
                 self.trailing_active = True
+                candidate_trail = min(self.lowest_since_entry * (1 + self.trailing_stop_pct / 100), self.entry_price * 0.998)
+                # If close bounced above candidate_trail, clamp trailing_stop_price above close,
+                # never exceeding stop_loss
+                if close >= candidate_trail:
+                    safe_trail = min(self.stop_loss, close * 1.001)
+                else:
+                    safe_trail = candidate_trail
 
-            # Update trailing stop price (ratchets down, never up)
-            if self.trailing_active:
-                new_trail = self.lowest_since_entry * (1 + self.trailing_stop_pct / 100)
-                # Breakeven Floor: prevent exiting above entry price - 0.2%
-                new_trail = min(new_trail, self.entry_price * 0.998)
-                # Prevent trailing stop from being set below current bar's close if close has already risen above it
-                if close > new_trail:
-                    new_trail = close
-                if self.trailing_stop_price == 0.0 or new_trail < self.trailing_stop_price:
-                    self.trailing_stop_price = new_trail
+                if self.trailing_stop_price == 0.0 or safe_trail < self.trailing_stop_price:
+                    self.trailing_stop_price = safe_trail
 
     def check_exit(self, high: float, low: float, close: float, open_price: Optional[float] = None) -> Optional[str]:
         """
@@ -139,9 +145,73 @@ class Position:
 
         return None
 
+    def check_partial_tp(self, high: float, low: float, open_price: Optional[float] = None, close: Optional[float] = None) -> Optional[float]:
+        """
+        Check if TP1 (partial take profit) is hit.
+        Triggered when price reaches trailing_activation_pct without hitting stop loss.
+        """
+        if not self.enable_partial_tp or self.partial_tp_done or self.is_closed or self.trailing_activation_pct <= 0:
+            return None
+
+        if self.side == 'long':
+            tp1_price = self.entry_price * (1 + self.trailing_activation_pct / 100)
+            if high >= tp1_price and low > self.stop_loss:
+                if open_price is not None and open_price > tp1_price:
+                    return open_price
+                return tp1_price
+        else:  # short
+            tp1_price = self.entry_price * (1 - self.trailing_activation_pct / 100)
+            if low <= tp1_price and high < self.stop_loss:
+                if open_price is not None and open_price < tp1_price:
+                    return open_price
+                return tp1_price
+
+        return None
+
+    def execute_partial_tp(self, fill_price: float, fee_rate: float = 0.0, ratio: float = 0.5) -> tuple[float, float, float]:
+        """
+        Execute partial take profit (TP1):
+          - Closes `ratio` of the position (defaults to 50%)
+          - Updates remaining size and cost
+          - Moves stop loss of remaining position to breakeven floor (entry ± 0.2%)
+          - Relaxes trailing stop distance of remaining runner by 1.4x
+          - Activates trailing stop
+        Returns:
+          (closed_size, net_pnl, part_fee)
+        """
+        closed_size = self.size * ratio
+        self.size -= closed_size
+        self.cost = self.entry_price * self.size
+
+        if self.side == 'long':
+            raw_pnl = (fill_price - self.entry_price) * closed_size
+        else:
+            raw_pnl = (self.entry_price - fill_price) * closed_size
+
+        part_entry_fee = self.entry_price * closed_size * fee_rate
+        part_exit_fee = fill_price * closed_size * fee_rate
+        part_fee = part_entry_fee + part_exit_fee
+        net_pnl = raw_pnl - part_fee
+
+        self.partial_realized_pnl += net_pnl
+        self.partial_fees_paid += part_fee
+        self.partial_tp_done = True
+        self.trailing_active = True
+
+        # Move SL of runner to breakeven floor
+        if self.side == 'long':
+            self.stop_loss = max(self.stop_loss, self.entry_price * 1.002)
+        else:
+            self.stop_loss = min(self.stop_loss, self.entry_price * 0.998)
+
+        # Relax trailing stop distance 1.4x for runner
+        self.trailing_stop_pct *= 1.4
+
+        return closed_size, net_pnl, part_fee
+
     def close(self, exit_price: float, exit_time: int, reason: str, fee_rate: float = 0.0) -> float:
         """
-        Close this position and calculate realized PnL.
+        Close this position and calculate remaining realized PnL.
         
         Args:
             exit_price: The price at which the position is closed.
@@ -150,7 +220,7 @@ class Position:
             fee_rate: Fee rate for the exit trade.
             
         Returns:
-            Realized PnL (after fees) in quote currency (USDT).
+            Realized PnL (after fees) for the remaining position size.
         """
         if self.is_closed:
             return 0.0
@@ -160,19 +230,21 @@ class Position:
         self.exit_reason = reason
         self.is_closed = True
 
-        # Calculate raw PnL
+        # Calculate raw PnL for remaining size
         if self.side == 'long':
-            raw_pnl = (exit_price - self.entry_price) * self.size
+            remaining_raw_pnl = (exit_price - self.entry_price) * self.size
         else:  # short
-            raw_pnl = (self.entry_price - exit_price) * self.size
+            remaining_raw_pnl = (self.entry_price - exit_price) * self.size
 
-        # Fees: entry fee + exit fee
-        entry_fee = self.cost * fee_rate
-        exit_fee = exit_price * self.size * fee_rate
-        self.fees_paid = entry_fee + exit_fee
+        # Fees for remaining size: entry fee + exit fee
+        remaining_entry_fee = self.cost * fee_rate
+        remaining_exit_fee = exit_price * self.size * fee_rate
+        remaining_fees = remaining_entry_fee + remaining_exit_fee
+        remaining_net_pnl = remaining_raw_pnl - remaining_fees
 
-        self.realized_pnl = raw_pnl - self.fees_paid
-        return self.realized_pnl
+        self.fees_paid = self.partial_fees_paid + remaining_fees
+        self.realized_pnl = self.partial_realized_pnl + remaining_net_pnl
+        return remaining_net_pnl
 
     def get_exit_price_for_reason(self, reason: str, high: float, low: float, open_price: Optional[float] = None) -> float:
         """
@@ -181,34 +253,30 @@ class Position:
         """
         if self.side == 'long':
             if reason == 'sl':
-                fill = min(self.stop_loss, high)
                 if open_price is not None and open_price < self.stop_loss:
-                    fill = open_price
-                return fill
+                    return open_price
+                return min(self.stop_loss, high)
             elif reason == 'trailing':
-                fill = min(self.trailing_stop_price, high)
                 if open_price is not None and open_price < self.trailing_stop_price:
-                    fill = open_price
-                return fill
+                    return open_price
+                return min(self.trailing_stop_price, high)
             elif reason == 'tp':
                 if open_price is not None and open_price > self.take_profit:
                     return open_price
-                return self.take_profit
+                return max(self.take_profit, low)
         else:  # short
             if reason == 'sl':
-                fill = max(self.stop_loss, low)
                 if open_price is not None and open_price > self.stop_loss:
-                    fill = open_price
-                return fill
+                    return open_price
+                return max(self.stop_loss, low)
             elif reason == 'trailing':
-                fill = max(self.trailing_stop_price, low)
                 if open_price is not None and open_price > self.trailing_stop_price:
-                    fill = open_price
-                return fill
+                    return open_price
+                return max(self.trailing_stop_price, low)
             elif reason == 'tp':
                 if open_price is not None and open_price < self.take_profit:
                     return open_price
-                return self.take_profit
+                return min(self.take_profit, high)
 
         # Fallback: close price (for signal_reverse, etc.)
         return (high + low) / 2
@@ -230,11 +298,14 @@ class Position:
             "entry_price": self.entry_price,
             "entry_time": self.entry_time,
             "size": round(self.size, 8),
+            "initial_size": round(self.initial_size, 8),
             "cost": round(self.cost, 4),
             "take_profit": round(self.take_profit, 4),
             "stop_loss": round(self.stop_loss, 4),
             "trailing_active": self.trailing_active,
             "trailing_stop_price": round(self.trailing_stop_price, 4),
+            "partial_tp_done": self.partial_tp_done,
+            "partial_realized_pnl": round(self.partial_realized_pnl, 4),
             "exit_price": round(self.exit_price, 4),
             "exit_time": self.exit_time,
             "exit_reason": self.exit_reason,

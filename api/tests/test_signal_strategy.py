@@ -181,12 +181,14 @@ class TestSignalStrategyConfig:
         config = SignalStrategyConfig()
         assert config.investment == 10000.0
         assert config.risk_per_trade_pct == 2.0
-        assert config.take_profit_pct == 1.5
-        assert config.stop_loss_pct == 1.4
-        assert config.trailing_stop_pct == 0.30
-        assert config.trailing_activation_pct == 0.65
+        assert config.take_profit_pct == 1.80
+        assert config.stop_loss_pct == 1.2
+        assert config.trailing_stop_pct == 0.25
+        assert config.trailing_activation_pct == 0.60
         assert config.max_positions == 1
         assert config.fee_rate == 0.0005
+        assert config.enable_partial_tp is False
+        assert config.partial_tp_ratio == 0.5
 
     def test_optimal_risk_profiles(self):
         from api.quant.signal_strategy import OPTIMAL_RISK_PROFILES
@@ -424,7 +426,8 @@ class TestSignalBacktester:
             trailing_stop_pct=1.5,
             trailing_activation_pct=1.0,
             max_positions=1,
-            fee_rate=0.0
+            fee_rate=0.0,
+            enable_partial_tp=False,
         )
         result = SignalBacktester(config, candles, signals).run()
         close_trades = [t for t in result['trades'] if t['side'] == 'close_long']
@@ -591,15 +594,15 @@ class TestBreakevenAndDynamicTP:
         bt_struct = SignalBacktester(config, candles, sig_struct)
         bt_struct.run()
         pos_struct = (bt_struct.open_positions + bt_struct.closed_positions)[0]
-        # TP should be 4.0 * 1.35 = 5.4% -> 105.4
-        assert abs(pos_struct.take_profit - 105.4) < 0.01
+        # TP should be 4.0 * 1.15 = 4.6% -> 104.6
+        assert abs(pos_struct.take_profit - 104.6) < 0.01
 
         # Breakout signal (🚀)
         sig_bo = [{'time': 1000, 'direction': 'bullish', 'score': 7, 'strategy_type': 'breakout', 'text': '🚀 [BREAKOUT]'}]
         bt_bo = SignalBacktester(config, candles, sig_bo)
         bt_bo.run()
         pos_bo = (bt_bo.open_positions + bt_bo.closed_positions)[0]
-        assert abs(pos_bo.take_profit - 105.4) < 0.01
+        assert abs(pos_bo.take_profit - 104.6) < 0.01
 
     def test_atr_precomputation(self):
         candles = [

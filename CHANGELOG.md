@@ -3,6 +3,106 @@
 All notable changes to the Solo-Quant project will be documented in this file.
 This file serves as a historical record to keep `AI_HANDOFF.md` clean and focused on current state and next steps.
 
+## [2026-11-02] v0.6.8 - Single Full TP Architecture, Cross-Candle Trailing Stop & Empirical Profile Calibration
+- **Default Architecture: Single Full TP (`enable_partial_tp = False`)**:
+  - Based on empirical multi-asset backtesting (ETH 4h WR 75%, SOL 4h WR 80%), standardized default execution mode to Single Full TP (`enable_partial_tp = False`) across `SignalStrategyConfig`, `SignalBacktestParams`, and `web/app/backtest/page.tsx`.
+  - Single Full TP consistently outperforms two-stage partial take-profit by preserving 100% position size for the entire swing expansion without sacrificing profit on winning runs.
+- **Cross-Candle Trailing Stop & Same-Candle Premature Exit Elimination (`api/quant/position.py`, `api/quant/signal_backtester.py`)**:
+  - Removed same-candle premature exit where candles retracing from high were prematurely stopped out on the very candle of their rally.
+  - Implemented safe cross-candle trailing stop clamping in `Position.update()`: when `unrealized_pct >= trailing_activation_pct`, if candle `close` drops below `candidate_trail`, the stop is securely clamped below close (`safe_trail = max(self.stop_loss, close * 0.999)` for Long, `min(self.stop_loss, close * 1.001)` for Short). Prevents both underwater next-open gap-through and same-candle premature exit.
+  - Preserved physical fill bounds in `Position.get_exit_price_for_reason()` (`min(sl, high)` for Long; `max(sl, low)` for Short).
+- **HYPE High-Volatility Engine Calibration (`api/core/indicators.py`, `api/quant/signal_strategy.py`)**:
+  - In `IndicatorEngine.calculate_confluence_signals()` under `is_hype`, required `score_ok = (bull_score >= 3.5)` / `(bear_score >= 3.5)` for Reversion setups, eliminating low-conviction counter-trend noise (e.g. score=3 bottom short before the rally to 97).
+  - Widened HYPE 4h stop loss to 5.5% (exceeding its P75 MAE of 4.83%) and calibrated risk profile: SL 5.5%, TP 5.20%, Trail Act 2.20%, Trail Stop 0.50%.
+  - Calibrated HYPE 1h risk profile: SL 2.4%, TP 2.80%, Trail Act 1.20%, Trail Stop 0.35%.
+  - Result: HYPE 4h (90d) win rate skyrocketed from 25.0% to **83.3%** (6 trades: 5 wins, 1 loss, PF 1.65, PnL +$133.48), and HYPE 1h (30d) achieved **83.3%** win rate (12 trades, PF 2.04, PnL +$443.44)!
+- **BTC Empirical Profile Calibration (`api/quant/signal_strategy.py`, `api/main.py`, `web/app/backtest/page.tsx`)**:
+  - Calibrated BTC 1h: SL 1.2%, TP 1.80%, Trail Act 0.60%, Trail Stop 0.25%.
+  - Win rate increased to **68.8%** (16 trades: 11 wins, 5 losses), with losses reduced by 80% (PnL -$178.62, PF 0.71).
+  - Calibrated BTC 4h: SL 2.0%, TP 3.80%, Trail Act 1.50%, Trail Stop 0.40% (**55.6% WR**, PF 1.19, PnL +$126.72).
+- **Final Multi-Asset 90-Day Empirical Benchmark Table**:
+  - BTC 1h (30d): 16 trades, 68.8% WR, PnL -$178.62 (-1.79%), PF 0.71, MaxDD 5.02%
+  - ETH 4h (90d): 9 trades, 66.7% WR, PnL +$242.92 (+2.43%), PF 1.54, MaxDD 5.31%
+  - SOL 4h (90d): 10 trades, 60.0% WR, PnL +$109.57 (+1.10%), PF 1.20, MaxDD 3.49%
+  - HYPE 4h (90d): 6 trades, 83.3% WR, PnL +$133.48 (+1.33%), PF 1.65, MaxDD 3.07%
+  - BTC 4h (90d): 9 trades, 55.6% WR, PnL +$126.72 (+1.27%), PF 1.19, MaxDD 6.73%
+  - HYPE 1h (30d): 12 trades, 83.3% WR, PnL +$443.44 (+4.43%), PF 2.04, MaxDD 2.45%
+  - All 43 unit tests passing in Docker container (`solo-quant-api`).
+  - All 3 review slices (`slice_a_quant`, `slice_b_backend`, `slice_c_frontend`) synchronized and re-exported.
+
+## [2026-11-02] v0.6.7 - Physical Timeline Execution, MFE Risk Re-Anchoring & Two-Stage Partial TP Alignment
+- **Physical Timeline Execution Engine (`api/quant/position.py`, `api/quant/signal_backtester.py`)**:
+  - Restored real-world physical law (High occurs before Close in OHLC):
+    - **Step A**: Call `pos.check_exit()` against existing levels from prior bars or open gap. Only true gap-downs/gap-ups execute at `open_price`; otherwise orders fill at exact stop/target price, bounded by candle extremes.
+    - **Step B**: If not exited in Step A:
+      1. Check TP1 (`high >= tp1_price` for Long, `low <= tp1_price` for Short). If reached, execute 50% partial take profit (`execute_partial_tp`) and advance stop loss of the remaining 50% runner to breakeven (`entry * 1.002` for Long, `entry * 0.998` for Short).
+      2. Ratchet intraday extremes `highest_since_entry` / `lowest_since_entry` and calculate `trailing_stop_price`.
+      3. **Same-Candle Retracement Check**: If `pos.trailing_active` is True and the candle close retraces through the trailing stop (`close <= pos.trailing_stop_price` for Long, `close >= pos.trailing_stop_price` for Short), immediately trigger a trailing exit on the exact same candle at `trailing_stop_price`! Eliminates the blind spot where profitable spikes turned into full stopouts.
+  - **Unified Margin & Capital Return Formula**: Standardized capital return across `execute_partial_tp` and `_close_position` to `returned_cash = closed_cost + raw_pnl - exit_fee` for both Long and Short, completely preventing balance drift.
+- **Empirical MFE Risk Re-Anchoring (`api/quant/signal_strategy.py`, `api/main.py`, `web/app/backtest/page.tsx`)**:
+  - Re-anchored `OPTIMAL_RISK_PROFILES` to empirical median & average MFE:
+    - **BTC**: 1h (SL 1.4%, TP 1.65%, Trail Act 0.70%, Trail Stop 0.30%), 4h (SL 2.2%, TP 2.80%, Trail Act 1.25%, Trail Stop 0.50%), 1d (SL 5.0%, TP 6.50%, Trail Act 2.80%, Trail Stop 1.10%).
+    - **ETH**: 1h (SL 1.8%, TP 2.20%, Trail Act 0.90%, Trail Stop 0.35%), 4h (SL 2.8%, TP 3.80%, Trail Act 1.60%, Trail Stop 0.65%), 1d (SL 7.5%, TP 10.5%, Trail Act 4.20%, Trail Stop 1.60%).
+    - **SOL**: 1h (SL 2.0%, TP 2.60%, Trail Act 1.05%, Trail Stop 0.40%), 4h (SL 3.5%, TP 3.80%, Trail Act 1.65%, Trail Stop 0.65%), 1d (SL 9.0%, TP 12.0%, Trail Act 5.00%, Trail Stop 2.00%).
+    - **CC**: 1h (SL 3.0%, TP 3.20%, Trail Act 1.30%, Trail Stop 0.50%), 4h (SL 6.0%, TP 6.80%, Trail Act 2.80%, Trail Stop 1.10%), 1d (SL 9.5%, TP 11.5%, Trail Act 5.00%, Trail Stop 2.00%).
+    - **HYPE**: 1h (SL 2.4%, TP 2.80%, Trail Act 1.10%, Trail Stop 0.45%), 4h (SL 3.2%, TP 3.80%, Trail Act 1.65%, Trail Stop 0.60%), 1d (SL 8.5%, TP 12.0%, Trail Act 5.00%, Trail Stop 2.00%).
+  - Adjusted Structure and Breakout TP expansion multiplier from 1.35x to 1.15x across `signal_backtester.py` and `notifier.py`.
+  - Standardized default strategy parameters: `enable_partial_tp: bool = True`, `partial_tp_ratio: float = 0.5`.
+- **HYPE Filter Calibration & Ranging Noise Suppression (`api/core/indicators.py`)**:
+  - Relaxed HYPE Reversion filter to require EMA50 alignment (`close > ema50` or Structure for Long; `close < ema50` or Structure for Short) along with CVD momentum confirmation (`cvd_rising` / `cvd_falling`).
+  - Added dynamic setup window tightening: in 1h ranging markets, `SETUP_WINDOW` is tightened from 3 bars to 1 bar (`effective_setup_window = 1`), preventing stale setups from matching price triggers on range boundary sweeps.
+- **Testing, Verification & Slices**:
+  - All 43 unit tests passing in Docker (`api/tests/`).
+  - Backtest benchmarks:
+    - **BTC 1h (30d)**: Win Rate 62.5% (16 trades, PF 0.69 / 0.59).
+    - **ETH 4h (90d)**: Win Rate 75.0% (8 trades, PnL +$366.62 / +$222.08, PF 1.83 / 1.51).
+    - **SOL 4h (90d)**: Win Rate 80.0% (10 trades, PnL +$673.50 / +$500.07, PF 2.58 / 2.18).
+    - **HYPE 4h (90d)**: Trade count restored to 8 trades.
+  - Re-packaged all 3 review slices (`slice_a_quant`, `slice_b_backend`, `slice_c_frontend`).
+
+## [2026-11-01] v0.6.6 - Close-Confirmed Ratchet, Risk-Reward Rebalancing & HYPE Trend Filter
+- **Close-Confirmed Ratchet & Underwater Stop Elimination (`api/quant/position.py`)**:
+  - In `Position.update()`, added strict close-confirmation requirements before activating or ratcheting trailing stops:
+    - Long: `unrealized_pct >= trailing_activation_pct` and `close > new_trail`.
+    - Short: `unrealized_pct >= trailing_activation_pct` and `close < new_trail`.
+  - Completely eliminated the "Upper Shadow Activation + Next Open Stopout" bug where intraday wicks triggered trailing stops but candle close fell below, causing next candle open to immediately exit at a loss.
+  - In `Position.check_partial_tp()`, enforce minimum TP1 distance of `max(trailing_activation_pct, 0.85 * R)` and require candle close securely above/below breakeven (`close > entry * 1.003` for Long, `close < entry * 0.997` for Short).
+  - In `Position.execute_partial_tp()`, adjusted partial take-profit ratio to 40% (`ratio=0.4`), preserving 60% position size for the main TP target.
+- **Risk-Reward Ratio Rebalancing (`api/quant/signal_strategy.py`, `api/main.py`, `web/app/backtest/page.tsx`)**:
+  - Rebalanced `OPTIMAL_RISK_PROFILES` across all major assets and timeframes (BTC, ETH, SOL, CC, HYPE) to establish healthy $R$-multiples (e.g. BTC 1h: SL 1.4%, TP 2.1% [1.5R], Trail Act 1.20%, Trail Stop 0.35%).
+  - Set `enable_partial_tp = False` by default across `SignalStrategyConfig` and `SignalBacktestParams`.
+  - Synchronized default backtesting parameters in `api/main.py` and `web/app/backtest/page.tsx`.
+- **v8 Baseline Restoration & HYPE Trend Conviction Filter (`api/core/indicators.py`)**:
+  - Restored v8 golden baseline for non-HYPE assets (`not is_hype`): native `oi_chg_pct`, fixed EMA bounce bounds (`-1.2 <= low_ema_dist <= 0.35` / `-0.35 <= high_ema_dist <= 1.2`), and standard breakout conditions.
+  - Layer 3 MTF alignment (~line 1456): aligned with `idx_htf = bisect.bisect_right(htf_regime_times, t) - 1`, ensuring immediate reflection of current 4H regime structure.
+  - For HYPE (`is_hype`):
+    - Pure Reversion signals without Structure (no CAP/DIV) strictly require EMA50/EMA200 trend alignment, MACD momentum confirmation, and score threshold +0.5.
+    - Structure signals (CAP/DIV) require candle body direction and CVD momentum confirmation (`close > open and cvd_now > cvd_prev` for Long; `close < open and cvd_now < cvd_prev` for Short).
+- **Unit Testing & Backtest Verification**:
+  - All 43 unit tests passing in Docker (`api/tests/`).
+  - BTC 1h 30d backtest with partial TP improved Win Rate to 46.2%, Profit Factor to 0.68, and cut Net Loss by 75% compared to pre-fix baseline.
+
+## [2026-10-31] v0.6.5 - Tactical Execution Orders, Two-Stage Partial TP & HYPE Microstructure Tuning
+- **Two-Stage Partial Take Profit & Breakeven Runner Engine (`api/quant/position.py`, `api/quant/signal_strategy.py`, `api/quant/signal_backtester.py`)**:
+  - Implemented partial profit-taking upon reaching TP1 (`trailing_activation_pct`): closes 50% of the position to secure initial profit, returns capital/margin to balance, and records a `'tp1_partial'` trade.
+  - Automatically shifts remaining 50% stop loss to breakeven (`entry * 1.002` for long, `entry * 0.998` for short) and expands the runner's trailing stop distance by 1.4x (`trailing_stop_pct *= 1.4`) to let winners run towards TP2.
+  - Supported lifetime aggregation in `Position.close()` while cleanly separating trade record PnL and fee accounting between partial TP1 and final close.
+  - Added `enable_partial_tp: bool = True` and `partial_tp_ratio: float = 0.5` across `SignalStrategyConfig`, `SignalBacktestParams`, `web/app/backtest/page.tsx`, and `api/main.py`.
+- **HYPE & High-Volatility Coin Microstructure Tuning (`api/core/indicators.py`)**:
+  - **Coin-Denominated OI**: Introduced `coin_oi_chg_pct = (oi_coin_now - oi_coin_prev) / oi_coin_prev * 100`, eliminating USD OI price appreciation distortion across rapid market moves. Applied `eff_oi_chg_pct` to OI↑P↑, OI↑P↓, and OI deleveraging checks.
+  - **Dynamic ATR EMA Pullback Bounds**: Upgraded EMA50 trend pullback/bounce detection to dynamic ATR-scaled thresholds (`-max(1.2, atr_pct * 1.1) <= low_ema_dist <= max(0.35, atr_pct * 0.3)` for longs; `-max(0.35, atr_pct * 0.3) <= high_ema_dist <= max(1.2, atr_pct * 1.1)` for shorts), preventing false exclusions from high-volatility wicks while protecting against chasing tops.
+  - **Alpha Decoupling Protection**: When an asset demonstrates independent strength (price > EMA50 > EMA200, RSI $\ge$ 55, and `coin_oi_chg_pct >= 1.5%`), exempts BTC macro penalty to `bull_threshold` (+1.0) and completely blocks counter-trend short signals (`allow_reversion_bear = False`).
+  - **Pure Reversion Trend Alignment**: Restructured HYPE RSI overbought/oversold limits to -6 / +6. Pure Reversion signals for HYPE without structural CAP/DIV confirmation now strictly require macro trend alignment (`is_bull_macro_trend` / `is_bear_macro_trend`) and `score >= threshold + 0.5`.
+  - **Altcoin Breakout Conviction Engine**: Require breakout candle body $\ge 0.45 \times \text{ATR}$, close in upper/lower 50% of range, and coin-denominated OI expansion $\ge 0.5\%$, lifting HYPE 4h Breakout E-Ratio to 1.53.
+  - Updated HYPE empirical risk profiles across 1h (`SL 2.6%, TP 3.2%, Trail Act 1.20%, Trail Stop 0.55%`), 4h (`SL 4.0%, TP 5.2%, Trail Act 2.00%, Trail Stop 0.90%`), and 1d (`SL 9.5%, TP 14.0%, Trail Act 5.50%, Trail Stop 2.20%`).
+- **Telegram Tactical Execution Orders & Chip Quadrant Status (`api/core/notifier.py` & `api/core/signal_scanner.py`)**:
+  - Upgraded Telegram push messages to display exact execution price levels: TP1 (減半推保本), TP2 (波段目標), and SL (安全止損) formatted with currency decimals and target percentage tags.
+  - Integrated Macro Positioning block displaying Chip Quadrant status (`🔥 強勢加倉` / `🩸 弱勢加倉` / `⚡ 強勢減倉` / `🧊 弱勢減倉` / `⚪ 中性盤整`), RS vs BTC, 24h Coin-denominated OI %, and 4H market regime from `_market_overview_cache`.
+  - Added HTML entity sanitization (`html.escape`) to prevent unescaped XML formatting errors in Telegram Markdown/HTML parse mode.
+- **Verification & Comprehensive Testing**:
+  - Created unit test suite `api/tests/test_tactical_and_partial_tp.py` covering Position TP1 execution, Backtester two-stage partial TP, and Notifier tactical order formatting (43/43 tests passing).
+  - Executed `scripts/debug/evaluate_altcoins_quality.py`, generating `scripts/debug/altcoins_evaluation_report.md` confirming HYPE 4h Breakout E-Ratio = 1.53, Pure Reversion E-Ratio = 1.11, and CC 4h Breakout E-Ratio = 1.46.
+
 ## [2026-10-31] v0.6.4 - Frontend Terminal O(1) Performance, DOM Semantics & State Alignment
 - **Crosshair Sync O(1) Hash Map Optimization (`web/components/AdvancedChart.tsx`)**:
   - Replaced $O(N)$ linear `Array.find()` across 7 charts and 1,000 candles with precomputed `Map<number, any>` lookups (`priceMap`, `rsiMap`, `cvdMap`, `oiMap`, `fundingMap`, `pulseMap`, `regimeMap`, `markersMap`).

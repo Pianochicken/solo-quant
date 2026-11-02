@@ -280,6 +280,8 @@ export interface SignalBacktestParams {
     enable_protection: boolean;
     use_dynamic_profiles: boolean;
     enable_mtf_filter: boolean;  // Layer 3: 4h regime MTF confirmation
+    enable_partial_tp?: boolean;
+    partial_tp_ratio?: number;
     min_score?: number;
     signal_types?: string;
 }

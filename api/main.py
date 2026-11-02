@@ -1043,14 +1043,16 @@ class SignalBacktestParams(BaseModel):
     timeframe: str = '1h'
     # Risk & Position Management
     risk_per_trade_pct: float = 2.0
-    take_profit_pct: float = 1.5
-    stop_loss_pct: float = 1.4
-    trailing_stop_pct: float = 0.30
-    trailing_activation_pct: float = 0.65
+    take_profit_pct: float = 1.80
+    stop_loss_pct: float = 1.2
+    trailing_stop_pct: float = 0.25
+    trailing_activation_pct: float = 0.60
     max_positions: int = 1
     fee_rate: float = 0.0005
     allow_short: bool = True
     reverse_on_signal: bool = True
+    enable_partial_tp: bool = False
+    partial_tp_ratio: float = 0.5
     # Confluence Signal Tuning
     ranging_threshold: int = 3
     trending_threshold: int = 3
@@ -1120,6 +1122,8 @@ def run_signal_backtest(params: SignalBacktestParams):
             fee_rate=params.fee_rate,
             allow_short=params.allow_short,
             reverse_on_signal=params.reverse_on_signal,
+            enable_partial_tp=params.enable_partial_tp,
+            partial_tp_ratio=params.partial_tp_ratio,
             enable_protection=params.enable_protection,
             enable_mtf_filter=params.enable_mtf_filter,
             use_dynamic_profiles=params.use_dynamic_profiles,
