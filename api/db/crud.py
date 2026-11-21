@@ -1,9 +1,58 @@
+import logging
 from typing import List, Optional
 from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy import desc, asc
+from sqlalchemy import desc, asc, text
 from .models import MarketDataPoint, FundingRate
+
+logger = logging.getLogger(__name__)
+
+
+def run_db_migrations(engine):
+    """
+    Idempotent schema & data migration:
+    1. Ensure `top_ls_position_ratio` column exists on `market_data_points`.
+    2. Merge legacy uppercase timeframes (e.g. '1H', '1D') into lowercase ('1h', '1d')
+       preserving fresh lowercase metrics while backfilling missing older columns.
+    """
+    metric_cols = [
+        "open", "high", "low", "close", "volume",
+        "open_interest", "long_short_ratio", "taker_buy_vol", "taker_sell_vol",
+        "top_ls_position_ratio",
+    ]
+    coalesce_updates = ",\n                ".join(
+        f"{col} = COALESCE(market_data_points.{col}, EXCLUDED.{col})"
+        for col in metric_cols
+    )
+    col_list = ", ".join(metric_cols)
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE market_data_points "
+            "ADD COLUMN IF NOT EXISTS top_ls_position_ratio DOUBLE PRECISION;"
+        ))
+        upper_count = conn.execute(text(
+            "SELECT COUNT(*) FROM market_data_points WHERE timeframe <> LOWER(timeframe);"
+        )).scalar() or 0
+        if upper_count > 0:
+            logger.info(f"Migrating {upper_count} uppercase timeframe rows into lowercase...")
+            conn.execute(text(f"""
+                INSERT INTO market_data_points (
+                    exchange, symbol, timeframe, timestamp, {col_list}
+                )
+                SELECT DISTINCT ON (exchange, symbol, LOWER(timeframe), timestamp)
+                    exchange, symbol, LOWER(timeframe), timestamp, {col_list}
+                FROM market_data_points
+                WHERE timeframe <> LOWER(timeframe)
+                ORDER BY exchange, symbol, LOWER(timeframe), timestamp
+                ON CONFLICT (exchange, symbol, timeframe, timestamp) DO UPDATE SET
+                    {coalesce_updates};
+            """))
+            deleted = conn.execute(text(
+                "DELETE FROM market_data_points WHERE timeframe <> LOWER(timeframe);"
+            )).rowcount
+            logger.info(f"Merged and deleted {deleted} legacy uppercase timeframe rows.")
 
 def upsert_market_data(db: Session, records: List[dict]):
     """
@@ -83,19 +132,23 @@ def get_market_data(
     limit: int = 100,
     start_time: Optional[datetime] = None,
     end_time: Optional[datetime] = None,
-    require_ohlcv: bool = False
+    require_ohlcv: bool = False,
+    require_column: Optional[str] = None,
 ) -> List[MarketDataPoint]:
     """
     Retrieve market data points. Order is chronological (ascending timestamp).
     """
+    tf_norm = str(timeframe).lower()
     query = db.query(MarketDataPoint).filter(
         MarketDataPoint.symbol == symbol,
-        MarketDataPoint.timeframe == timeframe,
+        MarketDataPoint.timeframe == tf_norm,
         MarketDataPoint.exchange == exchange
     )
 
     if require_ohlcv:
         query = query.filter(MarketDataPoint.open.isnot(None))
+    if require_column and hasattr(MarketDataPoint, require_column):
+        query = query.filter(getattr(MarketDataPoint, require_column).isnot(None))
 
     if start_time:
         query = query.filter(MarketDataPoint.timestamp >= start_time)

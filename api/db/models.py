@@ -23,6 +23,7 @@ class MarketDataPoint(Base):
     # Core indicator metrics
     open_interest = Column(Float, nullable=True)      # Absolute OI
     long_short_ratio = Column(Float, nullable=True)   # LS ratio (accounts/volume based)
+    top_ls_position_ratio = Column(Float, nullable=True)  # Binance Top 20% Traders Position L/S Ratio
     taker_buy_vol = Column(Float, nullable=True)      # For CVD calculation
     taker_sell_vol = Column(Float, nullable=True)     # For CVD calculation
 

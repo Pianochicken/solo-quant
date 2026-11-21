@@ -250,21 +250,14 @@ class DataFetcher:
 
         # Step 1: Check cache gap in a short-lived DB session
         with SessionLocal() as db:
-            if p_lower == '1d':
-                db_bin_lower = crud.get_market_data(db, symbol=db_symbol, timeframe='1d', exchange="binance", limit=query_limit)
-                db_bin_upper = crud.get_market_data(db, symbol=db_symbol, timeframe='1D', exchange="binance", limit=query_limit)
-                seen_ts = set()
-                db_bin_raw = []
-                for x in sorted(db_bin_lower + db_bin_upper, key=lambda item: item.timestamp):
-                    if x.timestamp not in seen_ts and x.taker_buy_vol is not None:
-                        seen_ts.add(x.timestamp)
-                        db_bin_raw.append(x)
-                if len(db_bin_raw) > query_limit:
-                    db_bin_raw = db_bin_raw[-query_limit:]
-            else:
-                db_bin_raw = crud.get_market_data(db, symbol=db_symbol, timeframe=period, exchange="binance", limit=query_limit)
-                db_bin_raw = [x for x in db_bin_raw if x.taker_buy_vol is not None]
-
+            db_bin_raw = crud.get_market_data(
+                db,
+                symbol=db_symbol,
+                timeframe=p_lower,
+                exchange="binance",
+                limit=query_limit,
+                require_column="taker_buy_vol",
+            )
             db_bin_pts = [x.timestamp.timestamp() for x in db_bin_raw]
 
         missed_candles = 20 * tf_ratio
@@ -306,7 +299,7 @@ class DataFetcher:
                             'timestamp': self._ms_to_dt(int(item['timestamp'])),
                             'exchange': 'binance',
                             'symbol': db_symbol,
-                            'timeframe': period,
+                            'timeframe': p_lower,
                             'taker_sell_vol': float(item['sellVol']),
                             'taker_buy_vol': float(item['buyVol'])
                         })
@@ -324,19 +317,14 @@ class DataFetcher:
 
         # Step 3: Read final series in a short-lived DB session
         with SessionLocal() as db:
-            if p_lower == '1d':
-                bin_data_lower = crud.get_market_data(db, symbol=db_symbol, timeframe='1d', exchange="binance", limit=query_limit)
-                bin_data_upper = crud.get_market_data(db, symbol=db_symbol, timeframe='1D', exchange="binance", limit=query_limit)
-                seen_ts = set()
-                bin_data = []
-                for x in sorted(bin_data_lower + bin_data_upper, key=lambda item: item.timestamp):
-                    if x.timestamp not in seen_ts and x.taker_buy_vol is not None:
-                        seen_ts.add(x.timestamp)
-                        bin_data.append(x)
-                if len(bin_data) > query_limit:
-                    bin_data = bin_data[-query_limit:]
-            else:
-                bin_data = crud.get_market_data(db, symbol=db_symbol, timeframe=period, exchange="binance", limit=query_limit)
+            bin_data = crud.get_market_data(
+                db,
+                symbol=db_symbol,
+                timeframe=p_lower,
+                exchange="binance",
+                limit=query_limit,
+                require_column="taker_buy_vol",
+            )
             raw_bin_records = [
                 { "time": int(x.timestamp.timestamp()), "sell_vol": x.taker_sell_vol or 0, "buy_vol": x.taker_buy_vol or 0 }
                 for x in bin_data
@@ -455,21 +443,14 @@ class DataFetcher:
 
         # Step 1: Check cache gap in a short-lived DB session
         with SessionLocal() as db:
-            if p_lower == '1d':
-                db_okx_lower = crud.get_market_data(db, symbol=db_symbol, timeframe='1d', exchange="okx", limit=query_limit)
-                db_okx_upper = crud.get_market_data(db, symbol=db_symbol, timeframe='1D', exchange="okx", limit=query_limit)
-                seen_ts = set()
-                db_okx_raw = []
-                for x in sorted(db_okx_lower + db_okx_upper, key=lambda item: item.timestamp):
-                    if x.timestamp not in seen_ts and x.open_interest is not None:
-                        seen_ts.add(x.timestamp)
-                        db_okx_raw.append(x)
-                if len(db_okx_raw) > query_limit:
-                    db_okx_raw = db_okx_raw[-query_limit:]
-            else:
-                db_okx_raw = crud.get_market_data(db, symbol=db_symbol, timeframe=p_lower, exchange="okx", limit=query_limit)
-                db_okx_raw = [x for x in db_okx_raw if x.open_interest is not None]
-
+            db_okx_raw = crud.get_market_data(
+                db,
+                symbol=db_symbol,
+                timeframe=p_lower,
+                exchange="okx",
+                limit=query_limit,
+                require_column="open_interest",
+            )
             db_okx_pts = [x.timestamp.timestamp() for x in db_okx_raw]
 
         missed_candles = 20 * tf_ratio
@@ -580,31 +561,22 @@ class DataFetcher:
 
         # Step 3: Read final series in a short-lived DB session
         with SessionLocal() as db:
-            if p_lower == '1d':
-                okx_data_lower = crud.get_market_data(db, symbol=db_symbol, timeframe='1d', exchange="okx", limit=query_limit)
-                okx_data_upper = crud.get_market_data(db, symbol=db_symbol, timeframe='1D', exchange="okx", limit=query_limit)
-                seen_ts = set()
-                okx_data = []
-                for x in sorted(okx_data_lower + okx_data_upper, key=lambda item: item.timestamp):
-                    if x.timestamp not in seen_ts and x.open_interest is not None:
-                        seen_ts.add(x.timestamp)
-                        okx_data.append(x)
-                if len(okx_data) > query_limit:
-                    okx_data = okx_data[-query_limit:]
-
-                bin_data_lower = crud.get_market_data(db, symbol=db_symbol, timeframe='1d', exchange="binance", limit=query_limit)
-                bin_data_upper = crud.get_market_data(db, symbol=db_symbol, timeframe='1D', exchange="binance", limit=query_limit)
-                seen_ts_b = set()
-                bin_data = []
-                for x in sorted(bin_data_lower + bin_data_upper, key=lambda item: item.timestamp):
-                    if x.timestamp not in seen_ts_b and x.open_interest is not None:
-                        seen_ts_b.add(x.timestamp)
-                        bin_data.append(x)
-                if len(bin_data) > query_limit:
-                    bin_data = bin_data[-query_limit:]
-            else:
-                okx_data = crud.get_market_data(db, symbol=db_symbol, timeframe=p_lower, exchange="okx", limit=query_limit)
-                bin_data = crud.get_market_data(db, symbol=db_symbol, timeframe=p_lower, exchange="binance", limit=query_limit)
+            okx_data = crud.get_market_data(
+                db,
+                symbol=db_symbol,
+                timeframe=p_lower,
+                exchange="okx",
+                limit=query_limit,
+                require_column="open_interest",
+            )
+            bin_data = crud.get_market_data(
+                db,
+                symbol=db_symbol,
+                timeframe=p_lower,
+                exchange="binance",
+                limit=query_limit,
+                require_column="open_interest",
+            )
 
             raw_okx_records = [{ "time": int(x.timestamp.timestamp()), "value": x.open_interest or 0 } for x in okx_data if x.open_interest is not None]
             raw_bin_records = [{ "time": int(x.timestamp.timestamp()), "value": x.open_interest or 0 } for x in bin_data if x.open_interest is not None]
@@ -697,12 +669,20 @@ class DataFetcher:
     def fetch_long_short_ratio(self, symbol: str, period: str = '5m', limit: int = 100) -> list:
         ccy = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[0]
         binance_symbol = f"{ccy}USDT"
-        db_symbol = symbol 
+        db_symbol = symbol
+        p_lower = period.lower()
         
         # Step 1: Check cache gap in a short-lived DB session
         with SessionLocal() as db:
-            db_okx_raw = crud.get_market_data(db, symbol=db_symbol, timeframe=period, exchange="okx", limit=limit)
-            db_okx_pts = [x.timestamp.timestamp() for x in db_okx_raw if x.long_short_ratio is not None]
+            db_okx_raw = crud.get_market_data(
+                db,
+                symbol=db_symbol,
+                timeframe=p_lower,
+                exchange="okx",
+                limit=limit,
+                require_column="long_short_ratio",
+            )
+            db_okx_pts = [x.timestamp.timestamp() for x in db_okx_raw]
             
         missed_candles = 20
         if db_okx_pts:
@@ -711,10 +691,9 @@ class DataFetcher:
             now_ts = time.time()
             
             tf_sec = 300
-            tf_l = period.lower()
-            if 'm' in tf_l: tf_sec = int(tf_l.replace('m', '')) * 60
-            elif 'h' in tf_l: tf_sec = int(tf_l.replace('h', '')) * 3600
-            elif 'd' in tf_l: tf_sec = int(tf_l.replace('d', '')) * 86400
+            if 'm' in p_lower: tf_sec = int(p_lower.replace('m', '')) * 60
+            elif 'h' in p_lower: tf_sec = int(p_lower.replace('h', '')) * 3600
+            elif 'd' in p_lower: tf_sec = int(p_lower.replace('d', '')) * 86400
             
             diff = now_ts - latest_ts
             span = latest_ts - first_ts
@@ -731,7 +710,6 @@ class DataFetcher:
         # Step 2: Fetch data via OKX and Binance concurrently outside any DB session
         def fetch_okx():
             okx_period = '5m'
-            p_lower = period.lower()
             if p_lower in ['1h', '2h', '4h', '6h', '8h', '12h']: okx_period = '1H'
             elif p_lower in ['1d', '2d', '3d', '1w', '1m']: okx_period = '1D'
             
@@ -746,7 +724,7 @@ class DataFetcher:
                             'timestamp': self._ms_to_dt(int(ts)),
                             'exchange': 'okx',
                             'symbol': db_symbol,
-                            'timeframe': period,
+                            'timeframe': p_lower,
                             'long_short_ratio': float(ratio)
                         })
             except Exception: pass
@@ -757,7 +735,6 @@ class DataFetcher:
 
         def fetch_binance():
             binance_period = '5m'
-            p_lower = period.lower()
             if p_lower in ['1h', '2h', '4h', '6h', '8h', '12h']: binance_period = '1h'
             elif p_lower in ['1d', '2d', '3d', '1w', '1m']: binance_period = '1d'
             
@@ -778,7 +755,7 @@ class DataFetcher:
                             'timestamp': self._ms_to_dt(int(item['timestamp'])),
                             'exchange': 'binance',
                             'symbol': db_symbol,
-                            'timeframe': period,
+                            'timeframe': p_lower,
                             'long_short_ratio': float(item['longShortRatio'])
                         })
                     earliest_ts = min(int(item['timestamp']) for item in res)
@@ -797,8 +774,22 @@ class DataFetcher:
 
         # Step 3: Read final series in a short-lived DB session
         with SessionLocal() as db:
-            okx_data = crud.get_market_data(db, symbol=db_symbol, timeframe=period, exchange="okx", limit=limit)
-            bin_data = crud.get_market_data(db, symbol=db_symbol, timeframe=period, exchange="binance", limit=limit)
+            okx_data = crud.get_market_data(
+                db,
+                symbol=db_symbol,
+                timeframe=p_lower,
+                exchange="okx",
+                limit=limit,
+                require_column="long_short_ratio",
+            )
+            bin_data = crud.get_market_data(
+                db,
+                symbol=db_symbol,
+                timeframe=p_lower,
+                exchange="binance",
+                limit=limit,
+                require_column="long_short_ratio",
+            )
             raw_okx_records = [{ "time": int(x.timestamp.timestamp()), "value": x.long_short_ratio or 0 } for x in okx_data if x.long_short_ratio is not None]
             raw_bin_records = [{ "time": int(x.timestamp.timestamp()), "value": x.long_short_ratio or 0 } for x in bin_data if x.long_short_ratio is not None]
 
@@ -810,9 +801,9 @@ class DataFetcher:
             return []
 
         period_seconds = 300
-        if 'm' in period.lower(): period_seconds = int(period.lower().replace('m', '')) * 60
-        elif 'h' in period.lower(): period_seconds = int(period.lower().replace('h', '')) * 3600
-        elif 'd' in period.lower(): period_seconds = 86400
+        if 'm' in p_lower: period_seconds = int(p_lower.replace('m', '')) * 60
+        elif 'h' in p_lower: period_seconds = int(p_lower.replace('h', '')) * 3600
+        elif 'd' in p_lower: period_seconds = 86400
 
         if not df_okx.empty:
             df_okx['rounded_time'] = (df_okx['time'] // period_seconds) * period_seconds
@@ -865,6 +856,136 @@ class DataFetcher:
 
         merged.sort_values('time', inplace=True)
         return merged[['time', 'value']].to_dict('records')[-limit:]
+
+    def fetch_top_trader_position_ratio(self, symbol: str, period: str = '1h', limit: int = 100) -> list:
+        """
+        Fetches Binance Top 20% Trader Position-Weighted Long/Short Ratio.
+        Stored exclusively under exchange='binance' because OKX's top trader position ratio
+        measures average margin usage ratio (~0.90), which is mathematically incompatible with
+        Binance's long/short notional position ratio (~1.83).
+        """
+        ccy = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[0]
+        binance_symbol = f"{ccy}USDT"
+        db_symbol = symbol
+        p_lower = period.lower()
+
+        binance_period = '1h'
+        if p_lower in ['1m', '3m', '5m', '15m']:
+            binance_period = '5m'
+        elif p_lower in ['30m', '1h', '2h', '4h', '6h', '8h', '12h']:
+            binance_period = '1h'
+        elif p_lower in ['1d', '2d', '3d', '1w', '1m']:
+            binance_period = '1d'
+
+        period_seconds = 3600
+        if 'm' in p_lower:
+            period_seconds = int(p_lower.replace('m', '')) * 60
+        elif 'h' in p_lower:
+            period_seconds = int(p_lower.replace('h', '')) * 3600
+        elif 'd' in p_lower:
+            period_seconds = 86400
+
+        raw_step_sec = 300 if binance_period == '5m' else (3600 if binance_period == '1h' else 86400)
+        tf_ratio = max(1, period_seconds // raw_step_sec) if period_seconds > raw_step_sec else 1
+        query_limit = limit * tf_ratio
+
+        # Step 1: Check cache gap in a short-lived DB session
+        with SessionLocal() as db:
+            db_bin_raw = crud.get_market_data(
+                db,
+                symbol=db_symbol,
+                timeframe=p_lower,
+                exchange="binance",
+                limit=query_limit,
+                require_column="top_ls_position_ratio",
+            )
+            db_bin_pts = [x.timestamp.timestamp() for x in db_bin_raw]
+
+        min_backfill_count = 25 if binance_period == '1d' else min(query_limit, 500)
+        now_ts = time.time()
+        if not db_bin_pts or len(db_bin_pts) < min_backfill_count:
+            limit_to_fetch = min(max(query_limit, 500), 1000)
+        else:
+            diff = now_ts - db_bin_pts[-1]
+            if diff < raw_step_sec * 3:
+                limit_to_fetch = 20
+            else:
+                calc_missed = int((diff // raw_step_sec) + 2)
+                limit_to_fetch = max(20, min(calc_missed, min(query_limit, 1000)))
+
+        # Step 2: Fetch from Binance outside any DB session
+        def fetch_binance():
+            if not hasattr(self.binance, 'fapidataGetToplongshortpositionratio'):
+                return
+            max_pages = min((limit_to_fetch + 499) // 500, 2)
+            end_ts = None
+            records = []
+            for _ in range(max_pages):
+                params = {
+                    'symbol': binance_symbol,
+                    'period': binance_period,
+                    'limit': min(limit_to_fetch, 500),
+                }
+                if end_ts is not None:
+                    params['endTime'] = int(end_ts)
+                try:
+                    res = self.binance.fapidataGetToplongshortpositionratio(params)
+                    if not isinstance(res, list) or not res:
+                        break
+                    for item in res:
+                        val = item.get('longShortRatio')
+                        if val is None:
+                            continue
+                        records.append({
+                            'timestamp': self._ms_to_dt(int(item['timestamp'])),
+                            'exchange': 'binance',
+                            'symbol': db_symbol,
+                            'timeframe': p_lower,
+                            'top_ls_position_ratio': float(val),
+                        })
+                    earliest_ts = min(int(item['timestamp']) for item in res)
+                    if end_ts is not None and earliest_ts >= end_ts:
+                        break
+                    end_ts = earliest_ts - 1
+                    if len(res) < 500:
+                        break
+                except Exception as e:
+                    print(f"Error fetching top trader position ratio ({binance_symbol}): {e}")
+                    break
+
+            if records:
+                with SessionLocal() as session:
+                    crud.upsert_market_data(session, records)
+
+        fetch_binance()
+
+        # Step 3: Read final series in a short-lived DB session
+        with SessionLocal() as db:
+            bin_data = crud.get_market_data(
+                db,
+                symbol=db_symbol,
+                timeframe=p_lower,
+                exchange="binance",
+                limit=query_limit,
+                require_column="top_ls_position_ratio",
+            )
+            raw_records = [
+                {
+                    "time": int((x.timestamp if x.timestamp.tzinfo else x.timestamp.replace(tzinfo=timezone.utc)).timestamp()),
+                    "value": x.top_ls_position_ratio,
+                }
+                for x in bin_data
+                if x.top_ls_position_ratio is not None
+            ]
+
+        if not raw_records:
+            return []
+
+        df = pd.DataFrame(raw_records)
+        df['rounded_time'] = (df['time'] // period_seconds) * period_seconds
+        df = df.groupby('rounded_time')['value'].mean().reset_index().rename(columns={'rounded_time': 'time'})
+        df.sort_values('time', inplace=True)
+        return df[['time', 'value']].to_dict('records')[-limit:]
 
     def fetch_history(self, symbol: str, start_time: int, end_time: int, timeframe: str = '1h') -> List[Dict]:
         """ History Endpoint explicitly requested via Backend Backtest logic untouched. """

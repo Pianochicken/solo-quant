@@ -14,8 +14,13 @@ interface AdvancedChartProps {
     } | null;
     indicators: {
         lsur_z_score: number;
+        lsur_ratio?: number | null;
         lsur_history: { time: number; value: number }[] | null;
-        lsur_z_history?: { time: number; value: number }[];
+        lsur_z_history?: { time: number; value: number; signal?: string | null }[];
+        top_ls_ratio?: number | null;
+        top_ls_z_score?: number;
+        top_ls_history?: { time: number; value: number }[];
+        top_ls_z_history?: { time: number; value: number; signal?: string | null }[];
         lsur_markers?: { time: number; position: string; color: string; shape: string; text: string }[];
         cvd_history: { time: number; value: number }[];
         open_interest: { time: number; value: number }[];
@@ -65,6 +70,8 @@ function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines =
     // Overlay Refs & Toggles
     const [showDonchian, setShowDonchian] = React.useState(false);
     const [showPoc, setShowPoc] = React.useState(false);
+    const [showWhaleRatio, setShowWhaleRatio] = React.useState(true);
+    const [showRetailRatio, setShowRetailRatio] = React.useState(true);
     const gridLinesRef = useRef<any[]>([]);
     const markersPluginRef = useRef<any>(null);
     const emaFastSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
@@ -72,11 +79,16 @@ function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines =
     const donchianUpperSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
     const donchianLowerSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
     const pocLineRef = useRef<any>(null);
+    const topLsSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+    const lsurSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
 
     // Legend State
     const [rsiLegendValue, setRsiLegendValue] = React.useState<number | null>(null);
     const [cvdLegendValue, setCvdLegendValue] = React.useState<number | null>(null);
     const [oiLegendValue, setOiLegendValue] = React.useState<number | null>(null);
+    const [topLsLegendValue, setTopLsLegendValue] = React.useState<number | null>(null);
+    const [lsurLegendValue, setLsurLegendValue] = React.useState<number | null>(null);
+    const [lsurZLegendValue, setLsurZLegendValue] = React.useState<number | null>(null);
     const [fundingLegendValue, setFundingLegendValue] = React.useState<number | null>(null);
     const [pulseLegendValue, setPulseLegendValue] = React.useState<number | null>(null);
     const [regimeLegendValue, setRegimeLegendValue] = React.useState<{regime: string, direction: string} | null>(null);
@@ -187,16 +199,50 @@ function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines =
             priceFormat: { type: 'custom', formatter: abbreviateNumber },
         });
 
-        // --- OI Chart (Histogram) ---
+        // --- OI Chart (Histogram) + Dual-Axis L/S Positioning Overlay ---
         const oiChart = createChart(oiContainerRef.current, {
             ...commonOptions,
             width: oiContainerRef.current.clientWidth,
-            height: 100,
+            height: 120,
+            // Keep leftPriceScale hidden so plot width remains 100% aligned with the other 6 charts
+            leftPriceScale: {
+                visible: false,
+                scaleMargins: { top: 0.1, bottom: 0.15 },
+            },
+            rightPriceScale: {
+                visible: true,
+                minimumWidth: 120,
+                scaleMargins: { top: 0.25, bottom: 0.02 },
+            },
         });
         oiChartRef.current = oiChart;
         oiSeriesRef.current = oiChart.addSeries(HistogramSeries, {
             color: '#2962ff',
             priceFormat: { type: 'volume' },
+        });
+        topLsSeriesRef.current = oiChart.addSeries(LineSeries, {
+            color: '#38bdf8',
+            lineWidth: 2,
+            priceScaleId: 'left',
+            crosshairMarkerVisible: true,
+            priceLineVisible: false,
+            lastValueVisible: false,
+        });
+        topLsSeriesRef.current.createPriceLine({
+            price: 1.0,
+            color: 'rgba(161, 161, 170, 0.35)',
+            lineWidth: 1,
+            lineStyle: LineStyle.Dotted,
+            axisLabelVisible: false,
+        });
+        lsurSeriesRef.current = oiChart.addSeries(LineSeries, {
+            color: '#e879f9',
+            lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+            priceScaleId: 'left',
+            crosshairMarkerVisible: true,
+            priceLineVisible: false,
+            lastValueVisible: false,
         });
 
         // --- Funding Rate Chart (Histogram) ---
@@ -482,6 +528,30 @@ function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines =
             oiSeriesRef.current.setData(oiData);
         }
 
+        // Update Top Trader Position Ratio & Global Account LSUR overlays on OI chart (independent left scale)
+        if (topLsSeriesRef.current) {
+            if (showWhaleRatio && indicators?.top_ls_history && indicators.top_ls_history.length > 0) {
+                const topLsData = alignData(indicators.top_ls_history, item => ({
+                    time: item.time as Time,
+                    value: item.value
+                }));
+                topLsSeriesRef.current.setData(topLsData);
+            } else {
+                topLsSeriesRef.current.setData([]);
+            }
+        }
+        if (lsurSeriesRef.current) {
+            if (showRetailRatio && indicators?.lsur_history && indicators.lsur_history.length > 0) {
+                const lsurData = alignData(indicators.lsur_history, item => ({
+                    time: item.time as Time,
+                    value: item.value
+                }));
+                lsurSeriesRef.current.setData(lsurData);
+            } else {
+                lsurSeriesRef.current.setData([]);
+            }
+        }
+
         // Update Funding
         let fundingData: any[] = [];
         if (fundingSeriesRef.current && data.funding) {
@@ -554,6 +624,15 @@ function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines =
         const oiMap = new Map<number, any>();
         oiData.forEach(p => oiMap.set(p.time as number, p));
 
+        const topLsMap = new Map<number, any>();
+        (indicators?.top_ls_history || []).forEach(p => topLsMap.set(p.time, p));
+
+        const lsurMap = new Map<number, any>();
+        (indicators?.lsur_history || []).forEach(p => lsurMap.set(p.time, p));
+
+        const lsurZMap = new Map<number, any>();
+        (indicators?.lsur_z_history || []).forEach(p => lsurZMap.set(p.time, p));
+
         const fundingMap = new Map<number, any>();
         fundingData.forEach(p => fundingMap.set(p.time as number, p));
 
@@ -606,11 +685,23 @@ function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines =
                 setRsiLegendValue(null);
                 setCvdLegendValue(null);
                 setOiLegendValue(null);
+                setTopLsLegendValue(null);
+                setLsurLegendValue(null);
+                setLsurZLegendValue(null);
                 setFundingLegendValue(null);
                 setPulseLegendValue(null);
                 setRegimeLegendValue(null);
                 return;
             }
+
+            // Update Positioning Overlay Legends on hover (O(1) Map lookups)
+            const tHover = param.time as number;
+            const topLsPt = topLsMap.get(tHover);
+            const lsurPt = lsurMap.get(tHover);
+            const lsurZPt = lsurZMap.get(tHover);
+            setTopLsLegendValue(typeof topLsPt?.value === 'number' ? topLsPt.value : null);
+            setLsurLegendValue(typeof lsurPt?.value === 'number' ? lsurPt.value : null);
+            setLsurZLegendValue(typeof lsurZPt?.value === 'number' ? lsurZPt.value : null);
 
             // Sync other charts and legends
             chartsArray.forEach(c => {
@@ -619,12 +710,12 @@ function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines =
                 const pointData = c.map.get(param.time as number);
 
                 // Update Legend state based on chart type
-                if (c.api === rsiChartRef.current) setRsiLegendValue(pointData ? pointData.value : null);
-                if (c.api === cvdChartRef.current) setCvdLegendValue(pointData ? pointData.value : null);
-                if (c.api === oiChartRef.current) setOiLegendValue(pointData ? pointData.value : null);
-                if (c.api === fundingChartRef.current) setFundingLegendValue(pointData ? pointData.value : null);
-                if (c.api === pulseChartRef.current) setPulseLegendValue(pointData ? pointData.value : null);
-                if (c.api === regimeChartRef.current) setRegimeLegendValue(pointData ? { regime: pointData.regime, direction: pointData.direction } : null);
+                if (c.api === rsiChartRef.current) setRsiLegendValue(typeof pointData?.value === 'number' ? pointData.value : null);
+                if (c.api === cvdChartRef.current) setCvdLegendValue(typeof pointData?.value === 'number' ? pointData.value : null);
+                if (c.api === oiChartRef.current) setOiLegendValue(typeof pointData?.value === 'number' ? pointData.value : null);
+                if (c.api === fundingChartRef.current) setFundingLegendValue(typeof pointData?.value === 'number' ? pointData.value : null);
+                if (c.api === pulseChartRef.current) setPulseLegendValue(typeof pointData?.value === 'number' ? pointData.value : null);
+                if (c.api === regimeChartRef.current) setRegimeLegendValue(pointData?.regime ? { regime: pointData.regime, direction: pointData.direction } : null);
 
                 // Sync Crosshair Line
                 if (c.api !== sourceChartApi) {
@@ -678,7 +769,7 @@ function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines =
             unsubscribeHandlers.forEach(unsub => unsub());
         };
 
-    }, [data, indicators, gridLines, showDonchian, showPoc, timeframe]);
+    }, [data, indicators, gridLines, showDonchian, showPoc, showWhaleRatio, showRetailRatio, timeframe]);
 
     return (
         <div className="w-full flex flex-col gap-1 bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden shadow-lg p-1">
@@ -779,13 +870,63 @@ function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines =
                 <div ref={cvdContainerRef} className="w-full h-full" />
             </div>
 
-            {/* 5. OI Chart */}
-            <div className="relative w-full h-[100px] border-t border-zinc-800">
-                <div className="absolute top-1 left-2 z-10 bg-black/50 px-2 py-0.5 rounded text-[10px] text-zinc-400 flex gap-2">
-                    <span className="font-bold text-blue-400">Open Interest</span><InfoTooltip text="未平倉合約量：市場中所有未結算的合約總值。綠色 = OI 增加（新倉位開設），紅色 = OI 減少（倉位平倉/清算）。注意：OI 本身無法區分多空方向，需搭配 LSUR/CVD 判斷實際偏向" />
+            {/* 5. OI Chart + L/S Positioning Dual-Axis Overlay */}
+            <div className="relative w-full h-[120px] border-t border-zinc-800">
+                <div className="absolute top-1 left-2 z-10 bg-black/50 px-2 py-0.5 rounded text-[10px] text-zinc-400 flex flex-wrap items-center gap-2">
+                    <span className="font-bold text-blue-400">Open Interest</span>
+                    <InfoTooltip text="未平倉合約量與多空偏向雙軸疊加圖：下方柱體為全網合約總 OI（綠增紅減）；上方曲線可切換疊加獨立左軸的「🐋 大戶持倉多空比（實線，Binance 前 20% 倉位）」與「👥 散戶帳戶多空比（虛線，Binance+OKX）」，灰色點線為 1.0 多空均衡基準。" />
+                    <button
+                        type="button"
+                        aria-pressed={showWhaleRatio}
+                        onClick={() => setShowWhaleRatio(prev => !prev)}
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-medium transition-colors border ${
+                            showWhaleRatio
+                                ? 'bg-sky-950/80 text-sky-300 border-sky-500/50 shadow-sm'
+                                : 'bg-zinc-800/80 text-zinc-400 border-zinc-700 hover:text-zinc-200'
+                        }`}
+                    >
+                        {showWhaleRatio ? '✓ 🐋 大戶持倉比' : '🐋 大戶持倉比'}
+                    </button>
+                    <button
+                        type="button"
+                        aria-pressed={showRetailRatio}
+                        onClick={() => setShowRetailRatio(prev => !prev)}
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-medium transition-colors border ${
+                            showRetailRatio
+                                ? 'bg-fuchsia-950/80 text-fuchsia-300 border-fuchsia-500/50 shadow-sm'
+                                : 'bg-zinc-800/80 text-zinc-400 border-zinc-700 hover:text-zinc-200'
+                        }`}
+                    >
+                        {showRetailRatio ? '✓ 👥 散戶多空比' : '👥 散戶多空比'}
+                    </button>
                     {typeof oiLegendValue === 'number' && (
-                        <span className="text-zinc-200">{oiLegendValue.toLocaleString()}</span>
+                        <span className="font-mono text-zinc-200">{oiLegendValue.toLocaleString()}</span>
                     )}
+                    {(() => {
+                        const dispWhale = topLsLegendValue !== null
+                            ? topLsLegendValue
+                            : (typeof indicators?.top_ls_ratio === 'number' ? indicators.top_ls_ratio : null);
+                        const dispRetail = lsurLegendValue !== null
+                            ? lsurLegendValue
+                            : (typeof indicators?.lsur_ratio === 'number' ? indicators.lsur_ratio : null);
+                        const dispRetailZ = lsurZLegendValue !== null
+                            ? lsurZLegendValue
+                            : (typeof indicators?.lsur_z_score === 'number' ? indicators.lsur_z_score : null);
+                        return (
+                            <>
+                                {showWhaleRatio && typeof dispWhale === 'number' && dispWhale > 0 && (
+                                    <span className="font-mono text-sky-400">
+                                        🐋 {dispWhale.toFixed(2)} (多{((dispWhale / (1 + dispWhale)) * 100).toFixed(1)}%)
+                                    </span>
+                                )}
+                                {showRetailRatio && typeof dispRetail === 'number' && dispRetail > 0 && (
+                                    <span className="font-mono text-fuchsia-400">
+                                        👥 {dispRetail.toFixed(2)}{typeof dispRetailZ === 'number' ? ` (Z:${dispRetailZ >= 0 ? '+' : ''}${dispRetailZ.toFixed(2)})` : ''}
+                                    </span>
+                                )}
+                            </>
+                        );
+                    })()}
                 </div>
                 <div ref={oiContainerRef} className="w-full h-full" />
             </div>

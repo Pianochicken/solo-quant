@@ -15,6 +15,41 @@ export default function SentimentPanel({ indicators, timeframe = '1h', enablePro
     const { lsur_z_score } = indicators;
     const T = getThresholds(timeframe);
 
+    // Helper: convert L/S ratio to Long percentage (0-100)
+    const toLongPct = (ratio: number) => (ratio / (1 + ratio)) * 100;
+
+    // Retail Global Account Ratio (fallback to latest lsur_history item if needed)
+    const latestLsHist = indicators.lsur_history?.length
+        ? indicators.lsur_history[indicators.lsur_history.length - 1]?.value
+        : null;
+    const retailRatio =
+        typeof indicators.lsur_ratio === 'number' && indicators.lsur_ratio > 0
+            ? indicators.lsur_ratio
+            : typeof latestLsHist === 'number' && latestLsHist > 0
+                ? latestLsHist
+                : null;
+    const retailLongPct = retailRatio !== null ? toLongPct(retailRatio) : null;
+
+    // Top 20% Trader Position Ratio (Binance Whale OI Bias)
+    const whaleRatio =
+        typeof indicators.top_ls_ratio === 'number' && indicators.top_ls_ratio > 0
+            ? indicators.top_ls_ratio
+            : null;
+    const whaleZ = typeof indicators.top_ls_z_score === 'number' ? indicators.top_ls_z_score : null;
+    const whaleLongPct = whaleRatio !== null ? toLongPct(whaleRatio) : null;
+
+    let whaleColor = 'text-zinc-400';
+    let whaleText = '多空均衡';
+    if (whaleRatio !== null) {
+        if (whaleRatio >= 1.15) {
+            whaleColor = 'text-sky-400';
+            whaleText = '大戶偏多';
+        } else if (whaleRatio <= 0.85) {
+            whaleColor = 'text-rose-400';
+            whaleText = '大戶偏空';
+        }
+    }
+
     // Z-Score Interpretation (using timeframe-adaptive thresholds)
     let scoreColor = "text-zinc-400";
     let scoreText = "Neutral";
@@ -26,6 +61,10 @@ export default function SentimentPanel({ indicators, timeframe = '1h', enablePro
         scoreColor = "text-emerald-400";
         scoreText = "Overcrowded Shorts (Bullish)";
     }
+
+    // Smart Money Divergence (Whale Position Long% vs Retail Account Long%)
+    const divergenceDiff =
+        whaleLongPct !== null && retailLongPct !== null ? whaleLongPct - retailLongPct : null;
 
     // EMA Trend
     const trendState = indicators.trend_state || 'neutral';
@@ -204,26 +243,112 @@ export default function SentimentPanel({ indicators, timeframe = '1h', enablePro
                     );
                 })()}
 
-                {/* L/S Z-Score Card */}
-                <div className="bg-zinc-950/50 rounded-lg p-3 border border-zinc-800 flex flex-col justify-between">
-                    <div>
-                        <div className="text-xs text-zinc-500 mb-1 flex items-center">LSUR Z-Score<InfoTooltip text={`多空比率 Z 分數：衡量市場多空倉位是否過度擁擠。Z > ${T.z_bear} 表示多頭擁擠（看跌），Z < ${T.z_bull} 表示空頭擁擠（看漲）。門檻會隨週期動態調整`} /></div>
-                        <div className={`text-2xl font-mono font-bold ${scoreColor}`}>
-                            {lsur_z_score.toFixed(2)}
+                {/* Long / Short Positioning Card: Top Traders vs Retail Accounts */}
+                <div className="bg-zinc-950/50 rounded-lg p-3 border border-zinc-800 flex flex-col gap-3 col-span-2">
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-zinc-400 flex items-center justify-between">
+                        <span className="flex items-center">
+                            多空籌碼對比 Positioning
+                            <InfoTooltip text="拆解未平倉量 (OI) 背後的多空資金偏向：上方為「前 20% 頂級大戶持倉量比 (真金白銀順向參考)」，下方為「全市場帳戶數多空比與 Z 分數 (散戶擁擠度反向指標)」。" />
+                        </span>
+                    </div>
+
+                    {/* Section 1: Binance Top 20% Trader Position Ratio */}
+                    <div className="space-y-1.5">
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs text-sky-400 font-medium flex items-center">
+                                🐋 大戶持倉多空比
+                                <InfoTooltip text="Binance 前 20% 頂級交易員依真實持倉名義價值加權的多空比。比值 > 1 代表大戶多倉金額高於空倉金額，用來穿透總 OI 判斷主力真實押注方向。" />
+                            </span>
+                            <div className="flex items-center gap-2 font-mono">
+                                <span className={`text-base font-bold ${whaleColor}`}>
+                                    {whaleRatio !== null ? whaleRatio.toFixed(2) : '—'}
+                                </span>
+                                {whaleZ !== null && whaleRatio !== null && (
+                                    <span className="text-[10px] text-zinc-400 bg-zinc-900 px-1.5 py-0.5 rounded border border-zinc-800">
+                                        Z {whaleZ >= 0 ? '+' : ''}{whaleZ.toFixed(2)}
+                                    </span>
+                                )}
+                                <span className={`text-[11px] font-sans font-medium ${whaleColor}`}>
+                                    {whaleText}
+                                </span>
+                            </div>
                         </div>
+
+                        {whaleLongPct !== null && (
+                            <div className="space-y-1">
+                                <div className="flex justify-between text-[10px] font-mono">
+                                    <span className="text-emerald-400">多 {whaleLongPct.toFixed(1)}%</span>
+                                    <span className="text-rose-400">空 {(100 - whaleLongPct).toFixed(1)}%</span>
+                                </div>
+                                <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden flex" aria-hidden="true">
+                                    <div className="h-full bg-emerald-500 transition-all duration-300" style={{ width: `${whaleLongPct}%` }}></div>
+                                    <div className="h-full bg-rose-500 transition-all duration-300" style={{ width: `${100 - whaleLongPct}%` }}></div>
+                                </div>
+                            </div>
+                        )}
                     </div>
-                    <div className={`text-xs mt-2 ${scoreColor} font-medium`}>
-                        {scoreText}
+
+                    <div className="border-t border-zinc-800/60" />
+
+                    {/* Section 2: Global Account LSUR & Z-Score */}
+                    <div className="space-y-1.5">
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs text-fuchsia-400 font-medium flex items-center">
+                                👥 散戶帳戶多空比 (LSUR)
+                                <InfoTooltip text={`全市場帳戶數多空比（Binance + OKX 合併）與 90 期滾動 Z 分數：Z > ${T.z_bear} 表示散戶多頭過度擁擠（看跌），Z < ${T.z_bull} 表示散戶空頭過度擁擠（看漲）。`} />
+                            </span>
+                            <div className="flex items-center gap-2 font-mono">
+                                <span className="text-sm font-bold text-zinc-200">
+                                    {retailRatio !== null ? retailRatio.toFixed(2) : '—'}
+                                </span>
+                                <span className={`text-xs font-bold px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800 ${scoreColor}`}>
+                                    Z {lsur_z_score >= 0 ? '+' : ''}{lsur_z_score.toFixed(2)}
+                                </span>
+                            </div>
+                        </div>
+
+                        {retailLongPct !== null && (
+                            <div className="space-y-1">
+                                <div className="flex justify-between text-[10px] font-mono">
+                                    <span className="text-emerald-400">多 {retailLongPct.toFixed(1)}%</span>
+                                    <span className={`${scoreColor} font-sans text-[10px] font-medium`}>{scoreText}</span>
+                                    <span className="text-rose-400">空 {(100 - retailLongPct).toFixed(1)}%</span>
+                                </div>
+                                <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden flex" aria-hidden="true">
+                                    <div className="h-full bg-emerald-500/80 transition-all duration-300" style={{ width: `${retailLongPct}%` }}></div>
+                                    <div className="h-full bg-rose-500/80 transition-all duration-300" style={{ width: `${100 - retailLongPct}%` }}></div>
+                                </div>
+                            </div>
+                        )}
                     </div>
+
+                    {/* Section 3: Smart Money Divergence Footer */}
+                    {divergenceDiff !== null && (
+                        <div className="pt-1">
+                            {divergenceDiff >= 5 ? (
+                                <div className="px-2.5 py-1.5 rounded-md bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 text-[11px] font-medium">
+                                    🐋 聰明錢偏多分歧（大戶多倉佔比高出散戶 +{divergenceDiff.toFixed(1)}%）
+                                </div>
+                            ) : divergenceDiff <= -5 ? (
+                                <div className="px-2.5 py-1.5 rounded-md bg-red-950/40 border border-red-500/30 text-red-300 text-[11px] font-medium">
+                                    ⚠️ 散戶偏多分歧（大戶多倉佔比低於散戶 {divergenceDiff.toFixed(1)}%）
+                                </div>
+                            ) : (
+                                <div className="px-2.5 py-1.5 rounded-md bg-zinc-900/80 border border-zinc-800 text-zinc-400 text-[11px] font-medium">
+                                    ⚖️ 大戶與散戶多空結構同步（差距 {divergenceDiff >= 0 ? '+' : ''}{divergenceDiff.toFixed(1)}%）
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
 
                 {/* EMA Trend Card */}
                 <div className="bg-zinc-950/50 rounded-lg p-3 border border-zinc-800 flex flex-col justify-between">
                     <div>
                         <div className="text-xs text-zinc-500 mb-1 flex items-center">EMA Trend<InfoTooltip text={`EMA 趨勢過濾器：使用 EMA50 和 EMA200 判斷趨勢方向。當前週期的 EMA 乖離率門檻為 ±${T.ema_pct}%，偏離過大時會觸發訊號`} /></div>
-                        <div className={`text-2xl font-mono font-bold ${trendColor} flex items-center gap-2`}>
-                            <TrendIcon className="w-6 h-6" />
-                            {trendLabel}
+                        <div className={`text-xl font-mono font-bold ${trendColor} flex items-center gap-1.5`}>
+                            <TrendIcon className="w-5 h-5 shrink-0" />
+                            <span>{trendLabel}</span>
                         </div>
                     </div>
                     <div className="text-[10px] text-zinc-600 mt-2">
@@ -232,7 +357,7 @@ export default function SentimentPanel({ indicators, timeframe = '1h', enablePro
                 </div>
 
                 {/* RSI Card */}
-                <div className="bg-zinc-950/50 rounded-lg p-3 border border-zinc-800 flex flex-col justify-between col-span-2">
+                <div className="bg-zinc-950/50 rounded-lg p-3 border border-zinc-800 flex flex-col justify-between">
                     <div>
                         <div className="text-xs text-zinc-500 mb-1 flex items-center">RSI (14)<InfoTooltip text={`相對強弱指數：衡量價格動能的振盪指標。RSI > ${T.rsi_bear} = 超買（可能回落），RSI < ${T.rsi_bull} = 超賣（可能反彈）。門檻會隨週期動態調整`} /></div>
                         {(() => {

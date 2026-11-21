@@ -14,6 +14,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from api.core.fetcher import DataFetcher
 from api.db.database import engine, Base
+from api.db import crud
 import api.db.models  # Import to register models with Base
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,8 @@ async def lifespan(app: FastAPI):
     for attempt in range(1, 6):
         try:
             Base.metadata.create_all(bind=engine)
-            logger.info("Database tables verified/created successfully.")
+            crud.run_db_migrations(engine)
+            logger.info("Database tables and migrations verified successfully.")
             break
         except Exception as e:
             if attempt < 5:
@@ -221,12 +223,15 @@ def get_market_data(
         import concurrent.futures
         fetch_limit = limit if limit <= 100 else max(limit, 1000)
         daily_limit = limit if limit <= 100 else max(limit, 1200)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
             future_data = pool.submit(fetcher.fetch_market_data, formatted_symbol, timeframe, limit)
             future_ob = pool.submit(fetcher.fetch_order_book_depth, formatted_symbol, limit=400) if include_orderbook else None
             
             future_ls = pool.submit(fetcher.fetch_long_short_ratio, formatted_symbol, period=indicator_period, limit=fetch_limit)
             future_ls_daily = pool.submit(fetcher.fetch_long_short_ratio, formatted_symbol, period='1D', limit=daily_limit)
+
+            future_top_ls = pool.submit(fetcher.fetch_top_trader_position_ratio, formatted_symbol, period=indicator_period, limit=fetch_limit)
+            future_top_ls_daily = pool.submit(fetcher.fetch_top_trader_position_ratio, formatted_symbol, period='1D', limit=daily_limit)
             
             future_taker = pool.submit(fetcher.fetch_taker_volume, formatted_symbol, period=indicator_period, limit=fetch_limit)
             future_taker_daily = pool.submit(fetcher.fetch_taker_volume, formatted_symbol, period='1D', limit=daily_limit)
@@ -248,6 +253,9 @@ def get_market_data(
             
             ls_ratio_history_raw = future_ls.result()
             ls_ratio_daily = future_ls_daily.result()
+
+            top_ls_raw = future_top_ls.result()
+            top_ls_daily = future_top_ls_daily.result()
             
             taker_volume_raw = future_taker.result()
             taker_volume_daily = future_taker_daily.result()
@@ -329,8 +337,28 @@ def get_market_data(
                 )
                 merged_ls['value'] = merged_ls['value'].ffill().fillna(0)
                 ls_aligned_history_val = merged_ls[['time', 'value']].to_dict('records')
+                ls_aligned_clean = [x for x in ls_aligned_history_val if x.get('value') and x['value'] > 0]
             else:
                 ls_aligned_history_val = []
+                ls_aligned_clean = []
+
+            # 3.6 Align Top Trader Position L/S Ratio (Binance Top 20% Whale OI Bias)
+            top_ls_history = merge_history(top_ls_raw, top_ls_daily)
+            if top_ls_history:
+                df_top_ls = pd.DataFrame(top_ls_history)
+                df_top_ls['time'] = df_top_ls['time'].astype(int)
+                df_top_ls.sort_values('time', inplace=True)
+
+                merged_top_ls = pd.merge_asof(
+                    df_price[['time']],
+                    df_top_ls[['time', 'value']],
+                    on='time',
+                    direction='backward',
+                    tolerance=86400 * 2,
+                )
+                top_ls_aligned = merged_top_ls.dropna(subset=['value'])[['time', 'value']].to_dict('records')
+            else:
+                top_ls_aligned = []
 
             # 4. Compute & Align CVD
             # Filter taker volume to price chart's time range FIRST,
@@ -370,6 +398,8 @@ def get_market_data(
             # Fix UnboundLocalError by properly merging if missing price data
             ls_ratio_history = merge_history(ls_ratio_history_raw, ls_ratio_daily) if 'ls_ratio_history_raw' in locals() else []
             ls_aligned_history_val = ls_ratio_history
+            ls_aligned_clean = [x for x in ls_ratio_history if x.get('value') and x['value'] > 0]
+            top_ls_aligned = merge_history(top_ls_raw, top_ls_daily) if 'top_ls_raw' in locals() else []
             cvd_aligned = [] # Fallback
         
         # === Layer 3 MTF: Build 4h regime history (no look-ahead bias — uses historical 4h bars only) ===
@@ -422,8 +452,13 @@ def get_market_data(
         # removed: liquidity_walls = IndicatorEngine.calculate_liquidity_density(orderbook, current_price)
         lsur_z_score = IndicatorEngine.calculate_lsur_z_score(ls_aligned_history_val)
         
-        # 4. LSUR Z-Score History (Already aligned to price)
+        # 4. LSUR & Top Trader Position Z-Score History (Aligned to price)
         lsur_z_aligned = IndicatorEngine.calculate_lsur_z_score_history(ls_aligned_history_val)
+        lsur_ratio = round(float(ls_aligned_clean[-1]['value']), 3) if ls_aligned_clean else None
+
+        top_ls_ratio = round(float(top_ls_aligned[-1]['value']), 3) if top_ls_aligned else None
+        top_ls_z_score = round(IndicatorEngine.calculate_lsur_z_score(top_ls_aligned, window=90, min_periods=14), 2) if top_ls_aligned else 0.0
+        top_ls_z_aligned = IndicatorEngine.calculate_lsur_z_score_history(top_ls_aligned)
         
         # 5. OI Percentile (from daily data — always has months of history)
         oi_percentile = IndicatorEngine.calculate_oi_percentile(daily_oi_for_percentile)
@@ -517,9 +552,14 @@ def get_market_data(
                 "funding": funding_aligned
             },
             "indicators": {
-                "lsur_z_score": lsur_z_score,
-                "lsur_history": ls_ratio_history,
+                "lsur_z_score": round(lsur_z_score, 2),
+                "lsur_ratio": lsur_ratio,
+                "lsur_history": ls_aligned_clean,
                 "lsur_z_history": lsur_z_aligned,
+                "top_ls_ratio": top_ls_ratio,
+                "top_ls_z_score": top_ls_z_score,
+                "top_ls_history": top_ls_aligned,
+                "top_ls_z_history": top_ls_z_aligned,
                 "lsur_markers": confluence_markers,
                 "cvd_history": cvd_aligned,
                 "open_interest": open_interest,

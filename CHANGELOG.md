@@ -3,6 +3,18 @@
 All notable changes to the Solo-Quant project will be documented in this file.
 This file serves as a historical record to keep `AI_HANDOFF.md` clean and focused on current state and next steps.
 
+## [2026-11-22] v0.6.9 - LSUR/CVD Timeframe Case Fix, Top Trader Position Ratio & Dual-Axis OI Positioning UI
+- **Timeframe Case-Sensitivity Bug Fix & DB Migration (`api/db/crud.py`, `api/core/fetcher.py`, `api/main.py`)**:
+  - Normalized `timeframe` queries in `crud.get_market_data()` (`timeframe.lower()`) and added `require_column` filtering to match `crud.upsert_market_data()`'s lowercase persistence rule.
+  - Updated `fetch_taker_volume()`, `fetch_open_interest()`, and `fetch_long_short_ratio()` in `fetcher.py` to read and write lowercase timeframes consistently, resolving the 2026-10-30 data freeze that locked `lsur_z_score` at `0.00` and stalled hourly taker volume updates for 1h/4h CVD.
+  - Added idempotent `run_db_migrations(engine)` executed at FastAPI `lifespan` startup to add `top_ls_position_ratio` and merge legacy uppercase `'1H'`/`'1D'` rows into `'1h'`/`'1d'` via `COALESCE(existing, excluded)` without losing newer records.
+- **Top Trader Position L/S Ratio Engine (`api/db/models.py`, `api/core/fetcher.py`, `api/core/indicators.py`, `api/main.py`)**:
+  - Added `top_ls_position_ratio` column to `MarketDataPoint` and `DataFetcher.fetch_top_trader_position_ratio()` sourcing Binance Top 20% Trader Position Ratio (`fapidataGetToplongshortpositionratio`), stored exclusively under `exchange="binance"` to avoid scale incompatibility with OKX's margin usage ratio.
+  - Extended `IndicatorEngine.calculate_lsur_z_score()` with optional `min_periods` (used on daily 30-bar Top Trader history) and exposed `lsur_ratio`, `top_ls_ratio`, `top_ls_z_score`, `top_ls_history`, and `top_ls_z_history` in `/market/{symbol}`.
+- **Positioning UI & Dual-Axis OI Chart Overlay (`web/lib/api.ts`, `web/components/SentimentPanel.tsx`, `web/components/AdvancedChart.tsx`)**:
+  - Replaced the single `LSUR Z-Score` card in `SentimentPanel.tsx` with a full-width **Long / Short Positioning** card contrasting Whale Position Ratio vs Global Account LSUR (with raw ratios, Long/Short % split bars, Z-Scores, and Smart Money Divergence indicator), and placed `EMA Trend` & `RSI (14)` side-by-side.
+  - Upgraded the `Open Interest` subchart in `AdvancedChart.tsx` with independent hidden `leftPriceScale` line overlays for Whale Position Ratio (`#38bdf8`) and Retail LSUR (`#e879f9`), a `1.0` equilibrium reference line, toggle pills, and O(1) crosshair-synced legend readouts while preserving 7-chart vertical crosshair alignment.
+
 ## [2026-11-02] v0.6.8 - Single Full TP Architecture, Cross-Candle Trailing Stop & Empirical Profile Calibration
 - **Default Architecture: Single Full TP (`enable_partial_tp = False`)**:
   - Based on empirical multi-asset backtesting (ETH 4h WR 75%, SOL 4h WR 80%), standardized default execution mode to Single Full TP (`enable_partial_tp = False`) across `SignalStrategyConfig`, `SignalBacktestParams`, and `web/app/backtest/page.tsx`.

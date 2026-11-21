@@ -27,13 +27,15 @@ class IndicatorEngine:
         return 2
     
     @staticmethod
-    def calculate_lsur_z_score(lsur_history: List[Dict], window: int = 90) -> float:
+    def calculate_lsur_z_score(lsur_history: List[Dict], window: int = 90, min_periods: Optional[int] = None) -> float:
         """
         Calculates the Z-Score of the latest Long/Short Ratio.
         Z = (Current - Mean) / StdDev
         window: data points to consider for mean/std (default 90 periods).
+        min_periods: minimum non-null observations required (defaults to window).
         """
-        if not lsur_history or len(lsur_history) < window:
+        effective_min = min_periods if min_periods is not None else window
+        if not lsur_history or len(lsur_history) < effective_min:
             return 0.0
             
         # Convert to Series
@@ -41,14 +43,14 @@ class IndicatorEngine:
         series = pd.Series(values)
         
         # Calculate Rolling Stats
-        rolling_mean = series.rolling(window=window).mean()
-        rolling_std = series.rolling(window=window).std()
+        rolling_mean = series.rolling(window=window, min_periods=effective_min).mean()
+        rolling_std = series.rolling(window=window, min_periods=effective_min).std()
         
         current_val = values[-1]
         mean_val = rolling_mean.iloc[-1]
         std_val = rolling_std.iloc[-1]
         
-        if std_val == 0:
+        if pd.isna(mean_val) or pd.isna(std_val) or std_val == 0:
             return 0.0
             
         z_score = (current_val - mean_val) / std_val

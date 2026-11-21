@@ -1,6 +1,12 @@
 export interface IndicatorData {
     lsur_z_score: number;
+    lsur_ratio?: number | null;
     lsur_history: { time: number; value: number }[] | null;
+    lsur_z_history?: { time: number; value: number; signal?: string | null }[];
+    top_ls_ratio?: number | null;
+    top_ls_z_score?: number;
+    top_ls_history?: { time: number; value: number }[];
+    top_ls_z_history?: { time: number; value: number; signal?: string | null }[];
     cvd_history: { time: number; value: number }[];
     open_interest: { time: number; value: number }[];
     oi_percentile: number;
