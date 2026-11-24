@@ -52,19 +52,65 @@ export default function SentimentPanel({ indicators, timeframe = '1h', enablePro
 
     // Z-Score Interpretation (using timeframe-adaptive thresholds)
     let scoreColor = "text-zinc-400";
-    let scoreText = "Neutral";
+    let scoreText = "中性常態";
 
     if (lsur_z_score > T.z_bear) {
         scoreColor = "text-red-400";
-        scoreText = "Overcrowded Longs (Bearish)";
+        scoreText = "相對偏多擁擠 (反向看跌)";
     } else if (lsur_z_score < T.z_bull) {
         scoreColor = "text-emerald-400";
-        scoreText = "Overcrowded Shorts (Bullish)";
+        scoreText = "相對偏空擁擠 (反向看漲)";
     }
 
     // Smart Money Divergence (Whale Position Long% vs Retail Account Long%)
     const divergenceDiff =
         whaleLongPct !== null && retailLongPct !== null ? whaleLongPct - retailLongPct : null;
+
+    // Context-aware Z-score window label, dynamic badge styling, and live verdict for tooltips
+    const tfWindowMap: Record<string, string> = {
+        '15m': '近 90 根 15m ≈ 22.5 小時',
+        '1h': '近 90 小時 ≈ 3.75 天',
+        '4h': '近 90 根 4h = 15 天',
+        '1d': '近 90 日（初期依累積約 30 天）',
+    };
+    const windowLabel = tfWindowMap[timeframe] || '近 90 期';
+
+    let whaleZBadgeClass = 'text-zinc-400 bg-zinc-900 border-zinc-800';
+    if (whaleZ !== null) {
+        if (whaleZ <= -2.0) whaleZBadgeClass = 'text-rose-300 bg-rose-950/50 border-rose-500/40';
+        else if (whaleZ <= -1.0) whaleZBadgeClass = 'text-amber-300 bg-amber-950/40 border-amber-500/40';
+        else if (whaleZ >= 2.0) whaleZBadgeClass = 'text-emerald-300 bg-emerald-950/50 border-emerald-500/40';
+        else if (whaleZ >= 1.0) whaleZBadgeClass = 'text-sky-300 bg-sky-950/40 border-sky-500/40';
+    }
+
+    let whaleLiveSummary = '尚無足夠大戶持倉資料可進行當下解讀。';
+    if (whaleRatio !== null && whaleZ !== null && whaleLongPct !== null) {
+        const invPhrase = whaleRatio >= 1.15 ? '大戶底倉偏多' : (whaleRatio <= 0.85 ? '大戶底倉偏空' : '大戶底倉均衡');
+        let zPhrase = '且位於近期正常波動區間內';
+        if (whaleZ <= -2.0) zPhrase = '且遠低於近期常態（極端減多／加空警戒）';
+        else if (whaleZ <= -1.0) zPhrase = '但明顯低於近期均值，顯示大戶正在獲利減多或加空避險';
+        else if (whaleZ >= 2.0) zPhrase = '且遠高於近期常態（極端積極加多）';
+        else if (whaleZ >= 1.0) zPhrase = '且明顯高於近期均值，顯示大戶近期積極加倉做多';
+        whaleLiveSummary = `💡 目前解讀（比值 ${whaleRatio.toFixed(2)}｜多 ${whaleLongPct.toFixed(1)}%｜Z ${whaleZ >= 0 ? '+' : ''}${whaleZ.toFixed(2)}）：\n${invPhrase}，${zPhrase}。`;
+    }
+
+    let retailZBadgeClass = 'text-zinc-400 bg-zinc-900 border-zinc-800';
+    if (lsur_z_score > T.z_bear) {
+        retailZBadgeClass = 'text-red-300 bg-red-950/50 border-red-500/40';
+    } else if (lsur_z_score < T.z_bull) {
+        retailZBadgeClass = 'text-emerald-300 bg-emerald-950/50 border-emerald-500/40';
+    }
+
+    let retailLiveSummary = '尚無足夠散戶多空比資料可進行當下解讀。';
+    if (retailRatio !== null && retailLongPct !== null) {
+        let retailVerdict = '散戶多空情緒位於近期正常波動區間，尚未觸發極端反向擠壓訊號。';
+        if (lsur_z_score < T.z_bull) {
+            retailVerdict = '散戶多頭佔比雖仍可能 > 50%，但已顯著低於近 90 期散戶常態偏多基準，籌碼洗盤偏乾淨，已觸發反向看漲情緒加分。';
+        } else if (lsur_z_score > T.z_bear) {
+            retailVerdict = '散戶做多情緒顯著高於近 90 期均值，多頭過於擁擠，已觸發反向看跌警訊（防向下洗盤）。';
+        }
+        retailLiveSummary = `💡 目前解讀（比值 ${retailRatio.toFixed(2)}｜多 ${retailLongPct.toFixed(1)}%｜Z ${lsur_z_score >= 0 ? '+' : ''}${lsur_z_score.toFixed(2)}）：\n${retailVerdict}`;
+    }
 
     // EMA Trend
     const trendState = indicators.trend_state || 'neutral';
@@ -254,18 +300,29 @@ export default function SentimentPanel({ indicators, timeframe = '1h', enablePro
 
                     {/* Section 1: Binance Top 20% Trader Position Ratio */}
                     <div className="space-y-1.5">
-                        <div className="flex items-center justify-between">
-                            <span className="text-xs text-sky-400 font-medium flex items-center">
+                        <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs text-sky-400 font-medium flex items-center shrink-0">
                                 🐋 大戶持倉多空比
-                                <InfoTooltip text="Binance 前 20% 頂級交易員依真實持倉名義價值加權的多空比。比值 > 1 代表大戶多倉金額高於空倉金額，用來穿透總 OI 判斷主力真實押注方向。" />
+                                <InfoTooltip
+                                    width={330}
+                                    text={"【🐋 大戶持倉多空比（絕對底倉）】\n• 資料來源：Binance 官方合約統計 API（topLongShortPositionRatio），由交易所內部篩選「保證金餘額前 20%」頂級交易員，依實際多空總倉位規模加權（總多倉 ÷ 總空倉），非算人頭。\n• 比值解讀：> 1.0 代表大戶多倉大於空倉（例：1.66 ≈ 多 62.4% / 空 37.6%）。\n• 注意：主流幣長期具結構性偏多基準（常見 1.5～2.3），務必搭配右側 Z 分數觀察邊際增減。"}
+                                />
                             </span>
-                            <div className="flex items-center gap-2 font-mono">
+                            <div className="flex items-center gap-1.5 font-mono shrink-0">
                                 <span className={`text-base font-bold ${whaleColor}`}>
                                     {whaleRatio !== null ? whaleRatio.toFixed(2) : '—'}
                                 </span>
                                 {whaleZ !== null && whaleRatio !== null && (
-                                    <span className="text-[10px] text-zinc-400 bg-zinc-900 px-1.5 py-0.5 rounded border border-zinc-800">
-                                        Z {whaleZ >= 0 ? '+' : ''}{whaleZ.toFixed(2)}
+                                    <span className="inline-flex items-center">
+                                        <span className={`text-[10px] px-1.5 py-0.5 rounded border ${whaleZBadgeClass}`}>
+                                            Z {whaleZ >= 0 ? '+' : ''}{whaleZ.toFixed(2)}
+                                        </span>
+                                        <InfoTooltip
+                                            width={340}
+                                            className="ml-0.5"
+                                            iconClassName="h-3 w-3 text-zinc-500 hover:text-sky-400 cursor-help transition-colors"
+                                            text={`【大戶持倉 Z 分數（相對常態變化）】\n公式：(當前比值 − 近 90 期均值) ÷ 標準差（${windowLabel}）\n• -1.0 < Z < +1.0：正常波動區間\n• Z ≤ -1.0：顯著低於均值（大戶減多／加空降溫）\n• Z ≥ +1.0：顯著高於均值（大戶積極加多）\n• |Z| ≥ 2.0：極端籌碼偏移（波段轉折前夕）\n\n${whaleLiveSummary}`}
+                                        />
                                     </span>
                                 )}
                                 <span className={`text-[11px] font-sans font-medium ${whaleColor}`}>
@@ -292,17 +349,28 @@ export default function SentimentPanel({ indicators, timeframe = '1h', enablePro
 
                     {/* Section 2: Global Account LSUR & Z-Score */}
                     <div className="space-y-1.5">
-                        <div className="flex items-center justify-between">
-                            <span className="text-xs text-fuchsia-400 font-medium flex items-center">
+                        <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs text-fuchsia-400 font-medium flex items-center shrink-0">
                                 👥 散戶帳戶多空比 (LSUR)
-                                <InfoTooltip text={`全市場帳戶數多空比（Binance + OKX 合併）與 90 期滾動 Z 分數：Z > ${T.z_bear} 表示散戶多頭過度擁擠（看跌），Z < ${T.z_bull} 表示散戶空頭過度擁擠（看漲）。`} />
+                                <InfoTooltip
+                                    width={320}
+                                    text={`【👥 散戶帳戶多空比 (LSUR)】\n• 資料來源：Binance ＋ OKX 全市場帳戶數多空比（1 人 1 票，反映散戶擁擠度，屬反向情緒指標）。\n• 90 期滾動 Z 分數（門檻隨週期調整）：\n  - Z > ${T.z_bear}：散戶多頭過度擁擠（偏空警訊／防向下洗盤）\n  - Z < ${T.z_bull}：散戶空頭過度擁擠（偏多訊號／易生軋空）\n• 搭配上方「大戶持倉比」可辨識大戶與散戶的籌碼方向背離。`}
+                                />
                             </span>
-                            <div className="flex items-center gap-2 font-mono">
+                            <div className="flex items-center gap-1.5 font-mono shrink-0">
                                 <span className="text-sm font-bold text-zinc-200">
                                     {retailRatio !== null ? retailRatio.toFixed(2) : '—'}
                                 </span>
-                                <span className={`text-xs font-bold px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800 ${scoreColor}`}>
-                                    Z {lsur_z_score >= 0 ? '+' : ''}{lsur_z_score.toFixed(2)}
+                                <span className="inline-flex items-center">
+                                    <span className={`text-xs font-bold px-1.5 py-0.5 rounded border ${retailZBadgeClass}`}>
+                                        Z {lsur_z_score >= 0 ? '+' : ''}{lsur_z_score.toFixed(2)}
+                                    </span>
+                                    <InfoTooltip
+                                        width={340}
+                                        className="ml-0.5"
+                                        iconClassName="h-3 w-3 text-zinc-500 hover:text-fuchsia-400 cursor-help transition-colors"
+                                        text={`【散戶 LSUR 90 期 Z 分數（反向情緒指標）】\n公式：(當前比值 − 近 90 期均值) ÷ 標準差（${windowLabel}）\n• 方向與大戶相反：散戶天然偏愛做多（常態 65%～75%），即使多 > 50%，只要比平常明顯減少（Z 偏負），仍屬相對偏空／洗盤充分。\n• 當前 ${timeframe} 門檻：Z ≤ ${T.z_bull} 觸發反向看漲（易軋空）；Z ≥ ${T.z_bear} 觸發反向看跌（易洗盤）。\n• 訊號權重：直接參與主圖買賣箭頭評分（第 1 號指標，趨勢中具鈍化過濾）及 Market Pulse（15%）。\n\n${retailLiveSummary}`}
+                                    />
                                 </span>
                             </div>
                         </div>
@@ -323,23 +391,37 @@ export default function SentimentPanel({ indicators, timeframe = '1h', enablePro
                     </div>
 
                     {/* Section 3: Smart Money Divergence Footer */}
-                    {divergenceDiff !== null && (
-                        <div className="pt-1">
-                            {divergenceDiff >= 5 ? (
-                                <div className="px-2.5 py-1.5 rounded-md bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 text-[11px] font-medium">
-                                    🐋 聰明錢偏多分歧（大戶多倉佔比高出散戶 +{divergenceDiff.toFixed(1)}%）
+                    {divergenceDiff !== null && (() => {
+                        const divTooltipText = "【聰明錢分歧判定（大戶 vs 散戶）】\n公式：大戶多倉佔比 % − 散戶多頭帳戶佔比 %\n• ≥ +5%（🐋 聰明錢偏多分歧）：大戶做多比例明顯高於散戶，常見於主力吸籌或逼空前夕。\n• ≤ -5%（⚠️ 散戶偏多分歧）：散戶過度樂觀抄底、大戶相對保守或加空，須提防洗盤派發。\n• -5% ～ +5%（⚖️ 結構同步）：兩者方向一致，留意 OI 與資金費率是否過熱。";
+                        if (divergenceDiff >= 5) {
+                            return (
+                                <div className="pt-1">
+                                    <div className="px-2.5 py-1.5 rounded-md bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 text-[11px] font-medium flex items-center justify-between gap-2">
+                                        <span>🐋 聰明錢偏多分歧（大戶多倉佔比高出散戶 +{divergenceDiff.toFixed(1)}%）</span>
+                                        <InfoTooltip width={320} className="ml-0 shrink-0" iconClassName="h-3.5 w-3.5 text-emerald-400/70 hover:text-emerald-200 cursor-help transition-colors" text={divTooltipText} />
+                                    </div>
                                 </div>
-                            ) : divergenceDiff <= -5 ? (
-                                <div className="px-2.5 py-1.5 rounded-md bg-red-950/40 border border-red-500/30 text-red-300 text-[11px] font-medium">
-                                    ⚠️ 散戶偏多分歧（大戶多倉佔比低於散戶 {divergenceDiff.toFixed(1)}%）
+                            );
+                        }
+                        if (divergenceDiff <= -5) {
+                            return (
+                                <div className="pt-1">
+                                    <div className="px-2.5 py-1.5 rounded-md bg-red-950/40 border border-red-500/30 text-red-300 text-[11px] font-medium flex items-center justify-between gap-2">
+                                        <span>⚠️ 散戶偏多分歧（大戶多倉佔比低於散戶 {divergenceDiff.toFixed(1)}%）</span>
+                                        <InfoTooltip width={320} className="ml-0 shrink-0" iconClassName="h-3.5 w-3.5 text-red-400/70 hover:text-red-200 cursor-help transition-colors" text={divTooltipText} />
+                                    </div>
                                 </div>
-                            ) : (
-                                <div className="px-2.5 py-1.5 rounded-md bg-zinc-900/80 border border-zinc-800 text-zinc-400 text-[11px] font-medium">
-                                    ⚖️ 大戶與散戶多空結構同步（差距 {divergenceDiff >= 0 ? '+' : ''}{divergenceDiff.toFixed(1)}%）
+                            );
+                        }
+                        return (
+                            <div className="pt-1">
+                                <div className="px-2.5 py-1.5 rounded-md bg-zinc-900/80 border border-zinc-800 text-zinc-400 text-[11px] font-medium flex items-center justify-between gap-2">
+                                    <span>⚖️ 大戶與散戶多空結構同步（差距 {divergenceDiff >= 0 ? '+' : ''}{divergenceDiff.toFixed(1)}%）</span>
+                                    <InfoTooltip width={320} className="ml-0 shrink-0" iconClassName="h-3.5 w-3.5 text-zinc-500 hover:text-zinc-300 cursor-help transition-colors" text={divTooltipText} />
                                 </div>
-                            )}
-                        </div>
-                    )}
+                            </div>
+                        );
+                    })()}
                 </div>
 
                 {/* EMA Trend Card */}

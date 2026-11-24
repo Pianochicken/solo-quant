@@ -1,5 +1,5 @@
 import { Info } from 'lucide-react';
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useLayoutEffect, useEffect, useId } from 'react';
 import { createPortal } from 'react-dom';
 
 interface InfoTooltipProps {
@@ -13,15 +13,17 @@ export const InfoTooltip = ({ text, className, iconClassName, width = 240 }: Inf
     const [visible, setVisible] = useState(false);
     const [position, setPosition] = useState({ top: 0, left: 0 });
     const iconRef = useRef<HTMLDivElement>(null);
+    const tooltipRef = useRef<HTMLDivElement>(null);
+    const tooltipId = useId();
 
-    useEffect(() => {
+    useLayoutEffect(() => {
         if (visible && iconRef.current) {
             const rect = iconRef.current.getBoundingClientRect();
             const tooltipWidth = width;
-            const tooltipHeight = 90; // 預估高度
+            const measuredHeight = tooltipRef.current?.getBoundingClientRect().height || 90;
 
             // 預設在 icon 上方置中
-            let top = rect.top - tooltipHeight - 8;
+            let top = rect.top - measuredHeight - 8;
             let left = rect.left + rect.width / 2 - tooltipWidth / 2;
 
             // 如果超出右側邊界，向左對齊
@@ -39,20 +41,37 @@ export const InfoTooltip = ({ text, className, iconClassName, width = 240 }: Inf
                 top = rect.bottom + 8;
             }
 
+            // 夾緊視窗下緣避免超出螢幕高度
+            top = Math.max(12, Math.min(top, window.innerHeight - measuredHeight - 12));
+
             setPosition({ top, left });
         }
-    }, [visible, width]);
+    }, [visible, width, text]);
+
+    // Dismissible with Escape key without moving pointer hover (WCAG 1.4.13)
+    useEffect(() => {
+        if (!visible) return;
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                setVisible(false);
+            }
+        };
+        document.addEventListener('keydown', handleKeyDown);
+        return () => document.removeEventListener('keydown', handleKeyDown);
+    }, [visible]);
 
     return (
         <>
             <div
                 ref={iconRef}
                 className={`relative inline-flex items-center ${className ?? 'ml-1.5'}`}
+                aria-describedby={visible ? tooltipId : undefined}
                 onMouseEnter={() => setVisible(true)}
                 onMouseLeave={() => setVisible(false)}
                 onClick={(e) => {
                     e.stopPropagation();
                     e.preventDefault();
+                    setVisible(prev => !prev);
                 }}
                 onMouseDown={(e) => {
                     e.stopPropagation();
@@ -62,6 +81,9 @@ export const InfoTooltip = ({ text, className, iconClassName, width = 240 }: Inf
             </div>
             {visible && typeof document !== 'undefined' && createPortal(
                 <div
+                    ref={tooltipRef}
+                    id={tooltipId}
+                    role="tooltip"
                     className="fixed p-2.5 bg-zinc-900/95 border border-zinc-700/80 rounded-lg text-xs leading-relaxed text-zinc-200 shadow-2xl z-[9999] pointer-events-none whitespace-pre-wrap font-sans backdrop-blur-md"
                     style={{
                         top: `${position.top}px`,

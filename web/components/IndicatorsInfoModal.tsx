@@ -254,6 +254,59 @@ export function IndicatorsInfoModal({ isOpen, onClose }: IndicatorsInfoModalProp
                             <li><strong className="text-red-400">80 - 100 (極度看跌)：</strong>市場極度超買、多頭擁擠、極度正值，隨時可能發生崩跌。</li>
                         </ul>
                     </div>
+
+                    {/* 12. Top Trader Position Ratio & Smart Money Divergence */}
+                    <div className="bg-zinc-950/50 border border-sky-900/40 rounded-lg p-4 flex flex-col h-full md:col-span-2 relative">
+                        <div className="flex items-center gap-2 mb-2">
+                            <span className="absolute top-4 right-4 text-[10px] px-1.5 py-0.5 rounded bg-sky-950/60 text-sky-300 border border-sky-500/30">Positioning</span>
+                            <span className="flex items-center justify-center w-6 h-6 rounded bg-sky-500/20 text-sky-400 text-xs font-bold shrink-0">12</span>
+                            <h3 className="font-semibold text-sky-400">🐋 大戶持倉多空比 &amp; 聰明錢分歧</h3>
+                        </div>
+                        <p className="text-xs text-zinc-400 mb-3 leading-relaxed">
+                            資料直接取自 Binance 官方統計端點（<code className="text-sky-300 font-mono">topLongShortPositionRatio</code>），篩選合約保證金餘額<strong>前 20% 頂級交易員</strong>並依<strong>實際多空總倉位名義價值</strong>加權（總多倉 ÷ 總空倉），用以穿透總未平倉量 (OI) 背後的主力資金方向。因主流幣大戶底倉常態偏多（約 1.5～2.3），實戰須同時搭配<strong>靜態比值</strong>與<strong>近 90 期 Z 分數</strong>判讀：
+                        </p>
+                        <div className="overflow-x-auto rounded border border-zinc-800 mb-3">
+                            <table className="w-full text-[10px] text-left">
+                                <thead className="bg-zinc-800/50 text-zinc-400 uppercase">
+                                    <tr>
+                                        <th className="px-2.5 py-1.5">Z 分數區間</th>
+                                        <th className="px-2.5 py-1.5">籌碼意義</th>
+                                        <th className="px-2.5 py-1.5">實戰判讀</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-zinc-800/50 text-zinc-300">
+                                    <tr>
+                                        <td className="px-2.5 py-1.5 font-mono text-zinc-400">|Z| &lt; 1.0</td>
+                                        <td className="px-2.5 py-1.5">常態波動</td>
+                                        <td className="px-2.5 py-1.5">大戶部位維持近期均值附近，無明顯方向切換。</td>
+                                    </tr>
+                                    <tr>
+                                        <td className="px-2.5 py-1.5 font-mono text-amber-300">Z ≤ -1.0</td>
+                                        <td className="px-2.5 py-1.5">偏多降溫／減多加空</td>
+                                        <td className="px-2.5 py-1.5">例如比值 1.66 但 Z = -1.14，代表底倉雖仍偏多，但較近 90 期明顯減碼降溫。</td>
+                                    </tr>
+                                    <tr>
+                                        <td className="px-2.5 py-1.5 font-mono text-sky-300">Z ≥ +1.0</td>
+                                        <td className="px-2.5 py-1.5">主力積極加多</td>
+                                        <td className="px-2.5 py-1.5">大戶多倉比重明顯升溫，常伴隨強勢多頭結構推進。</td>
+                                    </tr>
+                                    <tr>
+                                        <td className="px-2.5 py-1.5 font-mono text-rose-300">|Z| ≥ 2.0</td>
+                                        <td className="px-2.5 py-1.5">極端籌碼偏移</td>
+                                        <td className="px-2.5 py-1.5">達近 90 期罕見極端水準，留意波段轉折或趨勢加速。</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+                            <div className="bg-emerald-950/30 border border-emerald-500/25 rounded p-2 text-emerald-300">
+                                <strong>🐋 聰明錢偏多分歧 (差值 ≥ +5%)：</strong>大戶多倉佔比顯著高於散戶帳戶多頭佔比，代表主力承接籌碼或準備逼空。
+                            </div>
+                            <div className="bg-red-950/30 border border-red-500/25 rounded p-2 text-red-300">
+                                <strong>⚠️ 散戶偏多分歧 (差值 ≤ -5%)：</strong>散戶積極抄底／追多而大戶多倉佔比相對偏低，須提防主力派發與洗盤風險。
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
