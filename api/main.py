@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -53,7 +54,7 @@ async def lifespan(app: FastAPI):
     # 2. Schedule APScheduler background jobs with singleton constraints
     scheduler.add_job(
         scan_and_notify,
-        trigger=CronTrigger(minute="0,15,30,45"),
+        trigger=CronTrigger(minute="0,15,30,45", second="25"),
         id="signal_scanner",
         name="Periodic Signal Scanner",
         replace_existing=True,
@@ -135,6 +136,7 @@ class NotificationConfigUpdate(PydanticBaseModel):
     monitored_symbols: Optional[List[str]] = None
     enable_mtf_filter: Optional[bool] = None
     enable_protection: Optional[bool] = None
+    allow_intraday_prealert: Optional[bool] = None
 
 
 @app.get("/notifications/config")
@@ -145,12 +147,13 @@ def get_notif_config():
 
 @app.post("/notifications/config")
 def update_notif_config(body: NotificationConfigUpdate):
-    """Update notification settings (toggle on/off, select symbols, mtf, protection)."""
+    """Update notification settings (toggle on/off, select symbols, mtf, protection, prealert)."""
     return update_notification_config(
         enabled=body.enabled,
         monitored_symbols=body.monitored_symbols,
         enable_mtf_filter=body.enable_mtf_filter,
         enable_protection=body.enable_protection,
+        allow_intraday_prealert=body.allow_intraday_prealert,
     )
 
 
@@ -189,10 +192,49 @@ def get_market_data(
     signal_types: Optional[str] = "structure,reversion,breakout",
     include_orderbook: bool = True,
     include_breakdown: bool = True,
+    allow_live_btc_cache: bool = True,
+    lsur_source: str = "lsur",
 ):
     """
     Get generic market data (Price + Funding + Sentiment).
     """
+    return _get_market_data_impl(
+        symbol=symbol,
+        timeframe=timeframe,
+        limit=limit,
+        ranging_threshold=ranging_threshold,
+        trending_threshold=trending_threshold,
+        enable_protection=enable_protection,
+        use_dynamic_profiles=use_dynamic_profiles,
+        enable_mtf_filter=enable_mtf_filter,
+        btc_macro_regime=btc_macro_regime,
+        min_score=min_score,
+        signal_types=signal_types,
+        include_orderbook=include_orderbook,
+        include_breakdown=include_breakdown,
+        allow_live_btc_cache=allow_live_btc_cache,
+        lsur_source=lsur_source,
+    )
+
+
+def _get_market_data_impl(
+    symbol: str,
+    timeframe: str = '1d',
+    limit: int = 100,
+    ranging_threshold: int = 3,
+    trending_threshold: int = 3,
+    enable_protection: bool = False,
+    use_dynamic_profiles: bool = True,
+    enable_mtf_filter: bool = False,
+    btc_macro_regime: Optional[Dict] = None,
+    btc_macro_history: Optional[List[Dict]] = None,
+    min_score: float = 0.0,
+    signal_types: Optional[str] = "structure,reversion,breakout",
+    include_orderbook: bool = True,
+    include_breakdown: bool = True,
+    allow_live_btc_cache: bool = True,
+    lsur_source: str = "lsur",
+):
     global _btc_macro_cache
     # Fix symbol format
     formatted_symbol = symbol.replace('-', '/')
@@ -247,7 +289,7 @@ def get_market_data(
             future_htf_price = pool.submit(fetcher.fetch_market_data, formatted_symbol, '4h', htf_limit) if htf_needs_fetch else None
             future_htf_taker = pool.submit(fetcher.fetch_taker_volume, formatted_symbol, period='1H', limit=htf_taker_limit) if htf_needs_fetch else None
             
-            data = future_data.result()
+            data = future_data.result() or {}
             orderbook = future_ob.result() if future_ob else {"bids": [], "asks": [], "timestamp": int(time.time() * 1000)}
             exchange_breakdown = future_breakdown.result() if future_breakdown else {"binance": 50.0, "okx": 50.0}
             
@@ -281,8 +323,9 @@ def get_market_data(
             df.sort_values('time', inplace=True)
             return df.to_dict('records')
 
-        if data['price']:
-            df_price = pd.DataFrame(data['price'])
+        price_data = data.get('price') or []
+        if price_data:
+            df_price = pd.DataFrame(price_data)
             df_price['time'] = df_price['time'].astype(int)
             df_price.sort_values('time', inplace=True)
 
@@ -306,7 +349,7 @@ def get_market_data(
                 open_interest = []
 
         # 3. Align Funding Rate
-            if data['funding']:
+            if data.get('funding'):
                 df_funding = pd.DataFrame(data['funding'])
                 df_funding['time'] = df_funding['time'].astype(int)
                 df_funding.sort_values('time', inplace=True)
@@ -390,16 +433,39 @@ def get_market_data(
                 cvd_aligned = [] # Fallback
 
         else:
-            open_interest = []
-            if open_interest_raw:
-                open_interest = open_interest_raw
-            funding_aligned = data.get('funding', [])
-            
+            def _finite_float_or_none(val: Any) -> Optional[float]:
+                if val is None:
+                    return None
+                try:
+                    fval = float(val)
+                except (TypeError, ValueError):
+                    return None
+                return fval if math.isfinite(fval) else None
+
+            df_price = pd.DataFrame()
+            open_interest = [
+                {**x, "value": _finite_float_or_none(x.get("value"))}
+                for x in (open_interest_raw or [])
+            ]
+            funding_aligned = [
+                {**x, "value": _finite_float_or_none(x.get("value"))}
+                for x in (data.get('funding') or [])
+            ]
+
             # Fix UnboundLocalError by properly merging if missing price data
-            ls_ratio_history = merge_history(ls_ratio_history_raw, ls_ratio_daily) if 'ls_ratio_history_raw' in locals() else []
+            ls_ratio_history = []
+            for x in merge_history(ls_ratio_history_raw, ls_ratio_daily):
+                fval = _finite_float_or_none(x.get('value'))
+                if fval is not None:
+                    ls_ratio_history.append({**x, "value": fval})
             ls_aligned_history_val = ls_ratio_history
-            ls_aligned_clean = [x for x in ls_ratio_history if x.get('value') and x['value'] > 0]
-            top_ls_aligned = merge_history(top_ls_raw, top_ls_daily) if 'top_ls_raw' in locals() else []
+            ls_aligned_clean = [x for x in ls_ratio_history if x['value'] > 0]
+
+            top_ls_aligned = []
+            for x in merge_history(top_ls_raw, top_ls_daily):
+                fval = _finite_float_or_none(x.get('value'))
+                if fval is not None:
+                    top_ls_aligned.append({**x, "value": fval})
             cvd_aligned = [] # Fallback
         
         # === Layer 3 MTF: Build 4h regime history (no look-ahead bias — uses historical 4h bars only) ===
@@ -447,7 +513,7 @@ def get_market_data(
 
         # 3. Calculate Indicators
         # Get current price from last close
-        current_price = data['price'][-1]['close'] if data['price'] else 0
+        current_price = price_data[-1]['close'] if price_data else 0
         
         # removed: liquidity_walls = IndicatorEngine.calculate_liquidity_density(orderbook, current_price)
         lsur_z_score = IndicatorEngine.calculate_lsur_z_score(ls_aligned_history_val)
@@ -464,37 +530,71 @@ def get_market_data(
         oi_percentile = IndicatorEngine.calculate_oi_percentile(daily_oi_for_percentile)
         
         # 5.5. EMA Trend Filter (50/200 from price data)
-        ema_trend = IndicatorEngine.calculate_ema_trend(data['price'], symbol=formatted_symbol)
+        ema_trend = IndicatorEngine.calculate_ema_trend(price_data, symbol=formatted_symbol)
         trend_state = ema_trend['trend_state']
         
         # 5.6. RSI (14-period)
-        rsi_history = IndicatorEngine.calculate_rsi(data['price'])
+        rsi_history = IndicatorEngine.calculate_rsi(price_data)
         
         # 5.7. Bollinger Bands %B (20-period, 2 std)
-        bb_data = IndicatorEngine.calculate_bollinger_bands(data['price'])
+        bb_data = IndicatorEngine.calculate_bollinger_bands(price_data)
         bb_pctb = bb_data['bb_pctb']
         
         # 5.8. Donchian Channel and MACD for Breakout Strategy
         # Dynamic Donchian period: 48 for 15m/1h (48-hour range), 20 for 4h/1d
         donchian_period = 48 if timeframe in ('15m', '1h') else 20
-        donchian = IndicatorEngine.calculate_donchian_channel(data['price'], period=donchian_period)
-        macd_history = IndicatorEngine.calculate_macd(data['price'])
+        donchian = IndicatorEngine.calculate_donchian_channel(price_data, period=donchian_period)
+        macd_history = IndicatorEngine.calculate_macd(price_data)
 
-        # Resolve effective BTC macro regime for altcoin threshold adjustments
+        # Resolve effective BTC macro regime & causal per-bar BTC macro history for altcoins
         effective_btc_macro = btc_macro_regime
-        if effective_btc_macro is None and 'BTC' not in formatted_symbol.upper() and _btc_macro_cache:
-            effective_btc_macro = _btc_macro_cache.get(timeframe) or _btc_macro_cache.get('4h') or _btc_macro_cache.get('1h')
+        effective_btc_history = btc_macro_history
+        if price_data and 'BTC' not in formatted_symbol.upper():
+            if effective_btc_history is None and effective_btc_macro is None:
+                try:
+                    btc_res = _get_market_data_impl(
+                        symbol='BTC-USDT',
+                        timeframe=timeframe,
+                        limit=limit,
+                        include_orderbook=False,
+                        include_breakdown=False,
+                        enable_mtf_filter=False,
+                        enable_protection=False,
+                        use_dynamic_profiles=use_dynamic_profiles,
+                        allow_live_btc_cache=False,
+                    )
+                    btc_reg_hist = btc_res.get("indicators", {}).get("market_regime_history", [])
+                    btc_pulse_hist = btc_res.get("indicators", {}).get("composite_score_history", [])
+                    pulse_map = {p['time']: p['value'] for p in btc_pulse_hist}
+                    if btc_reg_hist:
+                        effective_btc_history = [
+                            {
+                                'time': r['time'],
+                                'regime': r.get('regime', 'ranging'),
+                                'direction': r.get('direction', 'neutral'),
+                                'pulse': pulse_map.get(r['time'], 50.0),
+                            }
+                            for r in btc_reg_hist
+                        ]
+                except Exception as btc_err:
+                    logger.warning(f"Failed to build causal BTC macro history for {formatted_symbol}: {btc_err}")
+                    effective_btc_history = None
+
+            if allow_live_btc_cache and effective_btc_history is None and effective_btc_macro is None and _btc_macro_cache:
+                effective_btc_macro = _btc_macro_cache.get(timeframe) or _btc_macro_cache.get('4h') or _btc_macro_cache.get('1h')
+
+        # Select LSUR Z-score source ('lsur' retail global ratio vs 'top_ls' Binance top trader position ratio)
+        active_z_aligned = top_ls_z_aligned if (lsur_source == 'top_ls' and top_ls_z_aligned) else lsur_z_aligned
 
         # 6. Multi-Indicator Confluence Signals v8
-        # Timeframe-adaptive thresholds, trend filter, per-bar rolling OI percentile, BTC macro regime
+        # Timeframe-adaptive thresholds, trend filter, per-bar rolling OI percentile, causal BTC macro history
         parsed_allowed_types = [t.strip().lower() for t in signal_types.split(',')] if signal_types else None
         confluence_markers, market_regime = IndicatorEngine.calculate_confluence_signals(
-            price_data=data['price'],
-            lsur_z_aligned=lsur_z_aligned,
+            price_data=price_data,
+            lsur_z_aligned=active_z_aligned,
             cvd_aligned=cvd_aligned,
             oi_percentile=oi_percentile,
             funding_aligned=funding_aligned,
-            trend_state=trend_state,
             rsi_aligned=rsi_history,
             ema_fast_aligned=ema_trend['ema_fast'],
             ema_slow_aligned=ema_trend['ema_slow'],
@@ -509,15 +609,16 @@ def get_market_data(
             symbol=formatted_symbol,
             use_dynamic_profiles=use_dynamic_profiles,
             higher_tf_regime_history=htf_regime_history,  # Layer 3 MTF (None if disabled)
-            btc_macro_regime=effective_btc_macro,         # Layer 4 BTC macro regime
+            btc_macro_regime=effective_btc_macro,         # Layer 4 single-bar fallback
             min_score=min_score,
             allowed_types=parsed_allowed_types,
+            btc_macro_history=effective_btc_history,      # Layer 4 causal per-bar BTC macro history
         )
         
         # 7 & 8. Composite Score (Market Pulse) v5 & History
         composite_score_history = IndicatorEngine.calculate_composite_score(
-            price_data=data['price'],
-            lsur_z_aligned=lsur_z_aligned,
+            price_data=price_data,
+            lsur_z_aligned=active_z_aligned,
             cvd_aligned=cvd_aligned,
             funding_aligned=funding_aligned,
             rsi_aligned=rsi_history,
@@ -530,8 +631,8 @@ def get_market_data(
         )
         composite_score = composite_score_history[-1]['value'] if composite_score_history else 50.0
 
-        # Cache BTC macro regime if current symbol is BTC and sufficiently warmed up (>= 250 bars)
-        if 'BTC' in formatted_symbol.upper() and data.get('price') and len(data['price']) >= 250:
+        # Cache BTC macro regime only for live requests
+        if allow_live_btc_cache and 'BTC' in formatted_symbol.upper() and price_data and len(price_data) >= 250:
             _btc_macro_cache[timeframe] = {
                 'regime': market_regime.get('regime', 'ranging'),
                 'direction': market_regime.get('direction', 'neutral'),
@@ -541,7 +642,7 @@ def get_market_data(
 
         # 9. Market Regime Detection History
         market_regime_history = IndicatorEngine.calculate_market_regime_history(
-            price_data=data['price'],
+            price_data=price_data,
             cvd_aligned=cvd_aligned
         )
         
@@ -549,7 +650,8 @@ def get_market_data(
             "symbol": formatted_symbol,
             "data": {
                 "price": df_price.to_dict('records') if not df_price.empty else [],
-                "funding": funding_aligned
+                "funding": funding_aligned,
+                "funding_settlements": data.get("funding_settlements") or [],
             },
             "indicators": {
                 "lsur_z_score": round(lsur_z_score, 2),
@@ -577,6 +679,8 @@ def get_market_data(
                 "donchian_channel": donchian,
             }
         }
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -585,10 +689,39 @@ def get_market_data(
 # --- Five-Coin Macro Overview & Quadrant Strip Cache & API ---
 OVERVIEW_SYMBOLS = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT', 'HYPE-USDT', 'CC-USDT']
 
-def _fetch_single_asset_overview(sym: str) -> Dict:
+def _extract_btc_macro_history(res: Dict) -> Optional[List[Dict]]:
+    btc_reg_hist = res.get("indicators", {}).get("market_regime_history", [])
+    btc_pulse_hist = res.get("indicators", {}).get("composite_score_history", [])
+    if not btc_reg_hist:
+        return None
+    pulse_map = {p['time']: p['value'] for p in btc_pulse_hist}
+    return [
+        {
+            'time': r['time'],
+            'regime': r.get('regime', 'ranging'),
+            'direction': r.get('direction', 'neutral'),
+            'pulse': pulse_map.get(r['time'], 50.0),
+        }
+        for r in btc_reg_hist
+    ]
+
+
+def _fetch_single_asset_overview(
+    sym: str,
+    btc_hist_4h: Optional[List[Dict]] = None,
+    btc_hist_1h: Optional[List[Dict]] = None,
+) -> Dict:
     # Use limit=300 to ensure full indicator warmup (fetch_limit=1000 in get_market_data)
-    res_4h = get_market_data(sym, '4h', limit=300, enable_protection=True, include_orderbook=False, include_breakdown=False)
-    res_1h = get_market_data(sym, '1h', limit=300, enable_protection=True, enable_mtf_filter=False, include_orderbook=False, include_breakdown=False)
+    res_4h = _get_market_data_impl(
+        sym, '4h', limit=300, enable_protection=True,
+        btc_macro_history=btc_hist_4h,
+        include_orderbook=False, include_breakdown=False, allow_live_btc_cache=False,
+    )
+    res_1h = _get_market_data_impl(
+        sym, '1h', limit=300, enable_protection=True, enable_mtf_filter=False,
+        btc_macro_history=btc_hist_1h,
+        include_orderbook=False, include_breakdown=False, allow_live_btc_cache=False,
+    )
     
     # Truncate and keep only lean summary fields to avoid memory blowup
     p_4h = res_4h.get('data', {}).get('price', [])
@@ -598,9 +731,11 @@ def _fetch_single_asset_overview(sym: str) -> Dict:
         "oi_tail": res_4h.get('indicators', {}).get('open_interest', [])[-7:] if res_4h.get('indicators', {}).get('open_interest') else [],
         "market_regime": res_4h.get('indicators', {}).get('market_regime', {}),
         "markers": res_4h.get('indicators', {}).get('lsur_markers', [])[-10:] if res_4h.get('indicators', {}).get('lsur_markers') else [],
+        "btc_macro_history": _extract_btc_macro_history(res_4h) if 'BTC' in sym else None,
     }
     lean_res_1h = {
         "markers": res_1h.get('indicators', {}).get('lsur_markers', [])[-10:] if res_1h.get('indicators', {}).get('lsur_markers') else [],
+        "btc_macro_history": _extract_btc_macro_history(res_1h) if 'BTC' in sym else None,
     }
     return {
         "symbol_key": sym,
@@ -619,10 +754,20 @@ def _compute_and_cache_market_overview() -> List[Dict]:
         _overview_lock.acquire(blocking=True)
 
     try:
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
-            results_raw = list(pool.map(_fetch_single_asset_overview, OVERVIEW_SYMBOLS))
+        # Compute BTC first so altcoins reuse its causal BTC macro history without redundant BTC fetches
+        btc_overview = _fetch_single_asset_overview('BTC-USDT')
+        btc_hist_4h = btc_overview['res_4h'].get('btc_macro_history')
+        btc_hist_1h = btc_overview['res_1h'].get('btc_macro_history')
 
+        alt_symbols = [s for s in OVERVIEW_SYMBOLS if s != 'BTC-USDT']
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            alt_results = list(pool.map(
+                lambda s: _fetch_single_asset_overview(s, btc_hist_4h=btc_hist_4h, btc_hist_1h=btc_hist_1h),
+                alt_symbols,
+            ))
+
+        results_raw = [btc_overview] + alt_results
         results_by_sym = {r["symbol_key"]: r for r in results_raw}
         
         # Determine BTC 4h RSI base
@@ -1067,6 +1212,8 @@ def run_backtest(params: BacktestParams):
             "trades": result['trades'] # Return all trades for full details
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -1074,21 +1221,25 @@ def run_backtest(params: BacktestParams):
 
 # --- Signal-Driven Backtesting API (v2) ---
 from api.quant.signal_backtester import SignalBacktester
-from api.quant.signal_strategy import SignalStrategyConfig
+from api.quant.signal_strategy import SignalStrategyConfig, get_risk_profile
 
 class SignalBacktestParams(BaseModel):
     symbol: str = 'BTC/USDT'
     investment: float = 10000.0
     duration_days: int = 30
     timeframe: str = '1h'
-    # Risk & Position Management
+    # Risk & Position Management (None = auto-resolve validated profile for symbol/timeframe)
     risk_per_trade_pct: float = 2.0
-    take_profit_pct: float = 1.80
-    stop_loss_pct: float = 1.2
-    trailing_stop_pct: float = 0.25
-    trailing_activation_pct: float = 0.60
+    take_profit_pct: Optional[float] = None
+    stop_loss_pct: Optional[float] = None
+    trailing_stop_pct: Optional[float] = None
+    trailing_activation_pct: Optional[float] = None
     max_positions: int = 1
     fee_rate: float = 0.0005
+    slippage_bps: float = 5.0
+    include_funding: bool = True
+    trailing_path_mode: str = 'ohlc'
+    use_optimal_risk_profile: bool = True
     allow_short: bool = True
     reverse_on_signal: bool = True
     enable_partial_tp: bool = False
@@ -1101,6 +1252,7 @@ class SignalBacktestParams(BaseModel):
     enable_mtf_filter: bool = True  # Layer 3: 4h regime MTF confirmation
     min_score: float = 0.0
     signal_types: str = "structure,reversion,breakout"
+    lsur_source: str = "lsur"
 
 @app.post("/quant/signal-backtest")
 def run_signal_backtest(params: SignalBacktestParams):
@@ -1124,7 +1276,7 @@ def run_signal_backtest(params: SignalBacktestParams):
 
         fetch_limit = max(1000, required_candles)
 
-        # 2. Fetch data with full warmup coverage for indicator consistency
+        # 2. Fetch data cleanly without orderbook/breakdown or live BTC cache contamination
         market_res = get_market_data(
             symbol=params.symbol,
             timeframe=params.timeframe,
@@ -1136,9 +1288,14 @@ def run_signal_backtest(params: SignalBacktestParams):
             enable_mtf_filter=params.enable_mtf_filter,  # Layer 3 MTF
             min_score=params.min_score,
             signal_types=params.signal_types,
+            include_orderbook=False,
+            include_breakdown=False,
+            allow_live_btc_cache=False,
+            lsur_source=params.lsur_source,
         )
 
         history = market_res["data"]["price"]
+        funding_settlements = market_res["data"].get("funding_settlements", [])
         confluence_markers = market_res["indicators"]["lsur_markers"]
 
         if not history:
@@ -1149,17 +1306,33 @@ def run_signal_backtest(params: SignalBacktestParams):
         end_time = int(time.time() * 1000)
         actual_start_time = end_time - (params.duration_days * 24 * 3600 * 1000)
 
+        # Resolve per-(symbol, timeframe) risk parameters when omitted
+        default_cfg = SignalStrategyConfig()
+        profile = get_risk_profile(formatted_symbol, params.timeframe) if params.use_optimal_risk_profile else {
+            'take_profit_pct': default_cfg.take_profit_pct,
+            'stop_loss_pct': default_cfg.stop_loss_pct,
+            'trailing_stop_pct': default_cfg.trailing_stop_pct,
+            'trailing_activation_pct': default_cfg.trailing_activation_pct,
+        }
+        eff_tp = params.take_profit_pct if params.take_profit_pct is not None else profile['take_profit_pct']
+        eff_sl = params.stop_loss_pct if params.stop_loss_pct is not None else profile['stop_loss_pct']
+        eff_trail = params.trailing_stop_pct if params.trailing_stop_pct is not None else profile['trailing_stop_pct']
+        eff_act = params.trailing_activation_pct if params.trailing_activation_pct is not None else profile['trailing_activation_pct']
+
         # 4. Build Config & Run Signal Backtester
         config = SignalStrategyConfig(
             symbol=formatted_symbol,
             investment=params.investment,
             risk_per_trade_pct=params.risk_per_trade_pct,
-            take_profit_pct=params.take_profit_pct,
-            stop_loss_pct=params.stop_loss_pct,
-            trailing_stop_pct=params.trailing_stop_pct,
-            trailing_activation_pct=params.trailing_activation_pct,
+            take_profit_pct=eff_tp,
+            stop_loss_pct=eff_sl,
+            trailing_stop_pct=eff_trail,
+            trailing_activation_pct=eff_act,
             max_positions=params.max_positions,
             fee_rate=params.fee_rate,
+            slippage_bps=params.slippage_bps,
+            include_funding=params.include_funding,
+            trailing_path_mode=params.trailing_path_mode,
             allow_short=params.allow_short,
             reverse_on_signal=params.reverse_on_signal,
             enable_partial_tp=params.enable_partial_tp,
@@ -1176,8 +1349,14 @@ def run_signal_backtest(params: SignalBacktestParams):
         actual_start_sec = actual_start_time / 1000
         backtest_history = [c for c in history if c['time'] >= actual_start_sec]
         backtest_markers = [m for m in confluence_markers if m['time'] >= actual_start_sec]
+        backtest_funding = [f for f in funding_settlements if f['time'] >= actual_start_sec]
 
-        tester = SignalBacktester(config, backtest_history, backtest_markers)
+        tester = SignalBacktester(
+            config,
+            backtest_history,
+            backtest_markers,
+            funding_rates=backtest_funding,
+        )
         result = tester.run()
 
         # 5. Build Response
@@ -1202,6 +1381,7 @@ def run_signal_backtest(params: SignalBacktestParams):
                 "max_drawdown_pct": result['metrics']['max_drawdown_pct'],
                 "sharpe_ratio": result['metrics']['sharpe_ratio'],
                 "total_fees_paid": result['total_fees_paid'],
+                "total_funding_pnl": result.get('total_funding_pnl', 0.0),
                 "avg_mfe_pct": result['metrics'].get('avg_mfe_pct', 0.0),
                 "avg_mae_pct": result['metrics'].get('avg_mae_pct', 0.0),
             },
@@ -1214,6 +1394,8 @@ def run_signal_backtest(params: SignalBacktestParams):
             "debug_markers_len": len(confluence_markers)
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         traceback.print_exc()

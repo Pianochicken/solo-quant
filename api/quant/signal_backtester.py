@@ -28,6 +28,7 @@ class SignalBacktester:
         config: SignalStrategyConfig,
         price_data: List[Dict],
         signals: List[Dict],
+        funding_rates: Optional[List[Dict]] = None,
     ):
         """
         Args:
@@ -35,6 +36,8 @@ class SignalBacktester:
             price_data: List of OHLCV dicts with keys: time, open, high, low, close.
             signals: List of confluence signal dicts from IndicatorEngine.
                      Each must have: time, direction ('bullish'|'bearish'), score.
+            funding_rates: Optional list of historical funding settlement events
+                     with keys: time, funding_rate (decimal, e.g. 0.0001 = 0.01%).
         """
         self.config = config
         self.price_data = price_data
@@ -88,6 +91,39 @@ class SignalBacktester:
                     curr_atr = (curr_atr * (period - 1) + tr[i]) / period
                 self.atr_map[self.price_data[i]['time']] = curr_atr
 
+        # Infer bar interval from price timestamps for settlement boundary resolution
+        self.bar_interval: int = 3600
+        if len(self.price_data) >= 2:
+            deltas = [
+                self.price_data[k + 1]['time'] - self.price_data[k]['time']
+                for k in range(len(self.price_data) - 1)
+                if self.price_data[k + 1]['time'] > self.price_data[k]['time']
+            ]
+            if deltas:
+                self.bar_interval = int(np.median(deltas))
+
+        # Preprocess historical funding settlement events (sorted, deduplicated, time-unit aligned)
+        self.funding_events: List[Dict] = []
+        if funding_rates and self.price_data:
+            sample_price_t = self.price_data[0]['time']
+            dedup_funding: Dict[int, float] = {}
+            for fs in funding_rates:
+                if fs is None or 'time' not in fs:
+                    continue
+                raw_rate = fs.get('funding_rate', fs.get('rate'))
+                if raw_rate is None:
+                    continue
+                ft = int(fs['time'])
+                if sample_price_t < 1e11 and ft > 1e12:
+                    ft = ft // 1000
+                elif sample_price_t > 1e12 and ft < 1e11:
+                    ft = ft * 1000
+                dedup_funding[ft] = float(raw_rate)
+            self.funding_events = [
+                {'time': ft, 'funding_rate': dedup_funding[ft]}
+                for ft in sorted(dedup_funding.keys())
+            ]
+
         # State
         self.balance: float = config.investment
         self.open_positions: List[Position] = []
@@ -95,26 +131,57 @@ class SignalBacktester:
         self.trades: List[Dict] = []
         self.equity_curve: List[Dict] = []
         self.total_fees_paid: float = 0.0
+        self.total_funding_pnl: float = 0.0
+
+    def _apply_slippage(self, price: float, side: str, is_entry: bool) -> float:
+        """Apply one-way adverse slippage (bps) on market/stop executions."""
+        slip = max(0.0, float(getattr(self.config, 'slippage_bps', 0.0))) / 10000.0
+        if slip <= 0.0:
+            return price
+        is_buy = (side == 'long' and is_entry) or (side == 'short' and not is_entry)
+        return price * (1.0 + slip) if is_buy else price * (1.0 - slip)
 
     def run(self) -> Dict:
         """
         Execute the backtest over all candles.
         
         Returns:
-            Dict with keys: trades, equity, final_balance, total_fees_paid, metrics
+            Dict with keys: trades, equity, final_balance, total_fees_paid, total_funding_pnl, metrics
         """
         if not self.price_data:
             return self._empty_result()
 
-        for candle in self.price_data:
+        f_idx = 0
+        n_candles = len(self.price_data)
+        first_time = self.price_data[0]['time']
+        while f_idx < len(self.funding_events) and self.funding_events[f_idx]['time'] <= first_time:
+            f_idx += 1
+
+        include_funding = bool(getattr(self.config, 'include_funding', True))
+
+        for i, candle in enumerate(self.price_data):
             open_price = candle.get('open')
             high = candle['high']
             low = candle['low']
             close = candle['close']
             time = candle['time']
+            next_time = self.price_data[i + 1]['time'] if i + 1 < n_candles else (time + self.bar_interval)
 
             # --- Step 1 & 2: Update positions and check exits ---
             self._process_exits(high, low, close, time, open_price=open_price)
+
+            # --- Step 2.5: Settle funding payments for settlements crossed at candle close ---
+            while f_idx < len(self.funding_events) and self.funding_events[f_idx]['time'] <= next_time:
+                fs = self.funding_events[f_idx]
+                if include_funding and fs['time'] > time and self.open_positions:
+                    rate = fs['funding_rate']
+                    for pos in self.open_positions:
+                        notional = pos.size * close
+                        f_pnl = (-notional * rate) if pos.side == 'long' else (notional * rate)
+                        self.balance += f_pnl
+                        pos.funding_pnl += f_pnl
+                        self.total_funding_pnl += f_pnl
+                f_idx += 1
 
             # --- Step 3: Check for new signals ---
             signal = self.signal_map.get(time)
@@ -128,7 +195,10 @@ class SignalBacktester:
         # Force-close any remaining open positions at last candle's close
         if self.price_data:
             last = self.price_data[-1]
-            self._close_all_open(last['close'], last['time'], reason='backtest_end')
+            if self.open_positions:
+                self._close_all_open(last['close'], last['time'], reason='backtest_end')
+                if self.equity_curve:
+                    self.equity_curve[-1]['value'] = self._calculate_equity(last['close'])
 
         return self._build_result()
 
@@ -141,22 +211,74 @@ class SignalBacktester:
         Step B: If not exited in Step A:
           1. Check TP1 partial exit (if reached trailing_activation_pct)
           2. Update trailing stop with new high/low
-          3. Physical law check (High before Close):
-             If trailing stop is active and candle close retraced through trailing_stop_price,
-             trigger trailing exit on this same candle at trailing_stop_price!
+          3. Physical intra-bar trailing check ('ohlc' or 'conservative'):
+             If trailing stop is active and intra-bar price retraced through
+             trailing_stop_price after reaching the peak/trough, trigger trailing
+             exit on this candle.
         """
         still_open = []
+        path_mode = getattr(self.config, 'trailing_path_mode', 'ohlc')
+        atr_mult = float(getattr(self.config, 'trailing_atr_mult', 0.0) or 0.0)
+
         for pos in self.open_positions:
             # Step A: Check full exit conditions from previous state or open
             exit_reason = pos.check_exit(high, low, close, open_price=open_price)
             if exit_reason:
+                # If TP2 is hit on this candle while TP1 partial hasn't executed yet and candle didn't gap past TP2,
+                # fill TP1 partial first along the continuous intra-bar path, then close the remaining runner at TP2.
+                if (
+                    exit_reason == 'tp'
+                    and pos.enable_partial_tp
+                    and not pos.partial_tp_done
+                    and pos.trailing_activation_pct > 0
+                ):
+                    anchor_price = pos.signal_price if pos.signal_price is not None else pos.entry_price
+                    tp1_price = (
+                        anchor_price * (1 + pos.trailing_activation_pct / 100)
+                        if pos.side == 'long'
+                        else anchor_price * (1 - pos.trailing_activation_pct / 100)
+                    )
+                    tp1_strictly_before_tp2 = (
+                        (pos.side == 'long' and tp1_price < pos.take_profit and (open_price is None or open_price < pos.take_profit))
+                        or (pos.side == 'short' and tp1_price > pos.take_profit and (open_price is None or open_price > pos.take_profit))
+                    )
+                    if tp1_strictly_before_tp2:
+                        tp1_fill = pos.check_partial_tp(high, low, open_price=open_price, close=close)
+                        if tp1_fill is not None:
+                            ratio = getattr(self.config, 'partial_tp_ratio', 0.5)
+                            closed_size, part_pnl, part_fee = pos.execute_partial_tp(
+                                tp1_fill, fee_rate=self.config.fee_rate, ratio=ratio
+                            )
+                            self.total_fees_paid += part_fee
+                            closed_cost = pos.entry_price * closed_size
+                            part_raw_pnl = (
+                                (tp1_fill - pos.entry_price) * closed_size
+                                if pos.side == 'long'
+                                else (pos.entry_price - tp1_fill) * closed_size
+                            )
+                            part_exit_fee = tp1_fill * closed_size * self.config.fee_rate
+                            self.balance += closed_cost + part_raw_pnl - part_exit_fee
+                            self.trades.append({
+                                "time": time,
+                                "side": f"close_{pos.side}",
+                                "price": tp1_fill,
+                                "amount": closed_size,
+                                "fee": part_fee,
+                                "realized_pnl": round(part_pnl, 4),
+                                "exit_reason": "tp1_partial",
+                                "position_id": pos.id,
+                                "equity": self._calculate_equity(close),
+                            })
+
                 exit_price = pos.get_exit_price_for_reason(exit_reason, high, low, open_price=open_price)
+                if exit_reason in ('sl', 'trailing'):
+                    exit_price = self._apply_slippage(exit_price, pos.side, is_entry=False)
                 self._close_position(pos, exit_price, time, exit_reason)
                 continue
 
             # Step B: If not exited in Step A
-            # 1. Check partial take profit (TP1) if not yet triggered
-            tp1_fill = pos.check_partial_tp(high, low, open_price=open_price)
+            # 1. Check partial take profit (TP1) if not yet triggered (limit order, no slippage)
+            tp1_fill = pos.check_partial_tp(high, low, open_price=open_price, close=close)
             if tp1_fill is not None:
                 ratio = getattr(self.config, 'partial_tp_ratio', 0.5)
                 closed_size, part_pnl, part_fee = pos.execute_partial_tp(
@@ -185,8 +307,22 @@ class SignalBacktester:
                     "equity": self._calculate_equity(close),
                 })
 
-            # 2. Update trailing stop for cross-candle tracking
+            # Optional ATR-based trailing stop width override
+            if atr_mult > 0.0 and time in self.atr_map and close > 0:
+                atr_pct = (self.atr_map[time] / close) * 100.0
+                base_trail_pct = max(atr_pct * atr_mult, 0.05)
+                pos.trailing_stop_pct = base_trail_pct * 1.4 if pos.partial_tp_done else base_trail_pct
+
+            # 2. Update trailing stop with current candle extremes
             pos.update(high, low, close)
+
+            # 3. Intra-bar physical / conservative trailing stop check
+            if pos.check_intraday_trailing_exit(high, low, close, open_price=open_price, path_mode=path_mode):
+                raw_trail_fill = min(max(pos.trailing_stop_price, low), high)
+                trail_fill = self._apply_slippage(raw_trail_fill, pos.side, is_entry=False)
+                self._close_position(pos, trail_fill, time, 'trailing')
+                continue
+
             still_open.append(pos)
 
         self.open_positions = still_open
@@ -238,7 +374,7 @@ class SignalBacktester:
         Then opens a new position in the signal direction.
         """
         direction = signal.get('direction')  # 'bullish' or 'bearish'
-        entry_price = candle['close']
+        signal_price = candle['close']
         time = candle['time']
 
         if direction == 'bullish':
@@ -252,11 +388,12 @@ class SignalBacktester:
         else:
             return  # Unknown direction
 
-        # --- Reverse close: close all opposite-side positions ---
+        # --- Reverse close: close all opposite-side positions (market order slippage) ---
         if self.config.reverse_on_signal:
             opposite_positions = [p for p in self.open_positions if p.side == opposite_side]
             for pos in opposite_positions:
-                self._close_position(pos, entry_price, time, 'signal_reverse')
+                rev_exit_price = self._apply_slippage(signal_price, pos.side, is_entry=False)
+                self._close_position(pos, rev_exit_price, time, 'signal_reverse')
             self.open_positions = [p for p in self.open_positions if p.side != opposite_side]
 
         # --- Check if we can open a new position ---
@@ -265,8 +402,16 @@ class SignalBacktester:
             return  # Max positions reached for this side
 
         # --- Calculate position size (risk-based) ---
-        current_equity = self._calculate_equity(entry_price)
-        pos = self._open_position(target_side, entry_price, time, current_equity, signal=signal)
+        current_equity = self._calculate_equity(signal_price)
+        entry_price = self._apply_slippage(signal_price, target_side, is_entry=True)
+        pos = self._open_position(
+            target_side,
+            entry_price,
+            time,
+            current_equity,
+            signal=signal,
+            signal_price=signal_price,
+        )
         if pos:
             self.open_positions.append(pos)
 
@@ -277,6 +422,7 @@ class SignalBacktester:
         time: int,
         current_equity: float,
         signal: Optional[Dict] = None,
+        signal_price: Optional[float] = None,
     ) -> Optional[Position]:
         """
         Open a new position with risk-based sizing.
@@ -284,6 +430,8 @@ class SignalBacktester:
         Size = risk_amount / SL_distance
         Capped by available balance.
         """
+        anchor_price = signal_price if signal_price is not None else entry_price
+
         # Determine TP percentage (Structure and Breakout signals get 1.15x TP expansion)
         tp_pct = self.config.take_profit_pct
         if signal:
@@ -292,16 +440,18 @@ class SignalBacktester:
             if sig_type == 'breakout' or '🚀' in sig_text or 'Structure' in sig_text or 'CAP' in sig_text or 'DIV' in sig_text:
                 tp_pct *= 1.15
 
-        # Calculate TP/SL levels
+        # Calculate TP/SL levels anchored to tactical signal price
         if side == 'long':
-            take_profit = entry_price * (1 + tp_pct / 100)
-            stop_loss = entry_price * (1 - self.config.stop_loss_pct / 100)
+            take_profit = anchor_price * (1 + tp_pct / 100)
+            stop_loss = anchor_price * (1 - self.config.stop_loss_pct / 100)
         else:
-            take_profit = entry_price * (1 - tp_pct / 100)
-            stop_loss = entry_price * (1 + self.config.stop_loss_pct / 100)
+            take_profit = anchor_price * (1 - tp_pct / 100)
+            stop_loss = anchor_price * (1 + self.config.stop_loss_pct / 100)
 
         # Risk-based position sizing
         risk_amount = current_equity * (self.config.risk_per_trade_pct / 100)
+        if (side == 'long' and entry_price <= stop_loss) or (side == 'short' and entry_price >= stop_loss):
+            return None
         sl_distance = abs(entry_price - stop_loss)
         if sl_distance == 0:
             return None
@@ -323,6 +473,12 @@ class SignalBacktester:
         entry_fee = cost * self.config.fee_rate
         self.balance -= (cost + entry_fee)
 
+        init_trail_pct = self.config.trailing_stop_pct
+        atr_mult = float(getattr(self.config, 'trailing_atr_mult', 0.0) or 0.0)
+        if atr_mult > 0.0 and time in self.atr_map and anchor_price > 0:
+            atr_pct = (self.atr_map[time] / anchor_price) * 100.0
+            init_trail_pct = max(atr_pct * atr_mult, 0.05)
+
         pos = Position(
             side=side,
             entry_price=entry_price,
@@ -330,9 +486,11 @@ class SignalBacktester:
             size=size,
             take_profit=take_profit,
             stop_loss=stop_loss,
-            trailing_stop_pct=self.config.trailing_stop_pct,
+            trailing_stop_pct=init_trail_pct,
             trailing_activation_pct=self.config.trailing_activation_pct,
             enable_partial_tp=getattr(self.config, 'enable_partial_tp', False),
+            signal_price=anchor_price,
+            legacy_clamp_trailing=(getattr(self.config, 'trailing_path_mode', 'ohlc') == 'legacy_clamp'),
         )
 
         # Record entry trade
@@ -345,7 +503,7 @@ class SignalBacktester:
             "realized_pnl": 0.0,
             "exit_reason": "",
             "position_id": pos.id,
-            "equity": self._calculate_equity(entry_price),
+            "equity": self._calculate_equity(anchor_price),
         })
 
         return pos
@@ -430,6 +588,7 @@ class SignalBacktester:
                 "sharpe_ratio": 0.0,
                 "avg_mfe_pct": sq["avg_mfe_pct"],
                 "avg_mae_pct": sq["avg_mae_pct"],
+                "total_funding_pnl": round(self.total_funding_pnl, 4),
             }
 
         wins = [p for p in self.closed_positions if p.realized_pnl > 0]
@@ -470,6 +629,7 @@ class SignalBacktester:
             "sharpe_ratio": round(sharpe, 2),
             "avg_mfe_pct": sq["avg_mfe_pct"],
             "avg_mae_pct": sq["avg_mae_pct"],
+            "total_funding_pnl": round(self.total_funding_pnl, 4),
         }
 
     def _calculate_max_drawdown(self) -> float:
@@ -506,9 +666,10 @@ class SignalBacktester:
 
         interval_hours = 1.0
         if len(self.price_data) >= 2:
-            delta_ms = self.price_data[1]['time'] - self.price_data[0]['time']
-            if delta_ms > 0:
-                interval_hours = max(delta_ms / 3600000.0, 1.0 / 60.0)
+            delta = self.price_data[1]['time'] - self.price_data[0]['time']
+            if delta > 0:
+                divisor = 3600000.0 if self.price_data[0]['time'] > 1e11 else 3600.0
+                interval_hours = max(delta / divisor, 1.0 / 60.0)
 
         annual_factor = 8760.0 / interval_hours
         mean_return = np.mean(returns) - (risk_free_rate / annual_factor)
@@ -521,7 +682,9 @@ class SignalBacktester:
 
     def _build_result(self) -> Dict:
         """Assemble the final backtest result."""
-        final_balance = self.equity_curve[-1]['value'] if self.equity_curve else self.config.investment
+        final_balance = self.balance if not self.open_positions else (
+            self.equity_curve[-1]['value'] if self.equity_curve else self.config.investment
+        )
         metrics = self._calculate_metrics()
 
         return {
@@ -529,6 +692,7 @@ class SignalBacktester:
             "equity": self.equity_curve,
             "final_balance": round(final_balance, 4),
             "total_fees_paid": round(self.total_fees_paid, 4),
+            "total_funding_pnl": round(self.total_funding_pnl, 4),
             "metrics": metrics,
             "positions": [p.to_dict() for p in self.closed_positions],
         }
@@ -540,6 +704,7 @@ class SignalBacktester:
             "equity": [],
             "final_balance": self.config.investment,
             "total_fees_paid": 0.0,
+            "total_funding_pnl": 0.0,
             "metrics": self._calculate_metrics(),
             "positions": [],
         }

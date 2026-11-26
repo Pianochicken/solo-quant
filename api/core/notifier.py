@@ -12,7 +12,7 @@ from pathlib import Path
 
 # Local import for chart generation
 from .utils.chart import generate_candlestick_chart
-from api.quant.signal_strategy import OPTIMAL_RISK_PROFILES
+from api.quant.signal_strategy import OPTIMAL_RISK_PROFILES, SignalStrategyConfig, get_risk_profile
 
 logger = logging.getLogger(__name__)
 _chart_lock = threading.Lock()
@@ -172,13 +172,18 @@ def format_signal_message(
     price: float,
     timeframe: str = "1h",
     macro_info: Optional[dict] = None,
+    enable_partial_tp: Optional[bool] = None,
+    correlation_warning: bool = False,
+    is_intraday_prealert: bool = False,
 ) -> str:
-    """Format a confluence signal into an actionable Telegram message with TP1/TP2/SL and quadrant status."""
+    """Format a confluence signal into an actionable Telegram message with TP1/TP2/SL, position sizing, and quadrant status."""
     direction = signal.get("direction", "bullish")
     strategy_type = signal.get("strategy_type", "reversion")
     score = signal.get("score", 0)
     text_raw = signal.get("text", "")
     signal_time = signal.get("time", 0)
+    if enable_partial_tp is None:
+        enable_partial_tp = SignalStrategyConfig().enable_partial_tp
 
     # Timezone handling: dynamically derived from environment offset
     offset = get_timezone_offset()
@@ -226,15 +231,11 @@ def format_signal_message(
     safe_reason_str = html.escape(reason_str)
 
     # --- Target SL / TP1 / TP2 Calculation ---
-    coin = symbol.split('/')[0].split('-')[0].upper()
-    p_cfg = (
-        OPTIMAL_RISK_PROFILES.get(coin, {}).get(timeframe)
-        or OPTIMAL_RISK_PROFILES.get(coin, {}).get('1h')
-        or OPTIMAL_RISK_PROFILES['BTC']['1h']
-    )
+    p_cfg = get_risk_profile(symbol, timeframe)
     sl_pct = p_cfg['stop_loss_pct']
     tp_pct = p_cfg['take_profit_pct']
     act_pct = p_cfg['trailing_activation_pct']
+    trail_pct = p_cfg['trailing_stop_pct']
 
     # Breakout & Structure signals get 1.15x TP expansion
     is_breakout = (strategy_type == "breakout") or ("BREAKOUT" in text_raw) or ("🚀" in text_raw)
@@ -242,26 +243,42 @@ def format_signal_message(
     if is_breakout or is_structure:
         tp_pct *= 1.15
 
+    # Position Sizing & Effective Leverage Cap (1%~2% equity risk, capped at 0.95x notional)
+    risk_1_notional_pct = min(95.0, (1.0 / sl_pct) * 100.0) if sl_pct > 0 else 95.0
+    risk_2_notional_pct = min(95.0, (2.0 / sl_pct) * 100.0) if sl_pct > 0 else 95.0
+    eff_lev_1 = risk_1_notional_pct / 100.0
+    eff_lev_2 = risk_2_notional_pct / 100.0
+    sizing_block = (
+        f"⚖️ <b>倉位與槓桿風控</b> (單筆風險 1%~2%):\n"
+        f"• 建議名目倉位: 權益 {risk_1_notional_pct:.0f}%~{risk_2_notional_pct:.0f}% "
+        f"(有效槓桿 {eff_lev_1:.2f}x~上限 {eff_lev_2:.2f}x，嚴控 &lt;= 0.95x)"
+    )
+
     if price > 0:
         if direction == "bullish":
             tp1_price = price * (1 + act_pct / 100)
             tp2_price = price * (1 + tp_pct / 100)
             sl_price = price * (1 - sl_pct / 100)
-            points_block = (
-                f"🎯 <b>戰術掛單點位</b>:\n"
-                f"• TP1 (減半推保本): {fmt_price(tp1_price)} (+{act_pct:.2f}%)\n"
-                f"• TP2 (波段目標): {fmt_price(tp2_price)} (+{tp_pct:.2f}%)\n"
-                f"• SL (安全止損): {fmt_price(sl_price)} (-{sl_pct:.2f}%)"
-            )
+            sign_tp, sign_sl = "+", "-"
         else:
             tp1_price = price * (1 - act_pct / 100)
             tp2_price = price * (1 - tp_pct / 100)
             sl_price = price * (1 + sl_pct / 100)
+            sign_tp, sign_sl = "-", "+"
+
+        if enable_partial_tp:
             points_block = (
-                f"🎯 <b>戰術掛單點位</b>:\n"
-                f"• TP1 (減半推保本): {fmt_price(tp1_price)} (-{act_pct:.2f}%)\n"
-                f"• TP2 (波段目標): {fmt_price(tp2_price)} (-{tp_pct:.2f}%)\n"
-                f"• SL (安全止損): {fmt_price(sl_price)} (+{sl_pct:.2f}%)"
+                f"🎯 <b>戰術掛單點位</b> (兩段式減半保本):\n"
+                f"• TP1 (減半推保本): {fmt_price(tp1_price)} ({sign_tp}{act_pct:.2f}%)\n"
+                f"• TP2 (波段目標): {fmt_price(tp2_price)} ({sign_tp}{tp_pct:.2f}%)\n"
+                f"• SL (安全止損): {fmt_price(sl_price)} ({sign_sl}{sl_pct:.2f}%)"
+            )
+        else:
+            points_block = (
+                f"🎯 <b>戰術掛單點位</b> (單段全倉追蹤 | 參考 TP1/TP2):\n"
+                f"• 追蹤啟動 / 可選 TP1 (減半推保本): {fmt_price(tp1_price)} ({sign_tp}{act_pct:.2f}% | 回撤 {trail_pct:.2f}%)\n"
+                f"• 全倉目標 / 可選 TP2 (波段目標): {fmt_price(tp2_price)} ({sign_tp}{tp_pct:.2f}%)\n"
+                f"• SL (安全止損): {fmt_price(sl_price)} ({sign_sl}{sl_pct:.2f}%)"
             )
     else:
         points_block = ""
@@ -288,14 +305,18 @@ def format_signal_message(
             f"• 4H 宏觀: {reg_str} | RS vs BTC: {rs_str} | 24h 幣本位OI: {oi_str}"
         )
 
+    prealert_prefix = "[盤中未收線預警] " if is_intraday_prealert else ""
     lines = [
-        f"{emoji} <b>[{symbol} {timeframe}] {strategy_label} {action}</b> @ {price_str}",
+        f"{prealert_prefix}{emoji} <b>[{symbol} {timeframe}] {strategy_label} {action}</b> @ {price_str}",
         f"⏰ 時間: {time_str} {tz_label}",
         f"⚡ 訊號: {safe_reason_str}",
     ]
     if points_block:
         lines.append(f"\n{points_block}")
+    lines.append(f"\n{sizing_block}")
     if macro_block:
         lines.append(f"\n{macro_block}")
+    if correlation_warning:
+        lines.append("\n⚠️ 跨幣種高度共線警示：請控管帳戶總風險敞口（建議總風險 &lt;= 4%～6%）")
 
     return "\n".join(lines)

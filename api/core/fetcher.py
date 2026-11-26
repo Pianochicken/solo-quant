@@ -1,13 +1,16 @@
 import ccxt
+import logging
 import pandas as pd
 import numpy as np
 import time
 import concurrent.futures
-from typing import Tuple, Dict, List, Optional
+from typing import Tuple, Dict, List, Optional, Any
 from datetime import datetime, timezone
 
 from api.db.database import SessionLocal
 from api.db import crud
+
+logger = logging.getLogger(__name__)
 
 class DataFetcher:
     """
@@ -41,6 +44,11 @@ class DataFetcher:
 
     def _ms_to_dt(self, ms: int) -> datetime:
         return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
+
+    @staticmethod
+    def _dt_to_sec(dt: datetime) -> int:
+        aware = dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+        return int(aware.timestamp())
 
     def fetch_market_data(self, symbol: str, timeframe: str = '1d', limit: int = 90) -> Dict:
         """
@@ -199,7 +207,7 @@ class DataFetcher:
             final_ohlcv = crud.get_market_data(db, symbol=db_symbol, timeframe=timeframe, exchange="okx", limit=limit, require_ohlcv=True)
             price_data = [
                 {
-                    "time": int(x.timestamp.timestamp()), 
+                    "time": self._dt_to_sec(x.timestamp),
                     "open": x.open, "high": x.high, "low": x.low, "close": x.close, "volume": x.volume
                 }
                 for x in final_ohlcv if x.open is not None
@@ -211,11 +219,23 @@ class DataFetcher:
                     crud.FundingRate.exchange == 'okx'
                 ).order_by(crud.FundingRate.timestamp.desc()).limit(limit * 3).all()
                 latest_funding_records = [
-                    {"timestamp": int(x.timestamp.timestamp() * 1000), "fundingRate": x.funding_rate}
+                    {"timestamp": self._dt_to_sec(x.timestamp) * 1000, "fundingRate": x.funding_rate}
                     for x in latest_funding
                 ]
 
         funding_data = []
+        funding_settlements = []
+        if latest_funding_records:
+            seen_ft = {}
+            for rec in latest_funding_records:
+                ft_sec = int(rec['timestamp'] / 1000)
+                if rec['fundingRate'] is not None:
+                    seen_ft[ft_sec] = float(rec['fundingRate'])
+            funding_settlements = [
+                {"time": ft, "funding_rate": seen_ft[ft]}
+                for ft in sorted(seen_ft.keys())
+            ]
+
         if price_data and latest_funding_records:
             df_price_times = pd.DataFrame([x['time'] * 1000 for x in price_data], columns=['timestamp'])
             df_price_times.sort_values('timestamp', inplace=True)
@@ -232,7 +252,7 @@ class DataFetcher:
             merged['fundingRate'] = merged['fundingRate'].replace(np.nan, None)
             funding_data = [{"time": int(row['timestamp'] / 1000), "value": row['fundingRate'] * 100 if row['fundingRate'] is not None else None} for _, row in merged.iterrows()]
 
-        return {"price": price_data, "funding": funding_data}
+        return {"price": price_data, "funding": funding_data, "funding_settlements": funding_settlements}
 
     def fetch_taker_volume(self, symbol: str, period: str = '5m', limit: int = 100) -> list:
         ccy = symbol.split('/')[0] if '/' in symbol else symbol.split('-')[0]
@@ -326,13 +346,15 @@ class DataFetcher:
                 require_column="taker_buy_vol",
             )
             raw_bin_records = [
-                { "time": int(x.timestamp.timestamp()), "sell_vol": x.taker_sell_vol or 0, "buy_vol": x.taker_buy_vol or 0 }
+                { "time": self._dt_to_sec(x.timestamp), "sell_vol": x.taker_sell_vol or 0, "buy_vol": x.taker_buy_vol or 0 }
                 for x in bin_data
             ]
 
         df_bin = pd.DataFrame(raw_bin_records)
         merged = df_bin
-        if merged.empty: return []
+        if merged.empty:
+            logger.warning(f"No Binance taker_volume data available for {db_symbol} ({p_lower}); CVD will degrade.")
+            return []
 
         merged['rounded_time'] = (merged['time'] // period_seconds) * period_seconds
         agg_df = merged.groupby('rounded_time').agg({'sell_vol': 'sum', 'buy_vol': 'sum'}).reset_index()
@@ -578,8 +600,8 @@ class DataFetcher:
                 require_column="open_interest",
             )
 
-            raw_okx_records = [{ "time": int(x.timestamp.timestamp()), "value": x.open_interest or 0 } for x in okx_data if x.open_interest is not None]
-            raw_bin_records = [{ "time": int(x.timestamp.timestamp()), "value": x.open_interest or 0 } for x in bin_data if x.open_interest is not None]
+            raw_okx_records = [{ "time": self._dt_to_sec(x.timestamp), "value": x.open_interest or 0 } for x in okx_data if x.open_interest is not None]
+            raw_bin_records = [{ "time": self._dt_to_sec(x.timestamp), "value": x.open_interest or 0 } for x in bin_data if x.open_interest is not None]
 
         # Step 4: In-memory alignment and causal scaling
         df_okx = pd.DataFrame(raw_okx_records)
@@ -615,11 +637,12 @@ class DataFetcher:
         else:
             merged = pd.merge(df_okx, df_bin, on='time', how='outer', suffixes=('_okx', '_bin')).sort_values('time')
 
+        merged = merged.reset_index(drop=True)
         merged['value_okx'] = merged['value_okx'].ffill(limit=2)
         merged['value_bin'] = merged['value_bin'].ffill(limit=2)
 
         # Smooth scaling if one side is missing to prevent cliff jumps
-        # Compute causal ratio at overlapping points (ffill past ratio, bfill only at earliest history)
+        # Compute causal ratio at overlapping points (ffill past ratio only; never bfill)
         overlap_mask = (merged['value_okx'].notna()) & (merged['value_bin'].notna())
         if overlap_mask.any():
             ratio_to_bin_arr = np.where(
@@ -632,8 +655,9 @@ class DataFetcher:
                 (merged['value_okx'] + merged['value_bin']) / merged['value_okx'],
                 np.nan
             )
-            ratio_to_bin = pd.Series(ratio_to_bin_arr, index=merged.index).ffill().bfill().fillna(1.0)
-            ratio_to_okx = pd.Series(ratio_to_okx_arr, index=merged.index).ffill().bfill().fillna(1.0)
+            # Strictly causal forward fill only (never bfill future overlap ratio into earlier single-exchange data)
+            ratio_to_bin = pd.Series(ratio_to_bin_arr, index=merged.index).ffill().fillna(1.0)
+            ratio_to_okx = pd.Series(ratio_to_okx_arr, index=merged.index).ffill().fillna(1.0)
 
             values = []
             for idx, row in merged.iterrows():
@@ -790,8 +814,8 @@ class DataFetcher:
                 limit=limit,
                 require_column="long_short_ratio",
             )
-            raw_okx_records = [{ "time": int(x.timestamp.timestamp()), "value": x.long_short_ratio or 0 } for x in okx_data if x.long_short_ratio is not None]
-            raw_bin_records = [{ "time": int(x.timestamp.timestamp()), "value": x.long_short_ratio or 0 } for x in bin_data if x.long_short_ratio is not None]
+            raw_okx_records = [{ "time": self._dt_to_sec(x.timestamp), "value": x.long_short_ratio or 0 } for x in okx_data if x.long_short_ratio is not None]
+            raw_bin_records = [{ "time": self._dt_to_sec(x.timestamp), "value": x.long_short_ratio or 0 } for x in bin_data if x.long_short_ratio is not None]
 
         # Step 4: In-memory alignment and causal overlap ratio scaling
         df_okx = pd.DataFrame(raw_okx_records)
@@ -820,7 +844,7 @@ class DataFetcher:
             return df_okx[['time', 'value']].to_dict('records')[-limit:]
 
         merged = pd.merge(df_okx, df_bin, on='time', how='outer', suffixes=('_okx', '_bin')).sort_values('time')
-        merged.reset_index(drop=True, inplace=True)
+        merged = merged.reset_index(drop=True)
 
         overlap_mask = (merged['value_okx'].notna()) & (merged['value_bin'].notna())
         if overlap_mask.any():
@@ -835,8 +859,9 @@ class DataFetcher:
                 ((merged['value_okx'] + merged['value_bin']) / 2.0) / merged['value_okx'],
                 np.nan
             )
-            ratio_to_bin = pd.Series(ratio_to_bin_arr, index=merged.index).ffill().bfill().fillna(1.0)
-            ratio_to_okx = pd.Series(ratio_to_okx_arr, index=merged.index).ffill().bfill().fillna(1.0)
+            # Strictly causal forward fill only (never bfill future overlap ratio into earlier single-exchange data)
+            ratio_to_bin = pd.Series(ratio_to_bin_arr, index=merged.index).ffill().fillna(1.0)
+            ratio_to_okx = pd.Series(ratio_to_okx_arr, index=merged.index).ffill().fillna(1.0)
 
             values = []
             for idx, row in merged.iterrows():

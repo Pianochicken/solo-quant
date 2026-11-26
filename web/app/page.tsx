@@ -83,7 +83,7 @@ const TIMEFRAMES = [
 
 export default function Dashboard() {
   const [symbol, setSymbol] = useState('BTC/USDT');
-  const [timeframe, setTimeframe] = useState('1h');
+  const [timeframe, setTimeframe] = useState('4h');
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [fetching, setFetching] = useState(false);

@@ -36,6 +36,18 @@ OPTIMAL_RISK_PROFILES: Dict[str, Dict[str, Dict[str, float]]] = {
 }
 
 
+def get_risk_profile(symbol: str, timeframe: str = '1h') -> Dict[str, float]:
+    """Return validated risk profile for (symbol, timeframe), falling back to 1h or BTC 1h."""
+    coin = symbol.split('/')[0].split('-')[0].upper()
+    tf_norm = str(timeframe).lower()
+    profile = (
+        OPTIMAL_RISK_PROFILES.get(coin, {}).get(tf_norm)
+        or OPTIMAL_RISK_PROFILES.get(coin, {}).get('1h')
+        or OPTIMAL_RISK_PROFILES['BTC']['1h']
+    )
+    return dict(profile)
+
+
 @dataclass
 class SignalStrategyConfig:
     """
@@ -55,6 +67,10 @@ class SignalStrategyConfig:
         trailing_activation_pct: Min unrealized profit % before trailing activates
         max_positions: Maximum concurrent open positions
         fee_rate: Fee rate per trade (e.g. 0.0005 = 0.05%)
+        slippage_bps: One-way adverse slippage in basis points for market/stop executions (default 5.0 bps)
+        include_funding: Whether to settle historical funding payments while positions are open
+        trailing_path_mode: Intra-bar trailing path check ('ohlc' | 'conservative' | 'legacy_clamp')
+        trailing_atr_mult: Optional ATR multiplier for trailing stop distance (0.0 = use trailing_stop_pct)
         allow_short: Whether short positions are allowed
         reverse_on_signal: Close opposite positions when a reverse signal fires
         enable_protection: Enable regime protection / trend filter
@@ -70,6 +86,10 @@ class SignalStrategyConfig:
     trailing_activation_pct: float = 0.60
     max_positions: int = 1
     fee_rate: float = 0.0005
+    slippage_bps: float = 5.0
+    include_funding: bool = True
+    trailing_path_mode: str = 'ohlc'
+    trailing_atr_mult: float = 0.0
     allow_short: bool = True
     reverse_on_signal: bool = True
     enable_protection: bool = True
@@ -100,3 +120,9 @@ class SignalStrategyConfig:
             raise ValueError("max_positions must be >= 1")
         if self.fee_rate < 0:
             raise ValueError("fee_rate must be >= 0")
+        if self.slippage_bps < 0:
+            raise ValueError("slippage_bps must be >= 0")
+        if self.trailing_path_mode not in ('ohlc', 'conservative', 'legacy_clamp'):
+            raise ValueError("trailing_path_mode must be 'ohlc', 'conservative', or 'legacy_clamp'")
+        if self.trailing_atr_mult < 0:
+            raise ValueError("trailing_atr_mult must be >= 0")

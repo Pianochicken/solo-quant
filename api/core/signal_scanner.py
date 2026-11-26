@@ -11,7 +11,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from api.core.notifier import format_signal_message, send_signal_with_chart
 
@@ -33,7 +33,9 @@ _notifications_enabled = True
 _monitored_symbols: List[str] = list(DEFAULT_SYMBOLS)
 _enable_mtf_filter: bool = True
 _enable_protection: bool = True  # Full Macro default
+_allow_intraday_prealert: bool = False  # Closed-candle confirmation default (anti-repainting)
 _notified_signal_keys: Dict[str, set] = {}
+_recent_directional_signals: List[Dict] = []
 
 
 def get_notification_config() -> dict:
@@ -41,11 +43,12 @@ def get_notification_config() -> dict:
     return {
         "enabled": _notifications_enabled,
         "monitored_symbols": _monitored_symbols,
-        "scan_schedule": "every hour at :00, :15, :30, :45 (4h scanned at :00 on 4-hour multiples)",
+        "scan_schedule": "every hour at :00:25, :15:25, :30:25, :45:25 (4h scanned at :00:25 on 4-hour multiples)",
         "timeframe": DEFAULT_TIMEFRAME,
         "monitored_timeframes": MONITORED_TIMEFRAMES,
         "enable_mtf_filter": _enable_mtf_filter,
         "enable_protection": _enable_protection,
+        "allow_intraday_prealert": _allow_intraday_prealert,
     }
 
 
@@ -54,9 +57,10 @@ def update_notification_config(
     monitored_symbols: Optional[List[str]] = None,
     enable_mtf_filter: Optional[bool] = None,
     enable_protection: Optional[bool] = None,
+    allow_intraday_prealert: Optional[bool] = None,
 ) -> dict:
     """Update notification settings."""
-    global _notifications_enabled, _monitored_symbols, _enable_mtf_filter, _enable_protection
+    global _notifications_enabled, _monitored_symbols, _enable_mtf_filter, _enable_protection, _allow_intraday_prealert
 
     if enabled is not None:
         _notifications_enabled = enabled
@@ -66,27 +70,81 @@ def update_notification_config(
         _enable_mtf_filter = enable_mtf_filter
     if enable_protection is not None:
         _enable_protection = enable_protection
+    if allow_intraday_prealert is not None:
+        _allow_intraday_prealert = allow_intraday_prealert
 
     logger.info(
         f"Notification config updated: enabled={_notifications_enabled}, symbols={_monitored_symbols}, "
-        f"mtf={_enable_mtf_filter}, protection={_enable_protection}"
+        f"mtf={_enable_mtf_filter}, protection={_enable_protection}, prealert={_allow_intraday_prealert}"
     )
     return get_notification_config()
 
 
-async def scan_and_notify(timeframes: Optional[List[str]] = None):
+def _prune_and_check_correlation(
+    pending_signals: List[Dict],
+    now_sec: float,
+    window_sec: float = 14400.0,
+) -> Dict[str, int]:
     """
-    Core scan loop. Called by APScheduler every N minutes.
-    
-    In :00 minute when hour % 4 == 0, scans both 1h and 4h.
+    Record recent directional signals within the last 4 hours (plus current cycle)
+    and return distinct symbol counts per direction ('bullish' / 'bearish').
+    """
+    global _recent_directional_signals
+    cutoff = now_sec - window_sec
+    _recent_directional_signals = [
+        item for item in _recent_directional_signals if item.get("time", 0) >= cutoff
+    ]
+
+    existing_keys = {
+        (item["symbol"], item["direction"], item["time"])
+        for item in _recent_directional_signals
+    }
+    cycle_extra: Dict[str, set] = {"bullish": set(), "bearish": set()}
+    for p in pending_signals:
+        sig_time = float(p["signal"].get("time", now_sec))
+        direction = p["signal"].get("direction", "")
+        sym = p["symbol"]
+        if direction in ("bullish", "bearish") and sig_time >= cutoff:
+            if p.get("is_prealert"):
+                cycle_extra[direction].add(sym)
+                continue
+            key = (sym, direction, sig_time)
+            if key not in existing_keys:
+                _recent_directional_signals.append({
+                    "time": sig_time,
+                    "symbol": sym,
+                    "direction": direction,
+                })
+                existing_keys.add(key)
+
+    dir_symbols: Dict[str, set] = {
+        "bullish": set(cycle_extra["bullish"]),
+        "bearish": set(cycle_extra["bearish"]),
+    }
+    for item in _recent_directional_signals:
+        d = item.get("direction")
+        if d in dir_symbols:
+            dir_symbols[d].add(item["symbol"])
+
+    return {d: len(syms) for d, syms in dir_symbols.items()}
+
+
+async def scan_and_notify(
+    timeframes: Optional[List[str]] = None,
+    market_data_fn: Optional[Callable[..., Dict[str, Any]]] = None,
+):
+    """
+    Core scan loop. Called by APScheduler at :00:25, :15:25, :30:25, :45:25.
+
+    In :00 when hour % 4 == 0, scans both 1h and 4h.
     Otherwise scans 1h.
-    
+
     For each monitored symbol:
-        1. Prioritizes BTC/USDT first to extract and pass BTC macro regime to altcoins.
-        2. Calls get_market_data() via asyncio.to_thread with Full Macro parameters.
-        3. Filters unclosed bar signals unless high score (>=5.0) or CAP/DIV structural inflection.
-        4. Dedups with (timestamp, strategy_type) to avoid duplicate signals.
-        5. Formats and sends Telegram messages with charts.
+        1. Scans BTC first to warm DB BTC history; altcoins compute causal btc_macro_history.
+        2. Calls get_market_data(..., include_orderbook=False, include_breakdown=False) via asyncio.to_thread.
+        3. Enforces closed-candle confirmation by default (anti-repainting).
+        4. Evaluates cross-symbol correlation (>= 3 symbols same direction in cycle / 4h).
+        5. Dedups and formats/sends Telegram messages with charts.
     """
     if not _notifications_enabled:
         logger.info("Notifications disabled, skipping scan.")
@@ -94,7 +152,6 @@ async def scan_and_notify(timeframes: Optional[List[str]] = None):
 
     now_utc = datetime.now(timezone.utc)
     if timeframes is None:
-        # At :00 when hour % 4 == 0 (with 5-minute grace window), scan 4h alongside 1h
         is_4h_interval = (now_utc.hour % 4 == 0 and now_utc.minute < 5)
         active_tfs = ["1h", "4h"] if is_4h_interval else ["1h"]
     else:
@@ -102,14 +159,17 @@ async def scan_and_notify(timeframes: Optional[List[str]] = None):
 
     logger.info(f"=== Signal scan starting for {len(_monitored_symbols)} symbols across timeframes {active_tfs} ===")
 
-    from api.main import get_market_data
+    if market_data_fn is None:
+        from api.main import get_market_data
+        market_data_fn = get_market_data
 
-    # Sort so BTC is scanned first, allowing altcoins to receive BTC macro regime
+    # Sort so BTC is scanned first to keep DB BTC data fresh for altcoins
     symbols_to_scan = sorted(_monitored_symbols, key=lambda s: 0 if 'BTC' in s.upper() else 1)
 
     for tf in active_tfs:
         logger.info(f"--- Scanning timeframe: {tf} ---")
-        btc_macro_regime: Optional[Dict] = None
+        tf_sec = 14400 if tf == "4h" else (86400 if tf == "1d" else 3600)
+        pending_dispatches: List[Dict] = []
 
         for idx, symbol in enumerate(symbols_to_scan):
             try:
@@ -118,9 +178,9 @@ async def scan_and_notify(timeframes: Optional[List[str]] = None):
 
                 logger.info(f"Scanning [{idx+1}/{len(symbols_to_scan)}] {symbol} ({tf})...")
 
-                # 1. Fetch data using asyncio.to_thread to keep event loop unblocked
+                # 1. Fetch data cleanly without orderbook/breakdown overhead
                 result = await asyncio.to_thread(
-                    get_market_data,
+                    market_data_fn,
                     symbol=api_symbol,
                     timeframe=tf,
                     limit=1000,
@@ -129,31 +189,23 @@ async def scan_and_notify(timeframes: Optional[List[str]] = None):
                     enable_protection=_enable_protection,
                     use_dynamic_profiles=True,
                     enable_mtf_filter=_enable_mtf_filter,
-                    btc_macro_regime=btc_macro_regime if 'BTC' not in symbol.upper() else None,
+                    include_orderbook=False,
+                    include_breakdown=False,
+                    allow_live_btc_cache=False,
                 )
-
-                # Save BTC macro regime if we just scanned BTC
-                if 'BTC' in symbol.upper():
-                    regime_info = result.get("indicators", {}).get("market_regime", {})
-                    composite_score = result.get("indicators", {}).get("composite_score", 50.0)
-                    btc_macro_regime = {
-                        'regime': regime_info.get('regime', 'ranging'),
-                        'direction': regime_info.get('direction', 'neutral'),
-                        'pulse': composite_score,
-                    }
-                    logger.info(f"  BTC Macro Regime ({tf}) saved: {btc_macro_regime}")
 
                 markers = result.get("indicators", {}).get("lsur_markers", [])
                 price_data = result.get("data", {}).get("price", [])
 
-                if not markers:
-                    logger.info(f"  {symbol} ({tf}): no markers found, skipping.")
+                if not markers or not price_data:
+                    logger.info(f"  {symbol} ({tf}): no markers or price data found, skipping.")
                     continue
 
-                latest_candle_time = price_data[-1]["time"] if price_data else 0
+                latest_candle_time = price_data[-1]["time"]
+                now_sec = time.time()
+                is_last_unclosed = (now_sec < latest_candle_time + tf_sec)
 
                 # 2. Recency filter: signals within the last 2 bars (7200s for 1h, 28800s for 4h)
-                now_sec = time.time()
                 recency_window_sec = 28800 if tf == "4h" else 7200
                 recent_markers = [m for m in markers if m["time"] >= (now_sec - recency_window_sec)]
 
@@ -165,29 +217,35 @@ async def scan_and_notify(timeframes: Optional[List[str]] = None):
                     _notified_signal_keys[cache_key] = set()
                 notified_set = _notified_signal_keys[cache_key]
 
-                # 3. Unclosed candle & (time, strategy_type) dedup check
+                # 3. Closed-candle confirmation & dedup check
                 new_signals = []
                 for sig in recent_markers:
-                    sig_key = (sig["time"], sig.get("strategy_type", "reversion"))
-                    if sig_key in notified_set:
-                        continue
+                    strat_type = sig.get("strategy_type", "reversion")
+                    is_unclosed_sig = (sig["time"] == latest_candle_time and is_last_unclosed)
 
-                    # Check if this signal belongs to the currently forming (unclosed) candle
-                    if sig["time"] == latest_candle_time:
+                    if is_unclosed_sig:
+                        if not _allow_intraday_prealert:
+                            # Closed-candle default: ignore unclosed intra-bar signals to eliminate repainting
+                            continue
                         sig_text = sig.get("text", "")
                         has_structure = ("CAP" in sig_text) or ("DIV" in sig_text)
                         is_high_conviction = (sig.get("score", 0) >= 5.0) or has_structure
                         if not is_high_conviction:
-                            # Skip intra-bar alert; wait for candle to close
                             continue
+                        sig_key = ("prealert", sig["time"], strat_type)
+                    else:
+                        sig_key = (sig["time"], strat_type)
 
-                    new_signals.append(sig)
+                    if sig_key in notified_set:
+                        continue
+
+                    new_signals.append((sig, sig_key, is_unclosed_sig))
 
                 if not new_signals:
                     logger.info(f"  {symbol} ({tf}): {len(recent_markers)} recent markers, no new qualifying signals to notify.")
                     continue
 
-                price_by_time = {p["time"]: p["close"] for p in price_data} if price_data else {}
+                price_by_time = {p["time"]: p["close"] for p in price_data}
 
                 # Retrieve macro info from market overview cache if available
                 macro_info = None
@@ -201,27 +259,19 @@ async def scan_and_notify(timeframes: Optional[List[str]] = None):
                 except Exception:
                     pass
 
-                logger.info(f"  {symbol} ({tf}): {len(new_signals)} NEW signal(s) to notify!")
-                successfully_notified = []
-                for sig in new_signals:
-                    sig_price = price_by_time.get(sig["time"], 0)
-                    message = format_signal_message(sig, symbol, sig_price, timeframe=tf, macro_info=macro_info)
-                    sent_ok = await send_signal_with_chart(
-                        text=message,
-                        price_data=price_data,
-                        all_markers=markers,
-                        symbol=symbol,
-                        timeframe=tf,
-                    )
-                    if sent_ok:
-                        logger.info(f"  → Sent successfully: {message}")
-                        notified_set.add((sig["time"], sig.get("strategy_type", "reversion")))
-                        successfully_notified.append(sig["time"])
-                    else:
-                        logger.warning(f"  ❌ Failed to send Telegram alert for {symbol} ({tf}) at {sig['time']}. Will retry on next scan.")
-
-                if successfully_notified:
-                    _last_notified[cache_key] = max(successfully_notified)
+                for sig, sig_key, is_prealert in new_signals:
+                    pending_dispatches.append({
+                        "cache_key": cache_key,
+                        "symbol": symbol,
+                        "timeframe": tf,
+                        "signal": sig,
+                        "sig_key": sig_key,
+                        "is_prealert": is_prealert,
+                        "price": price_by_time.get(sig["time"], 0),
+                        "price_data": price_data,
+                        "all_markers": markers,
+                        "macro_info": macro_info,
+                    })
 
             except Exception as e:
                 logger.error(f"Error scanning {symbol} ({tf}): {e}", exc_info=True)
@@ -229,5 +279,45 @@ async def scan_and_notify(timeframes: Optional[List[str]] = None):
 
             if idx < len(symbols_to_scan) - 1:
                 await asyncio.sleep(3)
+
+        if not pending_dispatches:
+            continue
+
+        # 4. Cross-symbol correlation check (>= 3 symbols firing same direction in cycle / past 4h)
+        dir_counts = _prune_and_check_correlation(pending_dispatches, now_sec=time.time())
+
+        # 5. Dispatch collected alerts
+        by_cache_key: Dict[str, List[int]] = {}
+        for item in pending_dispatches:
+            sig = item["signal"]
+            direction = sig.get("direction", "")
+            corr_warn = dir_counts.get(direction, 0) >= 3
+            message = format_signal_message(
+                sig,
+                item["symbol"],
+                item["price"],
+                timeframe=item["timeframe"],
+                macro_info=item["macro_info"],
+                correlation_warning=corr_warn,
+                is_intraday_prealert=item["is_prealert"],
+            )
+            sent_ok = await send_signal_with_chart(
+                text=message,
+                price_data=item["price_data"],
+                all_markers=item["all_markers"],
+                symbol=item["symbol"],
+                timeframe=item["timeframe"],
+            )
+            c_key = item["cache_key"]
+            if sent_ok:
+                logger.info(f"  → Sent successfully for {item['symbol']} ({item['timeframe']}): {sig.get('time')}")
+                _notified_signal_keys[c_key].add(item["sig_key"])
+                by_cache_key.setdefault(c_key, []).append(sig["time"])
+            else:
+                logger.warning(f"  ❌ Failed to send Telegram alert for {item['symbol']} ({item['timeframe']}) at {sig['time']}. Will retry on next scan.")
+
+        for c_key, times_sent in by_cache_key.items():
+            if times_sent:
+                _last_notified[c_key] = max(times_sent)
 
     logger.info(f"=== Signal scan completed for {len(symbols_to_scan)} symbols across {active_tfs} ===")

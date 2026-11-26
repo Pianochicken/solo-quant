@@ -1,7 +1,11 @@
 import bisect
+import logging
+import math
 import pandas as pd
 import numpy as np
 from typing import List, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 class IndicatorEngine:
     """Processes raw market data into quantitative trading indicators."""
@@ -54,7 +58,8 @@ class IndicatorEngine:
             return 0.0
             
         z_score = (current_val - mean_val) / std_val
-        return float(z_score)
+        z_float = float(z_score)
+        return z_float if math.isfinite(z_float) else 0.0
 
     @staticmethod
     def calculate_lsur_z_score_history(lsur_history: List[Dict], window: int = 90) -> List[Dict]:
@@ -165,7 +170,17 @@ class IndicatorEngine:
         if not daily_oi or len(daily_oi) < 10:
             return 50.0  # Default to neutral if not enough data
         
-        values = [item['value'] for item in daily_oi if item.get('value', 0) > 0]
+        values = []
+        for item in daily_oi:
+            raw_val = item.get('value')
+            if raw_val is None:
+                continue
+            try:
+                val = float(raw_val)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(val) and val > 0:
+                values.append(val)
         if not values:
             return 50.0
         
@@ -427,8 +442,7 @@ class IndicatorEngine:
         
         df = pd.DataFrame(price_data)
         df['time'] = df['time'].astype(int)
-        df.sort_values('time', inplace=True)
-        df.reset_index(drop=True, inplace=True)
+        df = df.sort_values('time').reset_index(drop=True)
         
         # === Factor 1: ADX ===
         high = df['high'].values
@@ -583,8 +597,7 @@ class IndicatorEngine:
             
         df = pd.DataFrame(price_data)
         df['time'] = df['time'].astype(int)
-        df.sort_values('time', inplace=True)
-        df.reset_index(drop=True, inplace=True)
+        df = df.sort_values('time').reset_index(drop=True)
         
         # === 1. ADX Calculation (Vectorized / Rolling) ===
         high = df['high'].values
@@ -749,7 +762,6 @@ class IndicatorEngine:
         cvd_aligned: List[Dict],
         oi_percentile: float,
         funding_aligned: List[Dict],
-        trend_state: str = 'neutral',
         rsi_aligned: List[Dict] = None,
         ema_fast_aligned: List[Dict] = None,
         ema_slow_aligned: List[Dict] = None,
@@ -765,10 +777,17 @@ class IndicatorEngine:
         symbol: str = 'BTC/USDT',
         use_dynamic_profiles: bool = True,
         higher_tf_regime_history: List[Dict] = None,  # Layer 3: e.g. 4h regime history for MTF confirmation
-        btc_macro_regime: Optional[Dict] = None,      # Layer 4: BTC macro regime filter for altcoins
+        btc_macro_regime: Optional[Dict] = None,      # Layer 4: BTC macro regime filter for altcoins (single-bar fallback)
         min_score: float = 0.0,
         allowed_types: Optional[List[str]] = None,
-    ) -> List[Dict]:
+        btc_macro_history: Optional[List[Dict]] = None,  # Layer 4 causal per-bar BTC regime/pulse history
+        mtf_close_aligned: bool = True,
+        setup_symmetry: bool = True,
+        use_coin_oi_all: bool = True,
+        price_group_cap: Optional[float] = None,
+        single_trend_guard: bool = False,
+        price_only_mode: bool = False,
+    ) -> tuple:
         """
         Multi-Indicator Confluence Signal System v8: Macro & Inflection Precision Upgrade.
         
@@ -806,7 +825,12 @@ class IndicatorEngine:
             9. Bollinger %B — volatility-based extreme                    [1 pt]
         """
         if not price_data or len(price_data) < lookback + 1:
-            return []
+            return [], {
+                'regime': 'ranging',
+                'direction': 'neutral',
+                'no_short': False,
+                'no_long': False,
+            }
         
         # === Timeframe-Adaptive Parameter Profiles ===
         PROFILES = {
@@ -877,11 +901,10 @@ class IndicatorEngine:
         }
         P = PROFILES.get(timeframe, PROFILES['1h']).copy()
         
-        # --- Feature Toggle for Easy Revert ---
+        # --- Asset Class Dynamic Profiles ---
         is_btc = 'BTC' in symbol.upper()
         is_midcap = any(s in symbol.upper() for s in ['SOL', 'ETH'])
         is_alt = any(s in symbol.upper() for s in ['HYPE', 'CC'])
-        is_hype = 'HYPE' in symbol.upper()
 
         if use_dynamic_profiles:
             # Asset Class Dynamic Overrides (Major, Midcap, Meme/Alt)
@@ -898,13 +921,8 @@ class IndicatorEngine:
                 # Massive widening for alts
                 P['fr_bull'] *= 2.5
                 P['fr_bear'] *= 2.5
-                if is_hype:
-                    # Converge over-loosening to -6 / +6 for HYPE
-                    P['rsi_bull'] -= 6
-                    P['rsi_bear'] += 6
-                else:
-                    P['rsi_bull'] -= 10
-                    P['rsi_bear'] += 10
+                P['rsi_bull'] -= 10
+                P['rsi_bear'] += 10
                 P['price_thresh'] *= 2.0  # Alts need bigger price moves to confirm
                 P['cap_oi_drop_pct'] = -10.0
         
@@ -946,15 +964,38 @@ class IndicatorEngine:
                 positive_diffs = [d for d in diffs if d > 0]
                 if positive_diffs:
                     htf_sec = min(positive_diffs)
+
+        # === Layer 4: BTC Macro Regime History Lookup (strictly causal) ===
+        btc_macro_times: List[int] = []
+        btc_macro_list: List[Dict] = []
+        btc_tf_sec = tf_sec
+        if btc_macro_history:
+            sorted_btc = sorted(btc_macro_history, key=lambda x: x['time'])
+            btc_macro_times = [r['time'] for r in sorted_btc]
+            btc_macro_list = sorted_btc
+            if len(btc_macro_times) >= 2:
+                b_diffs = [btc_macro_times[k+1] - btc_macro_times[k] for k in range(min(5, len(btc_macro_times)-1))]
+                b_pos = [d for d in b_diffs if d > 0]
+                if b_pos:
+                    btc_tf_sec = min(b_pos)
         
         # Rolling OI percentile series (Macro Leverage Multiplier)
         oi_pct_series = IndicatorEngine.calculate_oi_percentile_series(oi_aligned, window=90) if oi_aligned else []
         oi_pct_by_time = {item['time']: item['value'] for item in oi_pct_series}
         
         # Build lookup dicts by time for O(1) access
-        z_by_time = {item['time']: item['value'] for item in lsur_z_aligned}
-        cvd_by_time = {item['time']: item['value'] for item in cvd_aligned}
-        funding_by_time = {item['time']: item['value'] for item in funding_aligned}
+        z_by_time = {item['time']: item['value'] for item in (lsur_z_aligned or [])}
+        cvd_by_time = {item['time']: item['value'] for item in (cvd_aligned or [])}
+        funding_by_time = {item['time']: item['value'] for item in (funding_aligned or [])}
+
+        # CVD health check: warn when CVD is missing or completely flat/stagnant
+        cvd_vals_all = [item['value'] for item in (cvd_aligned or []) if item.get('value') is not None]
+        has_global_cvd = len(cvd_vals_all) >= 2 and len(set(cvd_vals_all)) > 1
+        if not has_global_cvd and not price_only_mode:
+            logger.warning(
+                f"CVD data missing or stagnant for {symbol} ({timeframe}); "
+                "CVD-dependent CAP/Breakout filters will degrade gracefully."
+            )
         rsi_by_time = {item['time']: item['value'] for item in (rsi_aligned or [])}
         ema_fast_by_time = {item['time']: item['value'] for item in (ema_fast_aligned or [])}
         ema_slow_by_time = {item['time']: item['value'] for item in (ema_slow_aligned or [])}
@@ -985,6 +1026,13 @@ class IndicatorEngine:
             pk_time = price_data[k]['time']
             atr_by_time[pk_time] = float(atr_series[k]) if pd.notnull(atr_series[k]) else 1.0
         
+        # Precompute 20-bar volume SMA for graceful fallback when CVD is missing/stagnant
+        vol_sma20_by_time = {}
+        if 'volume' in df_price_eval.columns:
+            vol_sma20 = df_price_eval['volume'].rolling(window=20, min_periods=1).mean().values
+            for k in range(len(price_data)):
+                vol_sma20_by_time[price_data[k]['time']] = float(vol_sma20[k]) if pd.notnull(vol_sma20[k]) else 0.0
+
         # OI lookup by time (for OI change rate calculation)
         oi_by_time = {item['time']: item['value'] for item in (oi_aligned or [])}
         
@@ -1098,8 +1146,16 @@ class IndicatorEngine:
                 has_upper_wick = (upper_wick / total_range > 0.3) if total_range > 0 else False
                 is_bear_pa = body_down or has_upper_wick
             
-            # CVD immediate momentum (1-bar change)
+            # CVD immediate momentum (1-bar change) & local CVD activity check
             cvd_prev = cvd_by_time.get(times[i - 1])
+            cvd_active = False
+            if has_global_cvd and cvd_now is not None and cvd_prev is not None:
+                recent_cvd = [
+                    cvd_by_time.get(times[k])
+                    for k in range(max(0, i - 3), i + 1)
+                    if cvd_by_time.get(times[k]) is not None
+                ]
+                cvd_active = len(recent_cvd) >= 2 and len(set(recent_cvd)) > 1
             
             # OI × Price divergence (N-bar change rate with coin-denominated resolution)
             oi_lookback = t_profile['oi_lookback']
@@ -1123,28 +1179,29 @@ class IndicatorEngine:
                     if oi_coin_prev > 0:
                         coin_oi_chg_pct = (oi_coin_now - oi_coin_prev) / oi_coin_prev * 100
 
-            eff_oi_chg_pct = (coin_oi_chg_pct if coin_oi_chg_pct is not None else oi_chg_pct) if is_hype else oi_chg_pct
+            if use_coin_oi_all:
+                eff_oi_chg_pct = coin_oi_chg_pct if coin_oi_chg_pct is not None else oi_chg_pct
+            else:
+                eff_oi_chg_pct = oi_chg_pct
 
-            # Alpha Decoupled Bull: Strong uptrend momentum + significant coin OI accumulation
-            is_alpha_decoupled_bull = (
-                is_hype and
-                price_close is not None and ema50_now is not None and ema200_now is not None
-                and price_close > ema50_now > ema200_now
-                and (rsi_now is not None and rsi_now >= 55)
-                and (coin_oi_chg_pct is not None and coin_oi_chg_pct >= 1.5)
-            )
+            # Macro BTC Regime Adjustment for Altcoins (causal per-bar history preferred)
+            eff_btc_macro = None
+            if btc_macro_times:
+                cutoff_btc = t + tf_sec - btc_tf_sec
+                idx_btc = bisect.bisect_right(btc_macro_times, cutoff_btc) - 1
+                if idx_btc >= 0:
+                    eff_btc_macro = btc_macro_list[idx_btc]
+            elif btc_macro_regime is not None:
+                eff_btc_macro = btc_macro_regime
 
-            # Macro BTC Regime Adjustment for Altcoins
-            if 'BTC' not in symbol.upper() and btc_macro_regime:
-                btc_reg = btc_macro_regime.get('regime')
-                btc_dir = btc_macro_regime.get('direction')
-                btc_pulse = btc_macro_regime.get('pulse')
+            if 'BTC' not in symbol.upper() and eff_btc_macro:
+                btc_reg = eff_btc_macro.get('regime')
+                btc_dir = eff_btc_macro.get('direction')
+                btc_pulse = eff_btc_macro.get('pulse')
                 
                 # If BTC is trending down or overbought (pulse >= 80), raise alt long bar
-                # Exempt strong decoupled alts (e.g. HYPE running independent bull run)
-                if not is_alpha_decoupled_bull:
-                    if (btc_reg == 'trending' and btc_dir == 'down') or (btc_pulse is not None and btc_pulse >= 80):
-                        bull_threshold += 1.0
+                if (btc_reg == 'trending' and btc_dir == 'down') or (btc_pulse is not None and btc_pulse >= 80):
+                    bull_threshold += 1.0
                     
                 # If BTC is trending up or oversold (pulse <= 20), raise alt short bar
                 if (btc_reg == 'trending' and btc_dir == 'up') or (btc_pulse is not None and btc_pulse <= 20):
@@ -1214,17 +1271,13 @@ class IndicatorEngine:
                 t_bull_price_reasons.append(f'RSI{int(rsi_now)}')
                 t_bull_price_groups.add('Price')
             
-            if ema_fast_now is not None and price_close is not None and is_bull_pa:
+            if ema_fast_now is not None and ema_fast_now > 0 and price_close is not None and is_bull_pa:
                 if current_regime.get('regime') == 'trending' and current_regime.get('direction') == 'up':
                     if price_bar and 'low' in price_bar:
                         low_ema_dist = (price_bar['low'] - ema_fast_now) / ema_fast_now * 100
                         ema200_ok = (ema200_now is None or price_close > ema200_now)
-                        if is_hype:
-                            low_min = -max(1.2, atr_pct * 1.1)
-                            low_max = max(0.35, atr_pct * 0.3)
-                        else:
-                            low_min = -1.2
-                            low_max = 0.35
+                        low_min = -max(1.2, atr_pct * 1.1)
+                        low_max = max(0.35, atr_pct * 0.3)
                         if low_min <= low_ema_dist <= low_max and ema200_ok:
                             t_bull_price_score += 1
                             t_bull_price_reasons.append('EMA支撐↑')
@@ -1288,17 +1341,13 @@ class IndicatorEngine:
                 t_bear_price_reasons.append(f'RSI{int(rsi_now)}')
                 t_bear_price_groups.add('Price')
             
-            if ema_fast_now is not None and price_close is not None and is_bear_pa:
+            if ema_fast_now is not None and ema_fast_now > 0 and price_close is not None and is_bear_pa:
                 if current_regime.get('regime') == 'trending' and current_regime.get('direction') == 'down':
                     if price_bar and 'high' in price_bar:
                         high_ema_dist = (price_bar['high'] - ema_fast_now) / ema_fast_now * 100
                         ema200_ok = (ema200_now is None or price_close < ema200_now)
-                        if is_hype:
-                            high_min = -max(0.35, atr_pct * 0.3)
-                            high_max = max(1.2, atr_pct * 1.1)
-                        else:
-                            high_min = -0.35
-                            high_max = 1.2
+                        high_min = -max(0.35, atr_pct * 0.3)
+                        high_max = max(1.2, atr_pct * 1.1)
                         if high_min <= high_ema_dist <= high_max and ema200_ok:
                             t_bear_price_score += 1
                             t_bear_price_reasons.append('EMA壓力↓')
@@ -1344,22 +1393,23 @@ class IndicatorEngine:
                         cv = cvd_by_time.get(times[k])
                         if cv is not None:
                             cvd_window_vals.append(cv)
-                    
-                    cvd_accum = 0
-                    if len(cvd_window_vals) >= 2:
-                        cvd_accum = cvd_window_vals[-1] - cvd_window_vals[0]
-                    
-                    # Bullish Capitulation: prior drop, OI crash, CVD dump, current candle absorbed
-                    if (oi_drop <= t_profile['cap_oi_drop_pct'] and cvd_accum < 0 
-                            and price_chg_pct is not None and price_chg_pct < -t_profile['price_thresh'] 
+
+                    has_cap_cvd = len(cvd_window_vals) >= 2 and any(v != cvd_window_vals[0] for v in cvd_window_vals)
+                    cvd_accum = (cvd_window_vals[-1] - cvd_window_vals[0]) if has_cap_cvd else 0
+
+                    # Bullish Capitulation: prior drop, OI crash, CVD dump (or absorption fallback if CVD missing), absorbed PA
+                    cap_bull_flow_ok = (cvd_accum < 0) if has_cap_cvd else (price_bar is not None and price_bar['close'] >= price_bar['open'])
+                    if (oi_drop <= t_profile['cap_oi_drop_pct'] and cap_bull_flow_ok
+                            and price_chg_pct is not None and price_chg_pct < -t_profile['price_thresh']
                             and is_bull_pa):
                         t_bull_env_score += cap_weight_bull
                         t_bull_env_reasons.append('CAP↑')
                         t_bull_env_groups.add('Structure')
-                    
-                    # Bearish Capitulation (inverse): prior rally, OI crash, CVD pump, current candle exhausted
-                    if (oi_drop <= t_profile['cap_oi_drop_pct'] and cvd_accum > 0 
-                            and price_chg_pct is not None and price_chg_pct > t_profile['price_thresh'] 
+
+                    # Bearish Capitulation (inverse): prior rally, OI crash, CVD pump (or exhaustion fallback if CVD missing), bear PA
+                    cap_bear_flow_ok = (cvd_accum > 0) if has_cap_cvd else (price_bar is not None and price_bar['close'] <= price_bar['open'])
+                    if (oi_drop <= t_profile['cap_oi_drop_pct'] and cap_bear_flow_ok
+                            and price_chg_pct is not None and price_chg_pct > t_profile['price_thresh']
                             and is_bear_pa):
                         t_bear_env_score += cap_weight_bear
                         t_bear_env_reasons.append('CAP↓')
@@ -1412,40 +1462,145 @@ class IndicatorEngine:
             # --- State Machine Update (Setup window) ---
             effective_setup_window = 1 if (timeframe == '1h' and current_regime.get('regime') == 'ranging') else SETUP_WINDOW
 
-            if t_bull_env_score >= 1.0:
-                bull_setup_timer = effective_setup_window
-                bull_setup_env_score = t_bull_env_score
-                bull_setup_env_reasons = list(t_bull_env_reasons)
-                bull_setup_env_groups = set(t_bull_env_groups)
-                # Mutual cancellation: A strong bullish environment instantly cancels out any lingering bearish setup
-                bear_setup_timer = 0
-            elif bull_setup_timer > 0:
-                bull_setup_timer -= 1
+            if setup_symmetry:
+                prev_bull_timer = bull_setup_timer
+                prev_bull_score = bull_setup_env_score if prev_bull_timer > 0 else 0
+                prev_bull_reasons = list(bull_setup_env_reasons) if prev_bull_timer > 0 else []
+                prev_bull_groups = set(bull_setup_env_groups) if prev_bull_timer > 0 else set()
 
-            if t_bear_env_score >= 1.0:
-                bear_setup_timer = effective_setup_window
-                bear_setup_env_score = t_bear_env_score
-                bear_setup_env_reasons = list(t_bear_env_reasons)
-                bear_setup_env_groups = set(t_bear_env_groups)
-                # Mutual cancellation: A strong bearish environment instantly cancels out any lingering bullish setup
-                bull_setup_timer = 0
-            elif bear_setup_timer > 0:
-                bear_setup_timer -= 1
-                
+                prev_bear_timer = bear_setup_timer
+                prev_bear_score = bear_setup_env_score if prev_bear_timer > 0 else 0
+                prev_bear_reasons = list(bear_setup_env_reasons) if prev_bear_timer > 0 else []
+                prev_bear_groups = set(bear_setup_env_groups) if prev_bear_timer > 0 else set()
+
+                # Independent Bull candidate update (preserve higher remembered score within window)
+                if t_bull_env_score >= 1.0:
+                    if prev_bull_timer > 1 and prev_bull_score > t_bull_env_score:
+                        next_bull_timer = prev_bull_timer - 1
+                        next_bull_score = prev_bull_score
+                        next_bull_reasons = prev_bull_reasons
+                        next_bull_groups = prev_bull_groups
+                    else:
+                        next_bull_timer = effective_setup_window
+                        next_bull_score = t_bull_env_score
+                        next_bull_reasons = list(t_bull_env_reasons)
+                        next_bull_groups = set(t_bull_env_groups)
+                else:
+                    next_bull_timer = max(0, prev_bull_timer - 1)
+                    if next_bull_timer > 0:
+                        next_bull_score = prev_bull_score
+                        next_bull_reasons = prev_bull_reasons
+                        next_bull_groups = prev_bull_groups
+                    else:
+                        next_bull_score = 0
+                        next_bull_reasons = []
+                        next_bull_groups = set()
+
+                # Independent Bear candidate update (preserve higher remembered score within window)
+                if t_bear_env_score >= 1.0:
+                    if prev_bear_timer > 1 and prev_bear_score > t_bear_env_score:
+                        next_bear_timer = prev_bear_timer - 1
+                        next_bear_score = prev_bear_score
+                        next_bear_reasons = prev_bear_reasons
+                        next_bear_groups = prev_bear_groups
+                    else:
+                        next_bear_timer = effective_setup_window
+                        next_bear_score = t_bear_env_score
+                        next_bear_reasons = list(t_bear_env_reasons)
+                        next_bear_groups = set(t_bear_env_groups)
+                else:
+                    next_bear_timer = max(0, prev_bear_timer - 1)
+                    if next_bear_timer > 0:
+                        next_bear_score = prev_bear_score
+                        next_bear_reasons = prev_bear_reasons
+                        next_bear_groups = prev_bear_groups
+                    else:
+                        next_bear_score = 0
+                        next_bear_reasons = []
+                        next_bear_groups = set()
+
+                # Order-independent symmetric opponent cancellation:
+                # Only cancel an active setup when the opposing bar is strictly stronger
+                # AND carries substantive opposing pressure if cancelling a Structure setup.
+                bear_cancels_bull = (
+                    t_bear_env_score >= 1.0
+                    and next_bull_timer > 0
+                    and t_bear_env_score > next_bull_score
+                    and (('Structure' not in next_bull_groups) or ('Structure' in t_bear_env_groups) or t_bear_env_score >= 2.0)
+                )
+                bull_cancels_bear = (
+                    t_bull_env_score >= 1.0
+                    and next_bear_timer > 0
+                    and t_bull_env_score > next_bear_score
+                    and (('Structure' not in next_bear_groups) or ('Structure' in t_bull_env_groups) or t_bull_env_score >= 2.0)
+                )
+
+                if bear_cancels_bull:
+                    next_bull_timer = 0
+                    next_bull_score = 0
+                    next_bull_reasons = []
+                    next_bull_groups = set()
+                if bull_cancels_bear:
+                    next_bear_timer = 0
+                    next_bear_score = 0
+                    next_bear_reasons = []
+                    next_bear_groups = set()
+
+                bull_setup_timer = next_bull_timer
+                bull_setup_env_score = next_bull_score
+                bull_setup_env_reasons = next_bull_reasons
+                bull_setup_env_groups = next_bull_groups
+
+                bear_setup_timer = next_bear_timer
+                bear_setup_env_score = next_bear_score
+                bear_setup_env_reasons = next_bear_reasons
+                bear_setup_env_groups = next_bear_groups
+            else:
+                if t_bull_env_score >= 1.0:
+                    bull_setup_timer = effective_setup_window
+                    bull_setup_env_score = t_bull_env_score
+                    bull_setup_env_reasons = list(t_bull_env_reasons)
+                    bull_setup_env_groups = set(t_bull_env_groups)
+                    bear_setup_timer = 0
+                elif bull_setup_timer > 0:
+                    bull_setup_timer -= 1
+
+                if t_bear_env_score >= 1.0:
+                    bear_setup_timer = effective_setup_window
+                    bear_setup_env_score = t_bear_env_score
+                    bear_setup_env_reasons = list(t_bear_env_reasons)
+                    bear_setup_env_groups = set(t_bear_env_groups)
+                    bull_setup_timer = 0
+                elif bear_setup_timer > 0:
+                    bear_setup_timer -= 1
+
             # --- Confluence Unification ---
+            eff_bull_price_score = min(t_bull_price_score, float(price_group_cap)) if price_group_cap is not None else t_bull_price_score
+            eff_bear_price_score = min(t_bear_price_score, float(price_group_cap)) if price_group_cap is not None else t_bear_price_score
+
             bull_score = 0
             bull_reasons = []
             bull_groups = set()
-            if bull_setup_timer > 0 and t_bull_price_score >= 1.0:
-                bull_score = bull_setup_env_score + t_bull_price_score
+            if price_only_mode:
+                if t_bull_price_score >= 2.0:
+                    bull_score = t_bull_price_score
+                    bull_groups = set(t_bull_price_groups)
+                    bull_reasons = list(t_bull_price_reasons)
+            elif bull_setup_timer > 0 and t_bull_price_score >= 1.0:
+                bull_score = bull_setup_env_score + eff_bull_price_score
                 bull_groups = bull_setup_env_groups.union(t_bull_price_groups)
                 bull_reasons = bull_setup_env_reasons + t_bull_price_reasons
 
             bear_score = 0
             bear_reasons = []
             bear_groups = set()
-            if bear_setup_timer > 0 and t_bear_price_score >= 1.0:
-                bear_score = bear_setup_env_score + t_bear_price_score
+            if price_only_mode:
+                if t_bear_price_score >= 2.0:
+                    bear_score = t_bear_price_score
+                    bear_groups = set(t_bear_price_groups)
+                    bear_reasons = list(t_bear_price_reasons)
+            elif bear_setup_timer > 0 and t_bear_price_score >= 1.0:
+                bear_score = bear_setup_env_score + eff_bear_price_score
                 bear_groups = bear_setup_env_groups.union(t_bear_price_groups)
                 bear_reasons = bear_setup_env_reasons + t_bear_price_reasons
 
@@ -1453,15 +1608,13 @@ class IndicatorEngine:
             regime_tag = 'T' if current_regime.get('regime') == 'trending' else 'R'
 
             # --- Layer 3: MTF Confirmation (Loose Mode) ---
-            # Loose mode: block only when higher TF is *strongly trending* against the signal.
-            #   4h trending + direction='down' → block bullish signals
-            #   4h trending + direction='up'   → block bearish signals
-            #   4h neutral / ranging           → both directions allowed
-            # Causal alignment: idx_htf = bisect.bisect_right(htf_regime_times, t) - 1
+            # Strict candle-close causal alignment:
+            #   t_htf + htf_sec <= t + tf_sec  <=>  t_htf <= t + tf_sec - htf_sec
             htf_regime_ok_bull = True
             htf_regime_ok_bear = True
             if htf_regime_times:
-                idx_htf = bisect.bisect_right(htf_regime_times, t) - 1
+                htf_cutoff = (t + tf_sec - htf_sec) if mtf_close_aligned else t
+                idx_htf = bisect.bisect_right(htf_regime_times, htf_cutoff) - 1
                 if idx_htf >= 0:
                     htf = htf_regime_list[idx_htf]
                     if htf.get('regime') == 'trending' and htf.get('direction') == 'down':
@@ -1494,26 +1647,35 @@ class IndicatorEngine:
 
             if donchian_now and donchian_prev and price_bar and i >= 1:
                 is_trending = (current_regime.get('regime') == 'trending')
-                cvd_confirm_bull = (cvd_now is not None and cvd_prev is not None and cvd_now > cvd_prev)
-                cvd_confirm_bear = (cvd_now is not None and cvd_prev is not None and cvd_now < cvd_prev)
-                oi_ok = True
-                if timeframe in ('15m', '1h'):
-                    oi_ok = (eff_oi_chg_pct is not None and eff_oi_chg_pct > 0)
-
-                # Extra breakout quality filter for HYPE
-                hype_breakout_ok_bull = True
-                hype_breakout_ok_bear = True
-                if is_hype and price_bar:
-                    candle_body = abs(price_bar['close'] - price_bar['open'])
-                    bar_range = price_bar['high'] - price_bar['low']
-                    body_ok = (candle_body >= atr_now * 0.45)
-                    coin_oi_ok = (coin_oi_chg_pct is not None and coin_oi_chg_pct >= 0.5)
-
-                    close_upper_half = (price_bar['close'] >= price_bar['low'] + bar_range * 0.5) if bar_range > 0 else True
-                    close_lower_half = (price_bar['close'] <= price_bar['low'] + bar_range * 0.5) if bar_range > 0 else True
-
-                    hype_breakout_ok_bull = body_ok and close_upper_half and coin_oi_ok
-                    hype_breakout_ok_bear = body_ok and close_lower_half and coin_oi_ok
+                if price_only_mode:
+                    vol_now = float(price_bar.get('volume') or 0.0)
+                    vol_avg = vol_sma20_by_time.get(t, 0.0)
+                    vol_ok = (vol_now >= vol_avg) if (vol_now > 0 and vol_avg > 0) else True
+                    cvd_confirm_bull = (price_bar['close'] > price_bar['open']) and vol_ok
+                    cvd_confirm_bear = (price_bar['close'] < price_bar['open']) and vol_ok
+                    oi_ok = True
+                    flow_tag_bull = 'VOL↑'
+                    flow_tag_bear = 'VOL↓'
+                elif cvd_active:
+                    cvd_confirm_bull = (cvd_now > cvd_prev)
+                    cvd_confirm_bear = (cvd_now < cvd_prev)
+                    oi_ok = True
+                    if timeframe in ('15m', '1h'):
+                        oi_ok = (eff_oi_chg_pct is not None and eff_oi_chg_pct > 0)
+                    flow_tag_bull = 'CVD↑'
+                    flow_tag_bear = 'CVD↓'
+                else:
+                    # Graceful degradation when CVD is missing or stagnant
+                    vol_now = float(price_bar.get('volume') or 0.0)
+                    vol_avg = vol_sma20_by_time.get(t, 0.0)
+                    vol_ok = (vol_now >= vol_avg) if (vol_now > 0 and vol_avg > 0) else True
+                    cvd_confirm_bull = (price_bar['close'] > price_bar['open']) and vol_ok
+                    cvd_confirm_bear = (price_bar['close'] < price_bar['open']) and vol_ok
+                    oi_ok = True
+                    if timeframe in ('15m', '1h') and eff_oi_chg_pct is not None:
+                        oi_ok = (eff_oi_chg_pct > 0)
+                    flow_tag_bull = 'VOL↑'
+                    flow_tag_bear = 'VOL↓'
 
                 # Bullish Breakout (Strict first-bar cross + trend/momentum)
                 if (price_bar['close'] > donchian_now['upper'] and
@@ -1523,13 +1685,12 @@ class IndicatorEngine:
                     cvd_confirm_bull and
                     is_bull_pa and
                     oi_ok and
-                    hype_breakout_ok_bull and
                     htf_regime_ok_bull):
                     is_breakout_bull = True
                     bull_breakout_reasons.append('DONCHIAN')
                     bull_breakout_reasons.append('MACD↑')
-                    bull_breakout_reasons.append('CVD↑')
-                    if eff_oi_chg_pct is not None and eff_oi_chg_pct > 0:
+                    bull_breakout_reasons.append(flow_tag_bull)
+                    if (not price_only_mode) and eff_oi_chg_pct is not None and eff_oi_chg_pct > 0:
                         bull_breakout_reasons.append('OI↑')
 
                 # Bearish Breakdown (Strict first-bar cross + trend/momentum)
@@ -1540,18 +1701,21 @@ class IndicatorEngine:
                       cvd_confirm_bear and
                       is_bear_pa and
                       oi_ok and
-                      hype_breakout_ok_bear and
                       htf_regime_ok_bear):
                     is_breakout_bear = True
                     bear_breakout_reasons.append('DONCHIAN')
                     bear_breakout_reasons.append('MACD↓')
-                    bear_breakout_reasons.append('CVD↓')
-                    if eff_oi_chg_pct is not None and eff_oi_chg_pct > 0:
+                    bear_breakout_reasons.append(flow_tag_bear)
+                    if (not price_only_mode) and eff_oi_chg_pct is not None and eff_oi_chg_pct > 0:
                         bear_breakout_reasons.append('OI↑')
 
             # --- Confluence Validation & Cooldown Gating ---
-            is_bull_valid = (bull_score >= bull_threshold and len(bull_groups) >= 2)
-            is_bear_valid = (bear_score >= bear_threshold and len(bear_groups) >= 2)
+            if price_only_mode:
+                is_bull_valid = (bull_score >= 2.0)
+                is_bear_valid = (bear_score >= 2.0)
+            else:
+                is_bull_valid = (bull_score >= bull_threshold and len(bull_groups) >= 2)
+                is_bear_valid = (bear_score >= bear_threshold and len(bear_groups) >= 2)
 
             bull_emitted = False
             allow_breakout_bull = is_breakout_bull and (i - last_bull_idx) >= (COOLDOWN * 2)
@@ -1585,47 +1749,28 @@ class IndicatorEngine:
                 and price_close < ema50_now < ema200_now
             )
 
-            # In strong bear macro structure (close < ema50 < ema200), bullish reversion requires Structure or extreme bottom
-            if allow_reversion_bull and is_bear_macro_trend and not is_extreme_bottom:
-                allow_reversion_bull = False
+            if APPLY_DIRECTIONAL_PROTECTION and not single_trend_guard:
+                # In strong bear macro structure (close < ema50 < ema200), bullish reversion requires Structure or extreme bottom
+                if allow_reversion_bull and is_bear_macro_trend and not is_extreme_bottom:
+                    allow_reversion_bull = False
 
-            # In strong bull macro structure (close > ema50 > ema200), bearish reversion strictly requires Structure or extreme top
-            if allow_reversion_bear and is_bull_macro_trend and not is_extreme_top:
-                allow_reversion_bear = False
-
-            # Alpha Decoupled Bull: Strong uptrend momentum + significant coin OI accumulation
-            if is_alpha_decoupled_bull and not is_extreme_top:
-                allow_reversion_bear = False
-
-            # For HYPE: strict trend and structure high-conviction filters
-            if is_hype:
-                cvd_rising = (cvd_now is not None and cvd_prev is not None and cvd_now > cvd_prev)
-                cvd_falling = (cvd_now is not None and cvd_prev is not None and cvd_now < cvd_prev)
-                if allow_reversion_bull:
-                    has_struct = 'Structure' in bull_groups
-                    ema50_ok = (price_close is not None and ema50_now is not None and price_close > ema50_now)
-                    score_ok = (bull_score >= 3.5)
-                    if not ((ema50_ok or has_struct) and cvd_rising and score_ok):
-                        allow_reversion_bull = False
-                if allow_reversion_bear:
-                    has_struct = 'Structure' in bear_groups
-                    ema50_ok = (price_close is not None and ema50_now is not None and price_close < ema50_now)
-                    score_ok = (bear_score >= 3.5)
-                    if not ((ema50_ok or has_struct) and cvd_falling and score_ok):
-                        allow_reversion_bear = False
-
-            # --- 1h/15m Bullish Structure Protection (eliminate counter-trend shorts in bull grind) ---
-            prev_24_idx = max(0, i - 24)
-            ema200_prev_24 = ema_slow_by_time.get(times[prev_24_idx])
-            ema200_rising = (ema200_now is not None and ema200_prev_24 is not None and ema200_now > ema200_prev_24)
-
-            if timeframe in ('15m', '1h') and APPLY_DIRECTIONAL_PROTECTION:
-                is_bull_structure_1h = (
-                    (price_close is not None and ema200_now is not None and price_close > ema200_now and ema200_rising)
-                    or (bool(htf_regime_times) and not htf_regime_ok_bear)
-                )
-                if is_bull_structure_1h and not is_extreme_top:
+                # In strong bull macro structure (close > ema50 > ema200), bearish reversion strictly requires Structure or extreme top
+                if allow_reversion_bear and is_bull_macro_trend and not is_extreme_top:
                     allow_reversion_bear = False
+
+            # --- 1h/15m Bullish Structure Protection (legacy redundant guard, bypassed when single_trend_guard=True) ---
+            if not single_trend_guard:
+                prev_24_idx = max(0, i - 24)
+                ema200_prev_24 = ema_slow_by_time.get(times[prev_24_idx])
+                ema200_rising = (ema200_now is not None and ema200_prev_24 is not None and ema200_now > ema200_prev_24)
+
+                if timeframe in ('15m', '1h') and APPLY_DIRECTIONAL_PROTECTION:
+                    is_bull_structure_1h = (
+                        (price_close is not None and ema200_now is not None and price_close > ema200_now and ema200_rising)
+                        or (bool(htf_regime_times) and not htf_regime_ok_bear)
+                    )
+                    if is_bull_structure_1h and not is_extreme_top:
+                        allow_reversion_bear = False
 
             # --- SIGNAL EMISSION ---
             bull_emitted = False

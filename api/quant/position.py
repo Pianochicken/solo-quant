@@ -38,6 +38,9 @@ class Position:
     initial_cost: float = 0.0
     partial_realized_pnl: float = 0.0
     partial_fees_paid: float = 0.0
+    signal_price: Optional[float] = None
+    funding_pnl: float = 0.0
+    legacy_clamp_trailing: bool = False
 
     # Trailing Stop state
     trailing_active: bool = False
@@ -65,8 +68,8 @@ class Position:
     def update(self, high: float, low: float, close: float) -> None:
         """
         Update trailing stop tracking with the latest candle data.
-        Cross-candle tracking with safe clamping to prevent underwater gap-through
-        while avoiding premature exit on current candle.
+        Ratchets trailing_stop_price strictly monotonically using candidate_trail
+        without artificial close * 0.999 / 1.001 downward/upward clamping.
         """
         if self.is_closed:
             return
@@ -78,10 +81,11 @@ class Position:
             unrealized_pct = (self.highest_since_entry - self.entry_price) / self.entry_price * 100
             if unrealized_pct >= self.trailing_activation_pct:
                 self.trailing_active = True
-                candidate_trail = max(self.highest_since_entry * (1 - self.trailing_stop_pct / 100), self.entry_price * 1.002)
-                # If close dipped below candidate_trail, clamp trailing_stop_price below close
-                # so next candle does not gap-through above market, while never dipping below stop_loss
-                if close <= candidate_trail:
+                candidate_trail = max(
+                    self.highest_since_entry * (1 - self.trailing_stop_pct / 100),
+                    self.entry_price * 1.002,
+                )
+                if self.legacy_clamp_trailing and close <= candidate_trail:
                     safe_trail = max(self.stop_loss, close * 0.999)
                 else:
                     safe_trail = candidate_trail
@@ -96,16 +100,57 @@ class Position:
             unrealized_pct = (self.entry_price - self.lowest_since_entry) / self.entry_price * 100
             if unrealized_pct >= self.trailing_activation_pct:
                 self.trailing_active = True
-                candidate_trail = min(self.lowest_since_entry * (1 + self.trailing_stop_pct / 100), self.entry_price * 0.998)
-                # If close bounced above candidate_trail, clamp trailing_stop_price above close,
-                # never exceeding stop_loss
-                if close >= candidate_trail:
+                candidate_trail = min(
+                    self.lowest_since_entry * (1 + self.trailing_stop_pct / 100),
+                    self.entry_price * 0.998,
+                )
+                if self.legacy_clamp_trailing and close >= candidate_trail:
                     safe_trail = min(self.stop_loss, close * 1.001)
                 else:
                     safe_trail = candidate_trail
 
                 if self.trailing_stop_price == 0.0 or safe_trail < self.trailing_stop_price:
                     self.trailing_stop_price = safe_trail
+
+    def check_intraday_trailing_exit(
+        self,
+        high: float,
+        low: float,
+        close: float,
+        open_price: Optional[float] = None,
+        path_mode: str = "ohlc",
+    ) -> bool:
+        """
+        Check whether an active trailing stop was breached intra-bar after trailing
+        activated or ratcheted on the current candle.
+
+        - 'legacy_clamp': never triggers same-candle trailing exit (Stage 0 baseline).
+        - 'ohlc': triggers when close crosses trailing_stop_price, or on a directional
+          reversal candle (bearish close < open for long, bullish close > open for short)
+          whose adverse extreme breaches trailing_stop_price.
+        - 'conservative': worst-case intra-bar path assuming adverse extreme may follow
+          the favorable extreme whenever low <= trailing_stop_price (long) or
+          high >= trailing_stop_price (short), as well as close breach.
+        """
+        if self.is_closed or not self.trailing_active or path_mode == "legacy_clamp":
+            return False
+
+        if self.side == "long":
+            if close <= self.trailing_stop_price:
+                return True
+            if path_mode == "conservative":
+                return low <= self.trailing_stop_price
+            if open_price is not None and close < open_price and low <= self.trailing_stop_price:
+                return True
+        else:  # short
+            if close >= self.trailing_stop_price:
+                return True
+            if path_mode == "conservative":
+                return high >= self.trailing_stop_price
+            if open_price is not None and close > open_price and high >= self.trailing_stop_price:
+                return True
+
+        return False
 
     def check_exit(self, high: float, low: float, close: float, open_price: Optional[float] = None) -> Optional[str]:
         """
@@ -153,14 +198,15 @@ class Position:
         if not self.enable_partial_tp or self.partial_tp_done or self.is_closed or self.trailing_activation_pct <= 0:
             return None
 
+        anchor_price = self.signal_price if self.signal_price is not None else self.entry_price
         if self.side == 'long':
-            tp1_price = self.entry_price * (1 + self.trailing_activation_pct / 100)
+            tp1_price = anchor_price * (1 + self.trailing_activation_pct / 100)
             if high >= tp1_price and low > self.stop_loss:
                 if open_price is not None and open_price > tp1_price:
                     return open_price
                 return tp1_price
         else:  # short
-            tp1_price = self.entry_price * (1 - self.trailing_activation_pct / 100)
+            tp1_price = anchor_price * (1 - self.trailing_activation_pct / 100)
             if low <= tp1_price and high < self.stop_loss:
                 if open_price is not None and open_price < tp1_price:
                     return open_price
@@ -243,7 +289,7 @@ class Position:
         remaining_net_pnl = remaining_raw_pnl - remaining_fees
 
         self.fees_paid = self.partial_fees_paid + remaining_fees
-        self.realized_pnl = self.partial_realized_pnl + remaining_net_pnl
+        self.realized_pnl = self.partial_realized_pnl + remaining_net_pnl + self.funding_pnl
         return remaining_net_pnl
 
     def get_exit_price_for_reason(self, reason: str, high: float, low: float, open_price: Optional[float] = None) -> float:
@@ -306,6 +352,7 @@ class Position:
             "trailing_stop_price": round(self.trailing_stop_price, 4),
             "partial_tp_done": self.partial_tp_done,
             "partial_realized_pnl": round(self.partial_realized_pnl, 4),
+            "funding_pnl": round(self.funding_pnl, 4),
             "exit_price": round(self.exit_price, 4),
             "exit_time": self.exit_time,
             "exit_reason": self.exit_reason,
