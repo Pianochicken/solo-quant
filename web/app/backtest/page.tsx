@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useRef } from 'react';
-import { SignalBacktestParams, SignalBacktestResult, runSignalBacktest } from '@/lib/api';
+import { SignalBacktestParams, SignalBacktestResult, StrategyMode, runSignalBacktest } from '@/lib/api';
 import { ArrowLeft, Play, Calculator, Activity, TrendingUp, TrendingDown, DollarSign, Target, Shield, Crosshair, BarChart3, Percent, ArrowDownUp, Zap, Radio, Filter } from 'lucide-react';
 import { createChart, ColorType, AreaSeries, CandlestickSeries, createSeriesMarkers } from 'lightweight-charts';
 import { InfoTooltip } from '@/components/InfoTooltip';
@@ -54,12 +54,15 @@ const DURATION_OPTIONS: Record<string, { value: string; label: string }[]> = {
         { value: '180', label: 'Last 180 Days' },
         { value: '365', label: 'Last 365 Days' },
         { value: '730', label: 'Last 730 Days' },
+        { value: '1095', label: 'Last 3 Years' },
+        { value: '1600', label: 'Full Cycle (All History)' },
     ],
 };
 
 export default function BacktestPage() {
     // Basic Simulation Parameters
     const [symbol, setSymbol] = useState('BTC/USDT');
+    const [strategyMode, setStrategyMode] = useState<StrategyMode>('legacy_v8');
     const [timeframe, setTimeframe] = useState<'1h' | '4h' | '1d'>('1h');
     const [duration, setDuration] = useState('30');
     const [feeRate, setFeeRate] = useState('0.05');
@@ -110,12 +113,25 @@ export default function BacktestPage() {
         setTrailingStop(base.trailing_stop_pct.toString());
     }, [symbol, timeframe, autoRiskProfile, coinKey]);
 
+    // Handle strategy mode switch
+    const handleStrategyModeChange = (nextMode: StrategyMode) => {
+        if (nextMode === strategyMode) return;
+        setStrategyMode(nextMode);
+        if (nextMode === 'macro_cycle') {
+            setTimeframe('1d');
+            setDuration('1600');
+        } else {
+            setTimeframe('1h');
+            setDuration('30');
+        }
+    };
+
     // Handle timeframe change with auto duration linking
     const handleTimeframeChange = (newTf: '1h' | '4h' | '1d') => {
         setTimeframe(newTf);
         if (newTf === '1h') setDuration('30');
         else if (newTf === '4h') setDuration('90');
-        else if (newTf === '1d') setDuration('365');
+        else if (newTf === '1d') setDuration(strategyMode === 'macro_cycle' ? '1600' : '365');
     };
 
     // Equity Chart Effect
@@ -181,6 +197,10 @@ export default function BacktestPage() {
         };
         const reasonEmoji: Record<string, string> = {
             tp: 'TP ✓', sl: 'SL ✗', trailing: 'TRAIL', signal_reverse: 'REV', backtest_end: 'END',
+            EUPHORIA_TOP_V16: '逃頂 🔥', REGIME_BEAR_EXIT_V16: '轉熊 🛡️', BASE_INVALIDATION_V16: '止損 ⚠️',
+        };
+        const entryShortMap: Record<string, string> = {
+            BEAR_BOTTOM_V16: '熊市大底', REGIONAL_BOTTOM_V16: '回調大底', STAGE2_IGNITION_V16: '主升啟動',
         };
 
         const markers = signalResult.trades
@@ -188,7 +208,7 @@ export default function BacktestPage() {
                 const isOpen = t.side.startsWith('open');
                 const isLong = t.side.includes('long');
                 const label = isOpen
-                    ? (isLong ? 'BUY' : 'SHORT')
+                    ? (t.entry_type ? (entryShortMap[t.entry_type] || t.entry_type) : (isLong ? 'BUY' : 'SHORT'))
                     : (reasonEmoji[t.exit_reason] || 'CLOSE');
                 return {
                     time: t.time as any,
@@ -215,7 +235,8 @@ export default function BacktestPage() {
                 symbol,
                 investment: parseFloat(investment),
                 duration_days: parseInt(duration),
-                timeframe,
+                timeframe: strategyMode === 'macro_cycle' ? '1d' : timeframe,
+                strategy_mode: strategyMode,
                 risk_per_trade_pct: parseFloat(riskPerTrade),
                 take_profit_pct: parseFloat(takeProfit),
                 stop_loss_pct: parseFloat(stopLoss),
@@ -288,6 +309,36 @@ export default function BacktestPage() {
                         </div>
 
                         <div className="space-y-4">
+                            {/* Strategy Mode Switcher */}
+                            <div className="grid grid-cols-2 gap-1.5 bg-zinc-950 p-1 rounded-lg border border-zinc-800">
+                                <button
+                                    type="button"
+                                    aria-pressed={strategyMode === 'legacy_v8'}
+                                    onClick={() => handleStrategyModeChange('legacy_v8')}
+                                    className={`py-2 px-2.5 rounded text-xs font-bold transition-colors ${
+                                        strategyMode === 'legacy_v8'
+                                            ? 'bg-purple-900/40 text-purple-300 border border-purple-500/40'
+                                            : 'text-zinc-500 hover:text-zinc-300 border border-transparent'
+                                    }`}
+                                >
+                                    ⚡ v8 短波段策略
+                                </button>
+                                <button
+                                    type="button"
+                                    aria-pressed={strategyMode === 'macro_cycle'}
+                                    onClick={() => handleStrategyModeChange('macro_cycle')}
+                                    className={`py-2 px-2.5 rounded text-xs font-bold transition-colors ${
+                                        strategyMode === 'macro_cycle'
+                                            ? 'bg-sky-900/40 text-sky-300 border border-sky-500/40'
+                                            : 'text-zinc-500 hover:text-zinc-300 border border-transparent'
+                                    }`}
+                                >
+                                    🌊 大週期策略 (1D)
+                                </button>
+                            </div>
+
+                            {strategyMode === 'legacy_v8' && (
+                            <>
                             {/* Strategy Toggles */}
                             <div className="bg-zinc-950/60 p-3 rounded-lg border border-zinc-800/60 space-y-2.5">
                                 {/* 1. Dynamic Profiles toggle */}
@@ -344,6 +395,8 @@ export default function BacktestPage() {
                                     </div>
                                 </label>
                             </div>
+                            </>
+                            )}
 
                             {/* Symbol & Timeframe */}
                             <div className="grid grid-cols-2 gap-3">
@@ -359,11 +412,17 @@ export default function BacktestPage() {
                                 </div>
                                 <div>
                                     <label className="block text-xs text-zinc-500 mb-1">Timeframe</label>
-                                    <select value={timeframe} onChange={e => handleTimeframeChange(e.target.value as any)} className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 transition-colors outline-none font-mono">
-                                        <option value="1h">1h (Hourly)</option>
-                                        <option value="4h">4h (Swing)</option>
-                                        <option value="1d">1d (Daily)</option>
-                                    </select>
+                                    {strategyMode === 'macro_cycle' ? (
+                                        <div className="w-full bg-sky-950/30 border border-sky-500/40 rounded p-2 text-sm text-sky-300 font-mono">
+                                            1d (Fixed Macro)
+                                        </div>
+                                    ) : (
+                                        <select value={timeframe} onChange={e => handleTimeframeChange(e.target.value as any)} className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 transition-colors outline-none font-mono">
+                                            <option value="1h">1h (Hourly)</option>
+                                            <option value="4h">4h (Swing)</option>
+                                            <option value="1d">1d (Daily)</option>
+                                        </select>
+                                    )}
                                 </div>
                             </div>
 
@@ -376,7 +435,7 @@ export default function BacktestPage() {
                                 <div>
                                     <label className="block text-xs text-zinc-500 mb-1">Duration</label>
                                     <select value={duration} onChange={e => setDuration(e.target.value)} className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 transition-colors outline-none font-mono">
-                                        {DURATION_OPTIONS[timeframe]?.map(opt => (
+                                        {DURATION_OPTIONS[strategyMode === 'macro_cycle' ? '1d' : timeframe]?.map(opt => (
                                             <option key={opt.value} value={opt.value}>{opt.label}</option>
                                         ))}
                                     </select>
@@ -392,6 +451,22 @@ export default function BacktestPage() {
                                 <input type="number" step="0.01" value={feeRate} onChange={e => setFeeRate(e.target.value)} className="w-full bg-zinc-950 border border-zinc-700 rounded p-2 text-sm text-white focus:border-purple-500 outline-none font-mono" />
                             </div>
 
+                            {strategyMode === 'macro_cycle' ? (
+                                <div className="border-t border-zinc-800/80 pt-3">
+                                    <div className="bg-sky-950/25 border border-sky-500/30 rounded-lg p-3.5 space-y-2 text-xs text-zinc-300">
+                                        <div className="font-bold text-sky-300 flex items-center gap-1.5">
+                                            🌊 Phase 1.6 實證固定規則（Cycle_P_v16_1d）
+                                        </div>
+                                        <ul className="space-y-1 text-[11px] text-zinc-400 list-disc ml-4 leading-relaxed">
+                                            <li><strong>純做多／空手避險</strong>：0.95x 現貨／低槓桿配置，熊市下跌期空手避開死貓反彈。</li>
+                                            <li><strong>進場路徑</strong>：熊市反轉大底 (`Path A`)、牛市回調接回 (`Path B`)、Stage-2 主升啟動 (`Path C`)。</li>
+                                            <li><strong>防洗保護</strong>：初期設 Base Stop（3×ATR / 20日低點），浮盈達 <strong>+25%</strong> 即自動解除停損改為全程抱單。</li>
+                                            <li><strong>大頂／轉熊離場</strong>：達 Mayer 過熱門檻且破 20D 低點逃頂（`EUPHORIA_TOP_V16`），或跌破 EMA50 與 30D 低點轉熊避險（`REGIME_BEAR_EXIT_V16`）。</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            ) : (
+                            <>
                             {/* === Signal Filters (Archetypes & Score) === */}
                             <div className="border-t border-zinc-800/80 pt-3 space-y-3">
                                 <div className="flex justify-between items-center">
@@ -551,6 +626,8 @@ export default function BacktestPage() {
                                     </label>
                                 </div>
                             </div>
+                            </>
+                            )}
                         </div>
                     </div>
 
@@ -660,6 +737,46 @@ export default function BacktestPage() {
                         ))}
                     </div>
 
+                    {/* Macro Cycle Benchmark & Extended Metrics Strip */}
+                    {signalResult?.strategy_mode === 'macro_cycle' && (
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                            {[
+                                {
+                                    label: 'CAGR (年化報酬)',
+                                    value: signalResult.metrics.cagr_pct != null ? `${signalResult.metrics.cagr_pct >= 0 ? '+' : ''}${signalResult.metrics.cagr_pct.toFixed(2)}%` : '--',
+                                    color: (signalResult.metrics.cagr_pct ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400',
+                                },
+                                {
+                                    label: 'MAR Ratio',
+                                    value: signalResult.metrics.mar_ratio != null ? signalResult.metrics.mar_ratio.toFixed(2) : '--',
+                                    color: (signalResult.metrics.mar_ratio ?? 0) >= 0.7 ? 'text-sky-300' : 'text-zinc-200',
+                                },
+                                {
+                                    label: '平均持倉天數',
+                                    value: signalResult.metrics.avg_hold_days != null ? `${signalResult.metrics.avg_hold_days.toFixed(1)}d` : '--',
+                                    color: 'text-zinc-100',
+                                },
+                                {
+                                    label: '在市曝險時間',
+                                    value: signalResult.metrics.time_in_market_pct != null ? `${signalResult.metrics.time_in_market_pct.toFixed(1)}%` : '--',
+                                    color: 'text-amber-300',
+                                },
+                                {
+                                    label: 'Buy & Hold 對比',
+                                    value: signalResult.metrics.buy_and_hold_return_pct != null
+                                        ? `${signalResult.metrics.buy_and_hold_return_pct >= 0 ? '+' : ''}${signalResult.metrics.buy_and_hold_return_pct.toFixed(1)}% / DD ${signalResult.metrics.buy_and_hold_max_dd_pct?.toFixed(1) ?? '--'}%`
+                                        : '--',
+                                    color: 'text-zinc-300',
+                                },
+                            ].map((item, idx) => (
+                                <div key={idx} className="bg-sky-950/20 border border-sky-900/40 p-2.5 rounded-xl flex flex-col justify-between">
+                                    <span className="text-sky-400/80 text-[10px] uppercase font-mono">{item.label}</span>
+                                    <div className={`text-sm font-mono font-bold mt-1 ${item.color}`}>{item.value}</div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
                     {/* Equity Curve Chart */}
                     <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex flex-col relative">
                         <div className="flex justify-between items-center mb-3">
@@ -742,16 +859,23 @@ export default function BacktestPage() {
                                         trailing: 'bg-amber-900/30 text-amber-400 border-amber-800',
                                         signal_reverse: 'bg-purple-900/30 text-purple-400 border-purple-800',
                                         backtest_end: 'bg-zinc-800 text-zinc-400 border-zinc-700',
+                                        EUPHORIA_TOP_V16: 'bg-amber-950/70 text-amber-300 border-amber-500/40',
+                                        REGIME_BEAR_EXIT_V16: 'bg-red-950/70 text-red-300 border-red-500/40',
+                                        BASE_INVALIDATION_V16: 'bg-rose-950/70 text-rose-300 border-rose-500/40',
                                     };
+                                    const dt = new Date(trade.time * 1000);
+                                    const timeLabel = signalResult?.strategy_mode === 'macro_cycle'
+                                        ? `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`
+                                        : dt.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' });
 
                                     return (
                                         <tr key={i} className="border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors">
                                             <td className="py-2 text-zinc-400 whitespace-nowrap">
-                                                {new Date(trade.time * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' })}
+                                                {timeLabel}
                                             </td>
                                             <td className="py-2">
                                                 <span className={`px-1.5 py-0.5 rounded text-[10px] text-center inline-block uppercase border ${badgeColor}`}>
-                                                    {sideLabel}
+                                                    {isOpen && trade.entry_type ? trade.entry_type : sideLabel}
                                                 </span>
                                             </td>
                                             <td className="py-2 text-right text-zinc-100">${Number(trade.price).toFixed(pricePrecision)}</td>

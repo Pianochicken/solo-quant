@@ -16,6 +16,8 @@ This document is the **Context Buffer** for AI Agents. It defines how the system
 
 ## 2. Current Architecture (The "Now")
 
+Solo-Quant now runs as a **Dual-Mode Terminal** supporting both **Short/Swing Confluence (`legacy_v8`, default on load)** and **Macro Cycle Hold-to-Top (`macro_cycle` v1.6, 1D daily engine)** side-by-side without breaking backward compatibility.
+
 ### 2.1 The Signal-Driven Engine (v8 - Macro & Inflection Precision)
 The core of the system generates `Bullish` and `Bearish` markers from `IndicatorEngine` v8, which are parsed by the `SignalBacktester` to execute trades and visualized on the dashboard.
 
@@ -51,24 +53,34 @@ The core of the system generates `Bullish` and `Bearish` markers from `Indicator
   - **HYPE 4h**: SL 5.5%, TP 5.20%, Trail Act 2.20%, Trail Stop 0.50% (83.3% WR, PF 1.65)
   - **HYPE 1h**: SL 2.4%, TP 2.80%, Trail Act 1.20%, Trail Stop 0.35% (83.3% WR, PF 2.04)
 
-### 2.2 Signal Notification System (Telegram v8)
-An event-driven notification pipeline embedded within the FastAPI container.
+### 2.1.2 Dual-Mode Macro Cycle Engine (`macro_cycle` v1.6 — `Cycle_P_v16_1d`)
+Self-contained, strictly causal 1D secular cycle engine (`api/core/macro_cycle.py` + `api/quant/macro_cycle_backtester.py`), promoted into production after passing Phase 1.6 (`4/5 PASS` / `VALIDATED_PRICE_CYCLE`; `15 bps` Pooled `PF = 2.00`, EW `+213.63%`, EW `MAR = 0.77` vs Buy & Hold `0.70`, OOS bear MaxDD `21.44%` vs `56.95%`).
+- **API Mode Selection**: `strategy_mode` query/body param on `GET /market/{symbol}`, `_get_market_data_impl()`, and `POST /quant/signal-backtest` (`"legacy_v8"` default | `"macro_cycle"`, HTTP `400` on invalid value).
+- **Pure-Price Asymmetric Cycle Rules (Long-Flat)**:
+  - **Entries** (10-bar post-exit cooldown, `0.95x` notional): `BEAR_BOTTOM_V16` (180d adaptive DD `0.30..0.52` or `<= 0.78*EMA200` + `RSI10d <= 33` -> `EMA20 > EMA50`, rising `EMA50`, breakout), `REGIONAL_BOTTOM_V16` (`EMA50 > EMA200`, rising `EMA200`, 90d dip -> reclaim `EMA50` & 20d high), `STAGE2_IGNITION_V16` (`EMA20 > EMA50 > EMA200` aligned + 60d breakout below `1.40x EMA200`).
+  - **Exits**: Early-only pre-close `BASE_INVALIDATION_V16` (`max(entry - 3*ATR14, low20 * 0.98)`, automatically disabled forever once trade gain reaches `+25%`), adaptive Mayer-Multiple euphoria exit `EUPHORIA_TOP_V16` (peak gain `>= +45%`, `mayer_10d >= clip(1 + 12*atr_pct_med60, 1.55, 2.20)`, ext ATR `>= 5.5`, `RSI >= 76` within 30d -> close `< EMA20` & `< 20d low`), and `REGIME_BEAR_EXIT_V16` (`close < EMA50`, `EMA20 < EMA50`, `< 30d low`, and `< EMA200` or falling `EMA50`).
+- **UI-Only Left-Side Derivative Context**: Because Phase 1.6 `H4` proved adding hard derivative gates produced identical `28` trades (`p = 1.0000`), `coin_oi_dd_60d`, `coin_oi_pct_180d`, `fr_7d_mean_pct`, and `lsur_z_90d` are computed causally for UI badges and Telegram alert context without blocking price signals.
+- **Full-History Fetcher Guard (`api/core/fetcher.py`)**: `_full_history_exhausted` and `_funding_history_exhausted` (6h cooldown) prevent repeated OKX full-history pagination loops when requesting `limit=1800`/`2000` on newer listings (`HYPE`, `CC`).
 
-- **Modules**: `api/core/notifier.py` + `api/core/signal_scanner.py`.
-- **Schedule & Multi-Timeframe**: `APScheduler` with `CronTrigger(minute="0,15,30,45", second="25")`. Monitors `MONITORED_TIMEFRAMES = ["1h", "4h"]` (4h scanned at `:00:25` UTC when `hour % 4 == 0`; 1h scanned hourly/quarterly).
-- **Tactical Execution Orders, Sizing & Macro Positioning**: Telegram alert messages calculate and display exact SL, TP1 (追蹤啟動 / 可選減半推保本), and TP2 (全倉波段目標) execution order prices aligned with `Single Full TP` default (`enable_partial_tp=False`), notional sizing / effective leverage risk caps (`1%~2%` equity risk, `<= 0.95x`), cross-symbol correlation warning (`>= 3` symbols firing same direction within 4h), and the asset's Macro Quadrant status (`🔥 強勢加倉` / `🩸 弱勢加倉` / `⚡ 強勢減倉` / `🧊 弱勢減倉` / `⚪ 中性盤整`), RS vs BTC, 24h Coin OI %, and 4H regime.
-- **Full Macro Defaults**: Scans default to `enable_protection=True` and `enable_mtf_filter=True` (`allow_live_btc_cache=False`, computing causal BTC macro history per scan).
-- **Candle Close Confirmation**: Closed-candle confirmation is enforced by default (`_allow_intraday_prealert = False`, anti-repainting); unclosed latest candles are suppressed unless `allow_intraday_prealert=True` is enabled via `/notifications/config` (in which case only high-conviction `score >= 5.0` or `CAP`/`DIV` emit `[盤中未收線預警]`).
-- **Dedup & Reliability**: Tracks `(signal_time, strategy_type)` (and `("prealert", time, strategy_type)` when pre-alerts are enabled) only after successful dispatch (`sent_ok is True`); failed alerts are retained in queue for automatic retry on subsequent scans.
+### 2.2 Signal Notification System (Telegram v8 + Daily 1D Macro Cycle)
+Dual event-driven notification pipelines embedded within the FastAPI container (`api/core/notifier.py` + `api/core/signal_scanner.py`):
+
+- **v8 Short/Swing Schedule**: `APScheduler` `CronTrigger(minute="0,15,30,45", second="25")` scans `MONITORED_TIMEFRAMES = ["1h", "4h"]` (4h at `:00:25` UTC on 4-hour multiples; 1h quarterly/hourly).
+- **Daily 1D Macro Cycle Schedule**: `APScheduler` `CronTrigger(hour=0, minute=5, second=0, timezone="UTC")` (`08:05 UTC+8`) runs `scan_macro_cycle_and_notify()` (`limit=1800`, `strategy_mode="macro_cycle"`), strictly ignoring unclosed 1D bars (`now < latest_candle_time + 86400`), deduplicating `(time, cycle_event)` over a 48h window, formatting via `format_macro_cycle_message()` (Base Stop + `+25%` auto-disable note, realized PnL / peak MFE / hold days, left-side derivative summary), and rendering custom-color 1D charts (`%y/%m\n%d`). Manual trigger via `POST /notifications/scan-macro-now`.
+- **Tactical Execution Orders, Sizing & Macro Positioning (v8)**: Telegram alert messages calculate and display exact SL, TP1 (追蹤啟動 / 可選減半推保本), and TP2 (全倉波段目標) execution order prices aligned with `Single Full TP` default (`enable_partial_tp=False`), notional sizing / effective leverage risk caps (`1%~2%` equity risk, `<= 0.95x`), cross-symbol correlation warning (`>= 3` symbols firing same direction within 4h), and the asset's Macro Quadrant status (`🔥 強勢加倉` / `🩸 弱勢加倉` / `⚡ 強勢減倉` / `🧊 弱勢減倉` / `⚪ 中性盤整`), RS vs BTC, 24h Coin OI %, and 4H regime.
+- **Full Macro Defaults**: Scans default to `enable_protection=True`, `enable_mtf_filter=True`, and `enable_macro_cycle_alerts=True` (`allow_live_btc_cache=False`, computing causal BTC macro history per scan).
+- **Candle Close Confirmation**: Closed-candle confirmation is enforced by default (`_allow_intraday_prealert = False`, anti-repainting for v8; always strict closed-candle for 1D Macro Cycle); unclosed latest v8 candles are suppressed unless `allow_intraday_prealert=True` is enabled via `/notifications/config` (in which case only high-conviction `score >= 5.0` or `CAP`/`DIV` emit `[盤中未收線預警]`).
+- **Dedup & Reliability**: Tracks `(signal_time, strategy_type)` (and `("prealert", time, strategy_type)` for v8 pre-alerts) / `(time, cycle_event)` for Macro Cycle only after successful dispatch (`sent_ok is True`); failed alerts are retained for retry.
 - **BTC Macro Scanning Sequence**: Scans BTC first so DB history is fresh before altcoins compute causal `btc_macro_history`.
-- **Resilient Message Dispatch & Thread Safety**: Chart generation is thread-safe (`_chart_lock = threading.Lock()`) and non-blocking (`asyncio.to_thread`). Output files include timeframe (`{symbol}_{timeframe}_168h.png`) to prevent 1h/4h overwrite races. If chart rendering or photo upload fails, automatically degrades to plain-text notification, guaranteeing 100% alert delivery.
+- **Resilient Message Dispatch & Thread Safety**: Chart generation is thread-safe (`_chart_lock = threading.Lock()`) and non-blocking (`asyncio.to_thread`). Output files include timeframe (`{symbol}_{timeframe}_168h.png`) to prevent 1h/4h/1d overwrite races. If chart rendering or photo upload fails, automatically degrades to plain-text notification, guaranteeing 100% alert delivery.
 - **Timezone Default**: Timezone defaults to `8.0` (UTC+8 / Asia/Taipei), configurable via `NEXT_PUBLIC_TIMEZONE_OFFSET`.
-- **Config API**: `GET/POST /notifications/config` (exposes `enable_mtf_filter`, `enable_protection`, `allow_intraday_prealert`, `monitored_symbols`).
+- **Config API**: `GET/POST /notifications/config` (exposes `enable_macro_cycle_alerts`, `macro_cycle_schedule`, `enable_mtf_filter`, `enable_protection`, `allow_intraday_prealert`, `monitored_symbols`), plus `POST /notifications/scan-now` and `POST /notifications/scan-macro-now`.
 
 ### 2.3 Frontend Terminal Architecture (Crypto Macro & Signal Terminal)
-The frontend (`web/`) is streamlined into a high-conviction decision cockpit for market intelligence:
-- **Main Terminal (`web/app/page.tsx`)**: Pure signal & macro dashboard. Legacy `GridPanel` and `HistoryPanel` removed, eliminating empty black voids. Employs `AbortController` in `fetchData` effect so fast switching between symbols immediately aborts stale pending requests, preventing out-of-order network race conditions.
-- **Recent Signals Radar**: Right-column card displaying the latest 10 signals from `lsur_markers` with UTC timestamps (`MM/DD HH:mm`), strategy type badges (`🚀 BREAKOUT`, `⚡ STRUCTURE`, `🟢 BUY / 🔴 SELL`), asset-precision trigger prices (`getPricePrecision`), and monospace indicator reason pills.
+The frontend (`web/`) is streamlined into a dual-mode decision cockpit for market intelligence:
+- **Main Terminal (`web/app/page.tsx`)**: Defaults to `strategyMode = 'legacy_v8'` + `'4h'` K-lines on load (`1000` bars, 15s poll) with a header segmented switcher (`⚡ v8 短波段` ↔ `🌊 大週期 (1D)`) that seamlessly switches to `macro_cycle` (`1d`, `limit=1800`, 60s poll) and restores the prior short-term timeframe when toggling back. Employs `AbortController` in `fetchData` effect so fast switching immediately aborts stale pending requests.
+- **Recent Signals Radar**: Right-column card displaying the latest 10 signals/cycle events from `lsur_markers` with mode-aware dates (`MM/DD HH:mm` for v8, `YYYY/MM/DD` for Macro Cycle), rich badges (`🐻 熊市大底`, `💎 回調大底`, `🚀 主升浪啟動`, `🔥 過熱逃頂`, `🛡️ 轉熊防線`, `⚠️ 結構止損`, plus v8 `🚀 BREAKOUT`, `⚡ STRUCTURE`, `🟢 BUY / 🔴 SELL`), asset-precision trigger prices, and indicator details.
+- **Macro Cycle Visuals (`AdvancedChart.tsx` & `SentimentPanel.tsx` & `NotificationSettingsModal.tsx`)**: In `macro_cycle` mode, `AdvancedChart.tsx` overlays `EMA20` (`#22d3ee`), translucent background risk bands (`✓ 左側警戒帶` on isolated hidden `cycle-zones` scale so candlestick pricing and 7-chart crosshair sync stay undistorted), enlarged arrows with short labels, and hover Mayer/zone readouts; `SentimentPanel.tsx` surfaces the top **`🌊 宏觀大週期位階 (Macro Cycle v1.6)`** status card (live position PnL/MFE/Base Stop, Mayer vs threshold, 180d DD, EMA alignment) plus auxiliary derivative context; `NotificationSettingsModal.tsx` exposes the daily 1D Macro Cycle push toggle.
 - **Five-Coin Macro & Quadrant Strip (`web/app/page.tsx` & `/api/market_overview`)**: Top horizontal radar bar rendering 5 micro-cards (BTC, ETH, SOL, HYPE, CC) displaying 24h price change %, 4h RSI, relative strength vs BTC (`rs_vs_btc`), 24h coin-denominated open interest change % (`oi_coin_change_24h_pct`), 4-quadrant state badges (`🔥 強勢加倉` / `🩸 弱勢加倉` / `⚡ 強勢減倉` / `🧊 弱勢減倉` / `⚪ 中性盤整`), 4H regime, and latest signal. Built with semantic `<div role="button" tabIndex={0}>` avoiding HTML5 nested button violations with inner `InfoTooltip` instances. Equipped with rich, non-intrusive `InfoTooltip` explainers on every metric (24h Price Change, Quadrant triggers, RS vs BTC, 24h Coin OI %, 4H Regime, and Latest Signal with elapsed hours).
 - **Background Pre-warmer & Ultra-Low Latency Overview (`api/main.py`)**: APScheduler runs `_background_refresh_market_overview` every 30s in the background with `_overview_lock` concurrency protection, keeping memory cache warm. User page reloads hit cache in **< 6ms** (reduced from 5–8 seconds). Calls `get_market_data` with `limit=300` (`fetch_limit=1000`) guaranteeing complete warmup for EMA200 and rolling indicators, and truncates memory payloads to lean summary metrics.
 - **Timeframe-Isolated BTC Macro Cache**: `_btc_macro_cache` is isolated by timeframe (`Dict[str, Dict]`) with fallback resolution (`tf` -> `4h` -> `1h`). Only updates if data length $\ge 250$ bars, eliminating under-warmed cache pollution.
@@ -82,7 +94,7 @@ The frontend (`web/`) is streamlined into a high-conviction decision cockpit for
 - **Unified Terminal Loader**: Replaced fragmented multi-block loaders and artificial 600ms delays with a single full-workspace dark loading screen (radar pulse & asset/timeframe pill). On data arrival, all 3 panels (Chart, SentimentPanel, Recent Signals) hydrate atomically in the exact same render frame.
 - **Chart Polish (`AdvancedChart.tsx`)**: Removed TradingView attribution logo (`attributionLogo: false`) to prevent overlap with the 7th subchart (`Market Regime`), and expanded main price chart height to 460px (`h-[460px]`).
 - **Full Macro Defaults**: Frontend initializes with `enableProtection: true` and `enableMtfFilter: true`.
-- **Strategy Backtester (`web/app/backtest/page.tsx`)**: Upgraded to a pure Signal Strategy Terminal. Removed legacy Grid tabs. Added multi-timeframe selector (`1h`, `4h`, `1d`) linked to adaptive durations, integrated empirical `OPTIMAL_RISK_PROFILES` (Auto Risk Profile toggle), dynamic relative multiplier buttons (🎯 實證最佳基準 / 🚀 波段放大 1.4x), and unified default position limit (max 1) and fee rate (0.05%).
+- **Strategy Backtester (`web/app/backtest/page.tsx`)**: Upgraded to a Dual-Mode Signal Strategy Terminal (`⚡ v8 短波段策略` vs `🌊 大週期策略 (1D)`). Preserves v8 multi-timeframe (`1h`, `4h`, `1d`) + empirical `OPTIMAL_RISK_PROFILES` + dynamic relative multiplier buttons, while `macro_cycle` locks 1D (`180d..1600d Full Cycle`), surfaces fixed v1.6 rules, and adds a benchmark card strip (`CAGR`, `MAR Ratio`, `Avg Hold Days`, `Time in Market %`, `Buy & Hold Return / MaxDD`).
 
 ---
 
@@ -111,30 +123,36 @@ To prevent regressions, **ALL future AI Agents MUST adhere to these rules**:
    - *Rule*: Never hold a SQLAlchemy `SessionLocal()` across external network calls (CCXT / REST) or child thread pools. Follow the 3-step lifecycle: 1. Check cache gap in short session -> 2. Network I/O outside DB -> 3. Upsert batch in short session -> 4. Read final series in short session -> 5. Process in memory.
 10. **Telegram Push Resiliency & Graceful Degradation**:
     - *Rule*: Protect matplotlib with thread locks (`_chart_lock`), dispatch via `asyncio.to_thread`, tag chart filenames with timeframe (`{symbol}_{tf}_168h.png`), and always fallback to plain-text messages if rendering or photo delivery fails. Only mark signals as notified (`notified_set.add`) upon verified successful dispatch.
+11. **Dual-Mode Contracts, AST Parity & Timestamp Shifting (`api/main.py`, `web/lib/api.ts`)**:
+    - *Rule*: Keep `strategy_mode="legacy_v8"` and `lsur_source="lsur"` as backward-compatible defaults on `SignalBacktestParams`, `get_market_data()`, and `_get_market_data_impl()`. Maintain **exactly one** `get_market_data(...)` call inside `run_signal_backtest()` passing `lsur_source=params.lsur_source` (guarded by `test_api_main_lsur_source_default_ast`), initialize `macro_cycle_state`, `macro_cycle_zones`, and `ema_20` before the `if price_data:` branch for empty-price JSON safety (`allow_nan=False`), and note that frontend `shiftTimes()` only shifts fields named `time` (`active_position.entry_time` requires explicit `getTimezoneOffsetSec()` before UTC formatting).
+12. **Fetcher History Limit Guard & Next.js Container Rebuilds**:
+    - *Gotcha*: Requesting `limit=1800` for `macro_cycle` on coins with shorter DB history triggers full OKX pagination loops on every poll unless guarded; additionally, `docker-compose.yml` only bind-mounts `.:/app` onto `fastapi`, NOT `nextjs`.
+    - *Rule*: Preserve `_full_history_exhausted` / `_funding_history_exhausted` cooldowns in `api/core/fetcher.py`, and always rebuild the frontend container (`docker compose up -d --build nextjs`) after `web/` edits so `localhost:3000` serves updated bundles.
 
 ---
 
 ## 4. Current Development Focus (The "Next")
-### Goal: Macro Precision & Live Execution Optimization
+### Goal: Dual-Mode Stabilization, Live Paper Trading & Macro Monitoring
 
-**Context**: Solo-Quant v8 (Macro & Inflection Precision Upgrade) is **complete and validated**:
-- Data ingestion and cross-exchange aggregation fixed (no false OI crashes, 4h warmup aligned).
-- Backtest engine look-ahead bias eliminated; MFE/MAE signal quality tracking added.
-- IndicatorEngine upgraded to v8 with dynamic leverage multipliers, absorption-based capitulation, recency-constrained divergence, and BTC macro regime filtering.
-- Signal scanner upgraded with closed-bar confirmation, MTF filter support, and BTC-first macro propagation.
-- Frontend timezone display and chart tooltip alignment complete.
+**Context**: Solo-Quant now ships **v0.8.0 (Dual-Mode Terminal: `legacy_v8` 1h/4h + `macro_cycle` v1.6 1D)**:
+- Data ingestion and cross-exchange aggregation fixed (no `.bfill()`, 4h warmup aligned, full-history exhaustion guarded).
+- Backtest engine look-ahead bias eliminated; MFE/MAE, slippage, and `FundingRate` PnL integrated across both v8 and Macro Cycle modes.
+- IndicatorEngine v8 pruned via Walk-Forward OOS (`is_hype` hacks deleted, `lsur` retained) alongside self-contained pure-price `Cycle_P_v16_1d` (`4/5 PASS` / `VALIDATED_PRICE_CYCLE`).
+- Dual Telegram scanners active (15-min `1h/4h` v8 + daily `00:05 UTC` `1d` Macro Cycle, both strictly closed-candle confirmed).
+- Frontend defaults to `4h` `legacy_v8` with top segmented switcher into `🌊 大週期 (1D)` and `/backtest` full-cycle simulation (`113 passed` tests).
 
 ### 4.1 Completed Phases ✅
 - Phase A: Data Ingestion & Backtest Engine Accuracy
 - Phase B: IndicatorEngine v8 Upgrade
 - Phase C: Telegram Signal Scanner & Frontend Alignment
-- Phase D: Multi-Year Cross-Regime Validation & Execution Tuning (1d/4h/1h Full Macro E-Ratio > 1.10, 1d Structure win rate 73.3% / E-Ratio 1.59, 4h Breakout 62.5% / E-Ratio 1.61)
-- Phase E: Empirical Risk Profile Calibration & Cross-Candle Trailing Alignment (ETH/SOL/HYPE 4h WR 60%~83.3%, BTC 1h WR 68.8%, Single Full TP locked as default)
+- Phase D: Multi-Year Cross-Regime Validation & Execution Tuning
+- Phase E: Empirical Risk Profile Calibration & Red-Team Audit / OOS Pruning (`v0.7.0`)
+- Phase F: Macro Cycle Research (`Phase 1 -> 1.5 -> 1.6 Cycle_P_v16_1d`) & Dual-Mode Production Integration (`v0.8.0`)
 
-### 4.2 Next Goals (Phase 6)
-1. **Live Paper Trading / Execution Engine**: Connect signals to paper-trading accounts (e.g., OKX / Binance Demo API) to measure real slippage vs backtest MFE/MAE.
+### 4.2 Next Goals (Phase 6+)
+1. **Monitor Daily `00:05 UTC` Macro Cycle Alerts & Live Slippage**: Track closed 1D signals across BTC/ETH/SOL/HYPE/CC in production and optionally connect dry-run/demo execution to compare realized slippage vs backtest assumptions (`5–15 bps`).
 2. **Orderbook Liquidity Imbalance (Layer 5)**: Periodic depth/orderbook snapshot ingestion into DB for institutional orderflow absorption scoring.
-3. **Parameter Optimization**: Fine-tune per-asset profile thresholds using the new forward-return MFE/MAE metrics.
+3. **Portfolio-Level Multi-Asset Allocation**: Explore cross-asset equal-weight / volatility-targeted sizing on top of validated `Cycle_P_v16_1d` signals.
 
 ---
 
@@ -143,11 +161,10 @@ To prevent regressions, **ALL future AI Agents MUST adhere to these rules**:
 
 「請扮演一位資深的全端工程師及加密貨幣分析師。請先閱讀 `SKILL.md` 與 `AI_HANDOFF.md` 以了解專案架構、核心理念與避坑規則。
 
-目前系統已升級至 **Solo-Quant v8 (Macro & Inflection Precision)**，包含零未來函數回測、1000 根 K 線暖機對齊、動態槓桿脆弱度乘數、真吸收 K 線投降指標與 BTC 宏觀狀態過濾。
+目前系統已升級至 **Solo-Quant v0.8.0 (Dual-Mode: `legacy_v8` 短波段 + `macro_cycle` v1.6 大週期)**，前後端與 Telegram 雙排程均已驗證上線（`113 passed`）。
 
-**任務：實戰驗證與訊號品質調優 (Phase 6)**
-1. 使用 Backtester 分析不同幣種在開啟 MTF 與 BTC 宏觀過濾下的勝率與 MFE/MAE 表現。
-2. 監控 Telegram Scanner 推播訊號的收線確認機制與圖表清晰度。
-3. 遵循三大鐵則：零未來函數、1000 根暖機對齊、前後端 API 型別一致。」
+**任務：雙模式實盤追蹤與下一階段演化 (Phase 6+)**
+1. 監控 Telegram 每日 `00:05 UTC`（`08:05 UTC+8`）`macro_cycle (1d)` 收盤訊號與既有 `1h/4h` v8 推播品質。
+2. 遵循開發鐵則：零未來函數、嚴守 `strategy_mode="legacy_v8"` 與 `lsur_source="lsur"` 向後相容、確保前後端 API 型別一致，修改 `web/` 後務必重建 `nextjs` 容器。」
 
 

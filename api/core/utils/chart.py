@@ -86,18 +86,21 @@ def _price_label(ax: plt.Axes, price: float, color: str) -> None:
     )
 
 
-def _format_xticks(df: pd.DataFrame, ax: plt.Axes) -> None:
-    """Show ticks in "10日\\n12:00" style without rotation."""
+def _format_xticks(df: pd.DataFrame, ax: plt.Axes, timeframe: str = "1h") -> None:
+    """Show ticks cleanly for intraday ("06/10\\n12:00") or daily ("25/06\\n10日") timeframes."""
     n = len(df)
-    # target roughly one tick every 12 bars (= 12 h)
     step = max(1, n // 14)
     tick_positions = list(range(0, n, step))
     tick_labels = []
+    is_daily = str(timeframe).lower() == "1d"
     for i in tick_positions:
         ts = df.index[i]
-        date_str = ts.strftime("%m/%d")
-        hour_str = ts.strftime("%H:%M")
-        tick_labels.append(f"{date_str}\n{hour_str}")
+        if is_daily:
+            tick_labels.append(f"{ts.strftime('%y/%m')}\n{ts.strftime('%d')}")
+        else:
+            date_str = ts.strftime("%m/%d")
+            hour_str = ts.strftime("%H:%M")
+            tick_labels.append(f"{date_str}\n{hour_str}")
     ax.set_xticks(tick_positions)
     ax.set_xticklabels(tick_labels, fontsize=7.5, color=TEXT)
 
@@ -169,7 +172,9 @@ def generate_candlestick_chart(
         direction  = sig.get("direction", "buy")   # "buy"/"sell"
         is_buy     = direction == "buy"
 
-        if sig_color in (BREAKOUT_UP_COL, BREAKOUT_DN_COL):
+        if isinstance(sig_color, str) and sig_color.startswith("#") and len(sig_color) in (4, 7, 9):
+            color  = sig_color
+        elif sig_color in (BREAKOUT_UP_COL, BREAKOUT_DN_COL):
             color  = sig_color
         elif is_buy:
             color  = REVERSION_BUY_COL
@@ -233,7 +238,7 @@ def generate_candlestick_chart(
     ax.grid(axis="both", color=GRID, linestyle="--", linewidth=0.4, zorder=0)
 
     # X-axis ticks
-    _format_xticks(df, ax)
+    _format_xticks(df, ax, timeframe=timeframe)
 
     # Title (top-left, subtle)
     tf_upper = timeframe.upper()

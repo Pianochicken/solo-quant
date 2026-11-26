@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { getMarketData, getMarketOverview, MarketOverviewItem, SignalConfig } from '@/lib/api';
+import { getMarketData, getMarketOverview, MarketOverviewItem, SignalConfig, StrategyMode } from '@/lib/api';
 import AdvancedChart from '@/components/AdvancedChart';
 import SentimentPanel from '@/components/SentimentPanel';
 import { IndicatorsInfoModal } from '@/components/IndicatorsInfoModal';
@@ -12,16 +12,64 @@ import { RefreshCw, Zap, BarChart3, Clock, AlertTriangle, Info, Settings, Bell, 
 import { getPricePrecision } from '@/lib/utils';
 import Link from 'next/link';
 
-function formatSignalTime(timeSec: number) {
+function formatSignalTime(timeSec: number, isMacroCycle?: boolean) {
   const d = new Date(timeSec * 1000);
+  const y = d.getUTCFullYear();
   const m = String(d.getUTCMonth() + 1).padStart(2, '0');
   const day = String(d.getUTCDate()).padStart(2, '0');
+  if (isMacroCycle) {
+    return `${y}/${m}/${day}`;
+  }
   const h = String(d.getUTCHours()).padStart(2, '0');
   const min = String(d.getUTCMinutes()).padStart(2, '0');
   return `${m}/${day} ${h}:${min}`;
 }
 
 function getSignalBadge(sig: any) {
+  const cycleEvent = sig.cycle_event || '';
+  if (cycleEvent === 'BEAR_BOTTOM_V16') {
+    return (
+      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-950/80 border border-emerald-500/50 text-emerald-300 flex items-center gap-1 shadow-sm shrink-0">
+        🐻 熊市大底 ▲
+      </span>
+    );
+  }
+  if (cycleEvent === 'REGIONAL_BOTTOM_V16') {
+    return (
+      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-green-950/80 border border-green-500/50 text-green-300 flex items-center gap-1 shadow-sm shrink-0">
+        💎 回調大底 ▲
+      </span>
+    );
+  }
+  if (cycleEvent === 'STAGE2_IGNITION_V16') {
+    return (
+      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-sky-950/80 border border-sky-500/50 text-sky-300 flex items-center gap-1 shadow-sm shrink-0">
+        🚀 主升浪啟動 ▲
+      </span>
+    );
+  }
+  if (cycleEvent === 'EUPHORIA_TOP_V16') {
+    return (
+      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-950/80 border border-amber-500/50 text-amber-300 flex items-center gap-1 shadow-sm shrink-0">
+        🔥 過熱逃頂 ▼
+      </span>
+    );
+  }
+  if (cycleEvent === 'REGIME_BEAR_EXIT_V16') {
+    return (
+      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-red-950/80 border border-red-500/50 text-red-300 flex items-center gap-1 shadow-sm shrink-0">
+        🛡️ 轉熊防線 ▼
+      </span>
+    );
+  }
+  if (cycleEvent === 'BASE_INVALIDATION_V16') {
+    return (
+      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-rose-950/80 border border-rose-500/50 text-rose-300 flex items-center gap-1 shadow-sm shrink-0">
+        ⚠️ 結構止損 ▼
+      </span>
+    );
+  }
+
   const isBull = sig.direction === 'bullish';
   const text = sig.text || '';
   const isBreakout = sig.strategy_type === 'breakout' || text.includes('BREAKOUT') || text.includes('BREAKDOWN');
@@ -83,7 +131,9 @@ const TIMEFRAMES = [
 
 export default function Dashboard() {
   const [symbol, setSymbol] = useState('BTC/USDT');
+  const [strategyMode, setStrategyMode] = useState<StrategyMode>('legacy_v8');
   const [timeframe, setTimeframe] = useState('4h');
+  const lastLegacyTfRef = useRef('4h');
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [fetching, setFetching] = useState(false);
@@ -157,18 +207,20 @@ export default function Dashboard() {
   // Track if this is the initial load for the current timeframe
   const isFirstLoad = useRef(true);
 
-  // Clear old data when timeframe or config changes
+  // Clear old data when timeframe, config, or strategyMode changes
   useEffect(() => {
     setData(null);
     setLoading(true);
     setSignalPhase('loading');
     isFirstLoad.current = true;
-  }, [symbol, timeframe, signalConfig]);
+  }, [symbol, timeframe, signalConfig, strategyMode]);
 
   // Fetch Data Loop
   useEffect(() => {
     let isMounted = true;
     const controller = new AbortController();
+    const limit = strategyMode === 'macro_cycle' ? 1800 : 1000;
+    const pollIntervalMs = strategyMode === 'macro_cycle' ? 60000 : 15000;
 
     const fetchData = async () => {
       try {
@@ -178,7 +230,10 @@ export default function Dashboard() {
           setFetching(true);
         }
 
-        const market = await getMarketData(symbol, timeframe, 1000, signalConfig, { signal: controller.signal });
+        const market = await getMarketData(symbol, timeframe, limit, signalConfig, {
+          signal: controller.signal,
+          strategyMode,
+        });
         if (!isMounted) return;
 
         setData(market);
@@ -198,13 +253,37 @@ export default function Dashboard() {
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 15000);
+    const interval = setInterval(fetchData, pollIntervalMs);
     return () => {
       isMounted = false;
       controller.abort();
       clearInterval(interval);
     };
-  }, [symbol, timeframe, signalConfig]);
+  }, [symbol, timeframe, signalConfig, strategyMode]);
+
+  const handleSelectStrategyMode = (nextMode: StrategyMode) => {
+    if (nextMode === strategyMode) return;
+    if (nextMode === 'macro_cycle') {
+      lastLegacyTfRef.current = timeframe;
+      setStrategyMode('macro_cycle');
+      setTimeframe('1d');
+    } else {
+      setStrategyMode('legacy_v8');
+      setTimeframe(lastLegacyTfRef.current || '4h');
+    }
+  };
+
+  const handleSelectTimeframe = (nextTf: string) => {
+    if (strategyMode === 'macro_cycle') {
+      if (nextTf === '1d') return;
+      lastLegacyTfRef.current = nextTf;
+      setStrategyMode('legacy_v8');
+      setTimeframe(nextTf);
+    } else {
+      lastLegacyTfRef.current = nextTf;
+      setTimeframe(nextTf);
+    }
+  };
 
   const handleClearCache = async () => {
     try {
@@ -215,7 +294,8 @@ export default function Dashboard() {
       setData(null);
       setLoading(true);
       isFirstLoad.current = true;
-      const res = await getMarketData(symbol, timeframe, 1000, signalConfig);
+      const limit = strategyMode === 'macro_cycle' ? 1800 : 1000;
+      const res = await getMarketData(symbol, timeframe, limit, signalConfig, { strategyMode });
       setData(res);
       setSignalPhase('ready');
       setLastUpdated(new Date());
@@ -246,13 +326,47 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="flex items-center gap-6">
+        <div className="flex items-center gap-4 flex-wrap justify-end">
+          {/* Strategy Mode Segmented Switcher */}
+          <div
+            role="group"
+            aria-label="策略模式切換"
+            className="flex bg-zinc-900 rounded-lg p-1 border border-zinc-800 gap-1"
+          >
+            <button
+              type="button"
+              aria-pressed={strategyMode === 'legacy_v8'}
+              onClick={() => handleSelectStrategyMode('legacy_v8')}
+              className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                strategyMode === 'legacy_v8'
+                  ? 'bg-purple-900/40 text-purple-300 border border-purple-500/40'
+                  : 'text-zinc-500 hover:text-zinc-300 border border-transparent'
+              }`}
+              title="多指標共振短波段模式 (15m / 1h / 4h / 1d)"
+            >
+              ⚡ v8 短波段
+            </button>
+            <button
+              type="button"
+              aria-pressed={strategyMode === 'macro_cycle'}
+              onClick={() => handleSelectStrategyMode('macro_cycle')}
+              className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                strategyMode === 'macro_cycle'
+                  ? 'bg-sky-900/40 text-sky-300 border border-sky-500/40'
+                  : 'text-zinc-500 hover:text-zinc-300 border border-transparent'
+              }`}
+              title="Phase 1.6 實證通過：防熊市假突破 + 抱完主升浪之 1D 中長線大週期模型"
+            >
+              🌊 大週期 (1D)
+            </button>
+          </div>
+
           {/* Timeframe Selector */}
           <div className="flex bg-zinc-900 rounded-lg p-1 border border-zinc-800">
             {TIMEFRAMES.map(tf => (
               <button
                 key={tf.value}
-                onClick={() => setTimeframe(tf.value)}
+                onClick={() => handleSelectTimeframe(tf.value)}
                 className={`px-3 py-1 text-xs font-medium rounded transition-colors ${timeframe === tf.value ? "bg-purple-900/30 text-purple-400" : "text-zinc-500 hover:text-zinc-300"
                   }`}
               >
@@ -528,6 +642,10 @@ export default function Dashboard() {
                 <span className="text-zinc-600">•</span>
                 <span className="text-zinc-300 font-semibold">{timeframe}</span>
                 <span className="text-zinc-600">•</span>
+                <span className="text-sky-400 font-semibold">
+                  {strategyMode === 'macro_cycle' ? 'Macro Cycle v1.6' : 'v8 Confluence'}
+                </span>
+                <span className="text-zinc-600">•</span>
                 <span className="text-emerald-400 flex items-center gap-1.5">
                   <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
                   即時運算中
@@ -591,6 +709,7 @@ export default function Dashboard() {
               <AdvancedChart
                 symbol={symbol}
                 timeframe={timeframe}
+                strategyMode={strategyMode}
                 data={data?.data || null}
                 indicators={data?.indicators || null}
                 gridLines={[]}
@@ -604,6 +723,7 @@ export default function Dashboard() {
                 indicators={data?.indicators || null} 
                 timeframe={timeframe} 
                 enableProtection={signalConfig.enableProtection}
+                strategyMode={strategyMode}
               />
 
               {/* 2. Recent Signals Radar */}
@@ -616,7 +736,7 @@ export default function Dashboard() {
                     </span>
                     <h3 className="text-zinc-200 text-xs font-bold uppercase tracking-wider flex items-center gap-1.5">
                       <Radio className="w-3.5 h-3.5 text-purple-400" />
-                      Recent Signals (近期觸發訊號)
+                      {strategyMode === 'macro_cycle' ? '大週期進出場紀錄 (1D)' : 'Recent Signals (近期觸發訊號)'}
                     </h3>
                   </div>
                   <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-zinc-800/80 text-zinc-400 border border-zinc-700/50">
@@ -631,7 +751,7 @@ export default function Dashboard() {
                 ) : (
                   <div className="flex flex-col gap-2 max-h-[480px] overflow-y-auto pr-1 custom-scrollbar">
                     {recentSignals.map((sig: any, idx: number) => {
-                      const closePrice = priceByTime.get(sig.time);
+                      const closePrice = sig.price || priceByTime.get(sig.time);
                       const pricePrecision = getPricePrecision(closePrice || 0, symbol).precision;
 
                       return (
@@ -643,7 +763,7 @@ export default function Dashboard() {
                             <div className="flex items-center gap-2">
                               {getSignalBadge(sig)}
                               <span className="font-mono text-zinc-400 text-[11px]">
-                                {formatSignalTime(sig.time)}
+                                {formatSignalTime(sig.time, strategyMode === 'macro_cycle')}
                               </span>
                             </div>
                             <div className="font-mono font-bold text-zinc-200">

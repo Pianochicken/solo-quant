@@ -13,7 +13,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-from api.core.notifier import format_signal_message, send_signal_with_chart
+from api.core.notifier import format_macro_cycle_message, format_signal_message, send_signal_with_chart
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,9 @@ _monitored_symbols: List[str] = list(DEFAULT_SYMBOLS)
 _enable_mtf_filter: bool = True
 _enable_protection: bool = True  # Full Macro default
 _allow_intraday_prealert: bool = False  # Closed-candle confirmation default (anti-repainting)
+_enable_macro_cycle_alerts: bool = True
 _notified_signal_keys: Dict[str, set] = {}
+_notified_macro_cycle_keys: Dict[str, set] = {}
 _recent_directional_signals: List[Dict] = []
 
 
@@ -44,11 +46,13 @@ def get_notification_config() -> dict:
         "enabled": _notifications_enabled,
         "monitored_symbols": _monitored_symbols,
         "scan_schedule": "every hour at :00:25, :15:25, :30:25, :45:25 (4h scanned at :00:25 on 4-hour multiples)",
+        "macro_cycle_schedule": "daily at 00:05 UTC (08:05 UTC+8) after 1D candle close",
         "timeframe": DEFAULT_TIMEFRAME,
         "monitored_timeframes": MONITORED_TIMEFRAMES,
         "enable_mtf_filter": _enable_mtf_filter,
         "enable_protection": _enable_protection,
         "allow_intraday_prealert": _allow_intraday_prealert,
+        "enable_macro_cycle_alerts": _enable_macro_cycle_alerts,
     }
 
 
@@ -58,9 +62,10 @@ def update_notification_config(
     enable_mtf_filter: Optional[bool] = None,
     enable_protection: Optional[bool] = None,
     allow_intraday_prealert: Optional[bool] = None,
+    enable_macro_cycle_alerts: Optional[bool] = None,
 ) -> dict:
     """Update notification settings."""
-    global _notifications_enabled, _monitored_symbols, _enable_mtf_filter, _enable_protection, _allow_intraday_prealert
+    global _notifications_enabled, _monitored_symbols, _enable_mtf_filter, _enable_protection, _allow_intraday_prealert, _enable_macro_cycle_alerts
 
     if enabled is not None:
         _notifications_enabled = enabled
@@ -72,10 +77,13 @@ def update_notification_config(
         _enable_protection = enable_protection
     if allow_intraday_prealert is not None:
         _allow_intraday_prealert = allow_intraday_prealert
+    if enable_macro_cycle_alerts is not None:
+        _enable_macro_cycle_alerts = enable_macro_cycle_alerts
 
     logger.info(
         f"Notification config updated: enabled={_notifications_enabled}, symbols={_monitored_symbols}, "
-        f"mtf={_enable_mtf_filter}, protection={_enable_protection}, prealert={_allow_intraday_prealert}"
+        f"mtf={_enable_mtf_filter}, protection={_enable_protection}, prealert={_allow_intraday_prealert}, "
+        f"macro_cycle={_enable_macro_cycle_alerts}"
     )
     return get_notification_config()
 
@@ -321,3 +329,101 @@ async def scan_and_notify(
                 _last_notified[c_key] = max(times_sent)
 
     logger.info(f"=== Signal scan completed for {len(symbols_to_scan)} symbols across {active_tfs} ===")
+
+
+async def scan_macro_cycle_and_notify(
+    market_data_fn: Optional[Callable[..., Dict[str, Any]]] = None,
+):
+    """
+    Daily 1D Macro Cycle scan (scheduled at 00:05 UTC / 08:05 UTC+8).
+    Enforces strict closed-candle confirmation (never alerts on an unclosed 1D bar).
+    """
+    if not _notifications_enabled or not _enable_macro_cycle_alerts:
+        logger.info("Macro cycle notifications disabled, skipping daily 1D scan.")
+        return
+
+    logger.info(f"=== Macro Cycle 1D scan starting for {len(_monitored_symbols)} symbols ===")
+    if market_data_fn is None:
+        from api.main import get_market_data
+        market_data_fn = get_market_data
+
+    symbols_to_scan = sorted(_monitored_symbols, key=lambda s: 0 if "BTC" in s.upper() else 1)
+    recency_window_sec = 172800  # Last 2 days
+
+    for idx, symbol in enumerate(symbols_to_scan):
+        try:
+            api_symbol = symbol.replace("/", "-")
+            cache_key = f"{symbol}:1d:macro_cycle"
+
+            result = await asyncio.to_thread(
+                market_data_fn,
+                symbol=api_symbol,
+                timeframe="1d",
+                limit=1800,
+                strategy_mode="macro_cycle",
+                include_orderbook=False,
+                include_breakdown=False,
+                allow_live_btc_cache=False,
+            )
+
+            indicators = result.get("indicators", {})
+            markers = indicators.get("lsur_markers", [])
+            price_data = result.get("data", {}).get("price", [])
+            macro_state = indicators.get("macro_cycle_state")
+
+            if not markers or not price_data:
+                logger.info(f"  {symbol} (1d macro_cycle): no markers or price data found, skipping.")
+                continue
+
+            latest_candle_time = int(price_data[-1]["time"])
+            now_sec = time.time()
+            is_last_unclosed = (now_sec < latest_candle_time + 86400)
+            recent_markers = [m for m in markers if int(m["time"]) >= (now_sec - recency_window_sec)]
+
+            if not recent_markers:
+                logger.info(f"  {symbol} (1d macro_cycle): {len(markers)} total markers, 0 within 48h window.")
+                continue
+
+            if cache_key not in _notified_macro_cycle_keys:
+                _notified_macro_cycle_keys[cache_key] = set()
+            notified_set = _notified_macro_cycle_keys[cache_key]
+
+            price_by_time = {int(p["time"]): float(p["close"]) for p in price_data}
+
+            for sig in recent_markers:
+                sig_t = int(sig["time"])
+                if sig_t == latest_candle_time and is_last_unclosed:
+                    continue
+
+                sig_key = (sig_t, sig.get("cycle_event", sig.get("direction", "")))
+                if sig_key in notified_set:
+                    continue
+
+                trigger_price = float(sig.get("price") or price_by_time.get(sig_t, 0.0))
+                message = format_macro_cycle_message(
+                    sig,
+                    symbol,
+                    trigger_price,
+                    macro_state=macro_state,
+                )
+                sent_ok = await send_signal_with_chart(
+                    text=message,
+                    price_data=price_data,
+                    all_markers=markers,
+                    symbol=symbol,
+                    timeframe="1d",
+                )
+                if sent_ok:
+                    logger.info(f"  → Sent Macro Cycle alert for {symbol} (1d): {sig.get('cycle_event')} @ {sig_t}")
+                    notified_set.add(sig_key)
+                else:
+                    logger.warning(f"  ❌ Failed Macro Cycle Telegram alert for {symbol} (1d) @ {sig_t}.")
+
+        except Exception as e:
+            logger.error(f"Error scanning Macro Cycle for {symbol} (1d): {e}", exc_info=True)
+            continue
+
+        if idx < len(symbols_to_scan) - 1:
+            await asyncio.sleep(2)
+
+    logger.info("=== Macro Cycle 1D scan completed ===")

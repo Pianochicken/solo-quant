@@ -101,7 +101,7 @@ export function NotificationSettingsModal({ isOpen, onClose }: NotificationSetti
                             <div className="flex items-center justify-between">
                                 <div>
                                     <h3 className="text-sm font-medium text-zinc-200">Enable Telegram Alerts</h3>
-                                    <p className="text-xs text-zinc-500 mt-1">Receive signals directly via Telegram.</p>
+                                    <p className="text-xs text-zinc-500 mt-1">Receive v8 &amp; 1D Macro Cycle signals via Telegram.</p>
                                 </div>
                                 <label className="relative inline-flex items-center cursor-pointer">
                                     <input 
@@ -111,6 +111,26 @@ export function NotificationSettingsModal({ isOpen, onClose }: NotificationSetti
                                         onChange={(e) => setConfig({ ...config, enabled: e.target.checked })}
                                     />
                                     <div className="w-11 h-6 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                                </label>
+                            </div>
+
+                            <div className="pt-4 border-t border-zinc-800 flex items-center justify-between gap-4">
+                                <div>
+                                    <h3 className="text-sm font-medium text-sky-300 flex items-center gap-1.5">
+                                        🌊 每日 1D 大週期拐點推播 (Macro Cycle 1D)
+                                    </h3>
+                                    <p className="text-xs text-zinc-500 mt-1">
+                                        每日日線收盤後（00:05 UTC / 08:05 UTC+8）自動檢查 Phase 1.6 大底、主升啟動與逃頂／轉熊防禦訊號。
+                                    </p>
+                                </div>
+                                <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                                    <input
+                                        type="checkbox"
+                                        className="sr-only peer"
+                                        checked={config.enable_macro_cycle_alerts ?? true}
+                                        onChange={(e) => setConfig({ ...config, enable_macro_cycle_alerts: e.target.checked })}
+                                    />
+                                    <div className="w-11 h-6 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-sky-600"></div>
                                 </label>
                             </div>
 
@@ -129,8 +149,9 @@ export function NotificationSettingsModal({ isOpen, onClose }: NotificationSetti
                                         </label>
                                     ))}
                                 </div>
-                                <p className="text-xs text-zinc-500 mt-3">
-                                    The signal scanner runs every 15 minutes (:00, :15, :30, :45) for selected symbols.
+                                <p className="text-xs text-zinc-500 mt-3 leading-relaxed">
+                                    • <strong>v8 短波段 (1h / 4h)</strong>：每小時 :00, :15, :30, :45 掃描（嚴守收盤確認）。<br />
+                                    • <strong>Macro Cycle (1D 大週期)</strong>：每日 00:05 UTC（08:05 UTC+8）日線收盤後掃描。
                                 </p>
                             </div>
 

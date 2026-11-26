@@ -4,10 +4,12 @@ import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickSeries, Histo
 import { InfoTooltip } from './InfoTooltip';
 import { getThresholds } from '@/lib/thresholds';
 import { getPricePrecision } from '@/lib/utils';
+import { MacroCycleState, MacroCycleZonePoint, StrategyMode } from '@/lib/api';
 
 interface AdvancedChartProps {
     symbol: string;
     timeframe?: string;
+    strategyMode?: StrategyMode;
     data: {
         price: any[];
         funding: any[];
@@ -21,9 +23,18 @@ interface AdvancedChartProps {
         top_ls_z_score?: number;
         top_ls_history?: { time: number; value: number }[];
         top_ls_z_history?: { time: number; value: number; signal?: string | null }[];
-        lsur_markers?: { time: number; position: string; color: string; shape: string; text: string }[];
+        lsur_markers?: {
+            time: number;
+            position: string;
+            color: string;
+            shape: string;
+            text: string;
+            size?: number;
+            short_label?: string;
+        }[];
         cvd_history: { time: number; value: number }[];
         open_interest: { time: number; value: number }[];
+        ema_20?: { time: number; value: number }[];
         ema_fast?: { time: number; value: number }[];
         ema_slow?: { time: number; value: number }[];
         trend_state?: 'uptrend' | 'downtrend' | 'neutral';
@@ -33,11 +44,13 @@ interface AdvancedChartProps {
         funding_history?: { time: number; value: number }[];
         market_regime_history?: { time: number; regime: string; direction: string }[];
         donchian_channel?: { time: number; upper: number; lower: number; middle?: number }[];
+        macro_cycle_zones?: MacroCycleZonePoint[];
+        macro_cycle_state?: MacroCycleState | null;
     } | null;
     gridLines?: number[];
 }
 
-function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines = [] }: AdvancedChartProps) {
+function AdvancedChart({ symbol, timeframe = '1h', strategyMode = 'legacy_v8', data, indicators, gridLines = [] }: AdvancedChartProps) {
     const T = getThresholds(timeframe);
     const isSyncingRef = useRef(false);
     // Container Refs
@@ -70,10 +83,13 @@ function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines =
     // Overlay Refs & Toggles
     const [showDonchian, setShowDonchian] = React.useState(false);
     const [showPoc, setShowPoc] = React.useState(false);
+    const [showCycleZones, setShowCycleZones] = React.useState(true);
     const [showWhaleRatio, setShowWhaleRatio] = React.useState(true);
     const [showRetailRatio, setShowRetailRatio] = React.useState(true);
     const gridLinesRef = useRef<any[]>([]);
     const markersPluginRef = useRef<any>(null);
+    const cycleZoneSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+    const ema20SeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
     const emaFastSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
     const emaSlowSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
     const donchianUpperSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
@@ -83,6 +99,8 @@ function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines =
     const lsurSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
 
     // Legend State
+    const [mayerLegendValue, setMayerLegendValue] = React.useState<number | null>(null);
+    const [cycleZoneLegend, setCycleZoneLegend] = React.useState<string | null>(null);
     const [rsiLegendValue, setRsiLegendValue] = React.useState<number | null>(null);
     const [cvdLegendValue, setCvdLegendValue] = React.useState<number | null>(null);
     const [oiLegendValue, setOiLegendValue] = React.useState<number | null>(null);
@@ -129,6 +147,18 @@ function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines =
         const priceData = data?.price || [];
         const currentPrice = priceData.length ? priceData[priceData.length - 1].close : 0;
         const { precision, minMove } = getPricePrecision(currentPrice, symbol);
+
+        // Background Macro Cycle Left-Side Risk Zones (added before Candlesticks so bands render behind)
+        cycleZoneSeriesRef.current = chart.addSeries(HistogramSeries, {
+            priceScaleId: 'cycle-zones',
+            priceLineVisible: false,
+            lastValueVisible: false,
+            base: 0,
+        });
+        chart.priceScale('cycle-zones').applyOptions({
+            visible: false,
+            scaleMargins: { top: 0, bottom: 0 },
+        });
         
         mainSeriesRef.current = chart.addSeries(CandlestickSeries, {
             upColor: '#26a69a', downColor: '#ef5350', borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350',
@@ -136,6 +166,13 @@ function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines =
         });
 
         // EMA Lines on Price Chart
+        ema20SeriesRef.current = chart.addSeries(LineSeries, {
+            color: '#22d3ee',  // Cyan for EMA20 (macro_cycle mode)
+            lineWidth: 1,
+            crosshairMarkerVisible: false,
+            priceLineVisible: false,
+            lastValueVisible: false,
+        });
         emaFastSeriesRef.current = chart.addSeries(LineSeries, {
             color: '#f97316',  // Orange for EMA50
             lineWidth: 1,
@@ -363,7 +400,7 @@ function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines =
         // Update Price
         mainSeriesRef.current.setData(data.price);
 
-        // Update LSUR Z-Score Markers on Price Chart
+        // Update LSUR Z-Score / Macro Cycle Markers on Price Chart
         if (indicators?.lsur_markers && indicators.lsur_markers.length > 0) {
             const markers = indicators.lsur_markers
                 .filter(m => m.time && m.position && m.color && (m.shape === 'arrowUp' || m.shape === 'arrowDown'))
@@ -373,8 +410,11 @@ function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines =
                         position: m.position as 'aboveBar' | 'belowBar',
                         color: m.color,
                         shape: m.shape as 'arrowDown' | 'arrowUp',
-                        size: 1, // explicit size
+                        size: strategyMode === 'macro_cycle' ? (m.size ?? 2) : 1,
                     };
+                    if (strategyMode === 'macro_cycle' && m.short_label) {
+                        markerData.text = m.short_label;
+                    }
                     return markerData;
                 })
                 .sort((a, b) => (a.time as number) - (b.time as number));
@@ -389,7 +429,38 @@ function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines =
             markersPluginRef.current.setMarkers([]);
         }
 
+        // Update Macro Cycle Background Risk Zones
+        if (cycleZoneSeriesRef.current) {
+            if (strategyMode === 'macro_cycle' && showCycleZones && indicators?.macro_cycle_zones && indicators.macro_cycle_zones.length > 0) {
+                const zoneColorMap: Record<string, string> = {
+                    euphoria_top: 'rgba(245, 158, 11, 0.16)',
+                    bear_value: 'rgba(16, 185, 129, 0.15)',
+                    regional_value: 'rgba(34, 197, 94, 0.12)',
+                    bear_regime: 'rgba(239, 68, 68, 0.10)',
+                };
+                cycleZoneSeriesRef.current.setData(
+                    indicators.macro_cycle_zones.map(z => {
+                        const col = zoneColorMap[z.zone];
+                        return col
+                            ? { time: z.time as Time, value: 1, color: col }
+                            : { time: z.time as Time, value: 0, color: 'rgba(0, 0, 0, 0)' };
+                    })
+                );
+            } else {
+                cycleZoneSeriesRef.current.setData([]);
+            }
+        }
+
         // Update EMA Lines
+        if (ema20SeriesRef.current) {
+            if (strategyMode === 'macro_cycle' && indicators?.ema_20 && indicators.ema_20.length > 0) {
+                ema20SeriesRef.current.setData(
+                    indicators.ema_20.map(item => ({ time: item.time as Time, value: item.value }))
+                );
+            } else {
+                ema20SeriesRef.current.setData([]);
+            }
+        }
         if (emaFastSeriesRef.current && indicators?.ema_fast) {
             emaFastSeriesRef.current.setData(
                 indicators.ema_fast.map(item => ({ time: item.time as Time, value: item.value }))
@@ -647,6 +718,11 @@ function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines =
             indicators.lsur_markers.forEach(m => markersMap.set(m.time, m));
         }
 
+        const zoneMap = new Map<number, MacroCycleZonePoint>();
+        if (indicators?.macro_cycle_zones) {
+            indicators.macro_cycle_zones.forEach(z => zoneMap.set(z.time, z));
+        }
+
         const chartsArray = [
             { api: chartRef.current, series: mainSeriesRef.current, map: priceMap },
             { api: rsiChartRef.current, series: rsiSeriesRef.current, map: rsiMap },
@@ -682,6 +758,8 @@ function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines =
                         c.api.clearCrosshairPosition();
                     }
                 });
+                setMayerLegendValue(null);
+                setCycleZoneLegend(null);
                 setRsiLegendValue(null);
                 setCvdLegendValue(null);
                 setOiLegendValue(null);
@@ -694,8 +772,11 @@ function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines =
                 return;
             }
 
-            // Update Positioning Overlay Legends on hover (O(1) Map lookups)
+            // Update Positioning Overlay & Macro Zone Legends on hover (O(1) Map lookups)
             const tHover = param.time as number;
+            const zonePt = zoneMap.get(tHover);
+            setMayerLegendValue(typeof zonePt?.mayer === 'number' ? zonePt.mayer : null);
+            setCycleZoneLegend(zonePt?.zone && zonePt.zone !== 'neutral' ? zonePt.zone : null);
             const topLsPt = topLsMap.get(tHover);
             const lsurPt = lsurMap.get(tHover);
             const lsurZPt = lsurZMap.get(tHover);
@@ -769,7 +850,7 @@ function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines =
             unsubscribeHandlers.forEach(unsub => unsub());
         };
 
-    }, [data, indicators, gridLines, showDonchian, showPoc, showWhaleRatio, showRetailRatio, timeframe]);
+    }, [data, indicators, gridLines, showDonchian, showPoc, showCycleZones, showWhaleRatio, showRetailRatio, timeframe, strategyMode]);
 
     return (
         <div className="w-full flex flex-col gap-1 bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden shadow-lg p-1">
@@ -792,10 +873,48 @@ function AdvancedChart({ symbol, timeframe = '1h', data, indicators, gridLines =
                     </div>
                 )}
 
-                <div className="absolute top-2 left-2 z-10 bg-black/50 px-2 py-1 rounded text-xs text-zinc-400 flex items-center gap-3">
-                    <span className="flex items-center">Price<InfoTooltip text="K線圖：顯示價格走勢。綠色為上漲，紅色為下跌。箭頭標記為多指標匯合信號。橙色線 = EMA50，紫色線 = EMA200" /></span>
+                <div className="absolute top-2 left-2 z-10 bg-black/50 px-2 py-1 rounded text-xs text-zinc-400 flex flex-wrap items-center gap-3">
+                    <span className="flex items-center">Price<InfoTooltip text={strategyMode === 'macro_cycle' ? "1D 大週期 K 線圖：青色線 = EMA20，橙色線 = EMA50，紫色線 = EMA200。背景色帶為左側極端低估／過熱警戒區，箭頭為大週期買賣點。" : "K線圖：顯示價格走勢。綠色為上漲，紅色為下跌。箭頭標記為多指標匯合信號。橙色線 = EMA50，紫色線 = EMA200"} /></span>
+                    {strategyMode === 'macro_cycle' && (
+                        <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-cyan-400 inline-block"></span><span className="text-[10px]">EMA20</span></span>
+                    )}
                     <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-orange-500 inline-block"></span><span className="text-[10px]">EMA50</span></span>
                     <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-purple-500 inline-block"></span><span className="text-[10px]">EMA200</span></span>
+
+                    {strategyMode === 'macro_cycle' && (
+                        <button
+                            type="button"
+                            onClick={() => setShowCycleZones(prev => !prev)}
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-medium transition-colors border ${
+                                showCycleZones
+                                    ? 'bg-emerald-950/80 text-emerald-300 border-emerald-500/50 shadow-sm'
+                                    : 'bg-zinc-800/80 text-zinc-400 border-zinc-700 hover:text-zinc-200'
+                            }`}
+                            title="開關左側估值／過熱背景色帶（綠=低估價值區・橘=過熱逃頂區・紅=空頭防禦區）"
+                        >
+                            {showCycleZones ? '✓ 左側警戒帶' : '左側警戒帶'}
+                        </button>
+                    )}
+
+                    {strategyMode === 'macro_cycle' && (typeof mayerLegendValue === 'number' || typeof indicators?.macro_cycle_state?.mayer_multiple === 'number') && (() => {
+                        const mVal = mayerLegendValue !== null ? mayerLegendValue : indicators?.macro_cycle_state?.mayer_multiple;
+                        const zLabelMap: Record<string, string> = {
+                            bear_value: '🐻 熊市低估區',
+                            regional_value: '💎 回調價值區',
+                            euphoria_top: '🔥 高檔過熱區',
+                            bear_regime: '🛡️ 空頭防禦區',
+                        };
+                        return (
+                            <span className="flex items-center gap-1.5 text-[10px] font-mono text-sky-300">
+                                <span>Mayer {typeof mVal === 'number' ? `${mVal.toFixed(2)}x` : '—'}</span>
+                                {cycleZoneLegend && zLabelMap[cycleZoneLegend] && (
+                                    <span className="px-1.5 py-0.5 rounded bg-zinc-900/90 border border-zinc-700 text-zinc-200">
+                                        {zLabelMap[cycleZoneLegend]}
+                                    </span>
+                                )}
+                            </span>
+                        );
+                    })()}
 
                     {/* Donchian & Volume Profile POC Overlays */}
                     <button

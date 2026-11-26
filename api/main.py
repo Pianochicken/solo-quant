@@ -34,7 +34,7 @@ _overview_lock = threading.Lock()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan: start/stop the APScheduler for periodic signal scanning and market overview pre-warming."""
-    from api.core.signal_scanner import scan_and_notify
+    from api.core.signal_scanner import scan_and_notify, scan_macro_cycle_and_notify
 
     # 1. Initialize DB tables with retry logic (up to 5 attempts)
     for attempt in range(1, 6):
@@ -61,6 +61,16 @@ async def lifespan(app: FastAPI):
         max_instances=1,
         coalesce=True,
         misfire_grace_time=30,
+    )
+    scheduler.add_job(
+        scan_macro_cycle_and_notify,
+        trigger=CronTrigger(hour=0, minute=5, second=0, timezone="UTC"),
+        id="macro_cycle_scanner",
+        name="Daily 1D Macro Cycle Scanner",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=300,
     )
     scheduler.add_job(
         _background_refresh_market_overview,
@@ -137,6 +147,7 @@ class NotificationConfigUpdate(PydanticBaseModel):
     enable_mtf_filter: Optional[bool] = None
     enable_protection: Optional[bool] = None
     allow_intraday_prealert: Optional[bool] = None
+    enable_macro_cycle_alerts: Optional[bool] = None
 
 
 @app.get("/notifications/config")
@@ -147,13 +158,14 @@ def get_notif_config():
 
 @app.post("/notifications/config")
 def update_notif_config(body: NotificationConfigUpdate):
-    """Update notification settings (toggle on/off, select symbols, mtf, protection, prealert)."""
+    """Update notification settings (toggle on/off, select symbols, mtf, protection, prealert, macro_cycle)."""
     return update_notification_config(
         enabled=body.enabled,
         monitored_symbols=body.monitored_symbols,
         enable_mtf_filter=body.enable_mtf_filter,
         enable_protection=body.enable_protection,
         allow_intraday_prealert=body.allow_intraday_prealert,
+        enable_macro_cycle_alerts=body.enable_macro_cycle_alerts,
     )
 
 
@@ -175,7 +187,16 @@ async def trigger_scan_now():
     return {"status": "success", "message": "Manual scan completed."}
 
 
+@app.post("/notifications/scan-macro-now")
+async def trigger_macro_scan_now():
+    """Manually trigger the daily 1D Macro Cycle scan."""
+    from api.core.signal_scanner import scan_macro_cycle_and_notify
+    await scan_macro_cycle_and_notify()
+    return {"status": "success", "message": "Manual macro cycle scan completed."}
+
+
 from api.core.indicators import IndicatorEngine
+from api.core.macro_cycle import analyze_macro_cycle
 
 @app.get("/market/{symbol}")
 def get_market_data(
@@ -194,6 +215,7 @@ def get_market_data(
     include_breakdown: bool = True,
     allow_live_btc_cache: bool = True,
     lsur_source: str = "lsur",
+    strategy_mode: str = "legacy_v8",
 ):
     """
     Get generic market data (Price + Funding + Sentiment).
@@ -214,6 +236,7 @@ def get_market_data(
         include_breakdown=include_breakdown,
         allow_live_btc_cache=allow_live_btc_cache,
         lsur_source=lsur_source,
+        strategy_mode=strategy_mode,
     )
 
 
@@ -234,8 +257,11 @@ def _get_market_data_impl(
     include_breakdown: bool = True,
     allow_live_btc_cache: bool = True,
     lsur_source: str = "lsur",
+    strategy_mode: str = "legacy_v8",
 ):
     global _btc_macro_cache
+    if strategy_mode not in ("legacy_v8", "macro_cycle"):
+        raise HTTPException(status_code=400, detail=f"Invalid strategy_mode: {strategy_mode}")
     # Fix symbol format
     formatted_symbol = symbol.replace('-', '/')
     
@@ -263,8 +289,8 @@ def _get_market_data_impl(
         
         # 1. Fetch Basic Data and Indicator Data Concurrently
         import concurrent.futures
-        fetch_limit = limit if limit <= 100 else max(limit, 1000)
-        daily_limit = limit if limit <= 100 else max(limit, 1200)
+        fetch_limit = min(limit, 1500) if limit > 1500 else (limit if limit <= 100 else max(limit, 1000))
+        daily_limit = min(limit, 1500) if limit > 1500 else (limit if limit <= 100 else max(limit, 1200))
         with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
             future_data = pool.submit(fetcher.fetch_market_data, formatted_symbol, timeframe, limit)
             future_ob = pool.submit(fetcher.fetch_order_book_depth, formatted_symbol, limit=400) if include_orderbook else None
@@ -283,7 +309,7 @@ def _get_market_data_impl(
             future_breakdown = pool.submit(fetcher.get_exchange_breakdown, formatted_symbol) if include_breakdown else None
             
             # Layer 3 MTF: fetch 4h data concurrently only when needed
-            htf_needs_fetch = enable_mtf_filter and timeframe not in ('4h', '1d')
+            htf_needs_fetch = (strategy_mode != "macro_cycle") and enable_mtf_filter and timeframe not in ('4h', '1d')
             htf_limit = max(1000, limit // 4 + 250) if timeframe == '1h' else max(1000, limit)
             htf_taker_limit = max(1000, limit + 500)
             future_htf_price = pool.submit(fetcher.fetch_market_data, formatted_symbol, '4h', htf_limit) if htf_needs_fetch else None
@@ -549,7 +575,7 @@ def _get_market_data_impl(
         # Resolve effective BTC macro regime & causal per-bar BTC macro history for altcoins
         effective_btc_macro = btc_macro_regime
         effective_btc_history = btc_macro_history
-        if price_data and 'BTC' not in formatted_symbol.upper():
+        if strategy_mode != "macro_cycle" and price_data and 'BTC' not in formatted_symbol.upper():
             if effective_btc_history is None and effective_btc_macro is None:
                 try:
                     btc_res = _get_market_data_impl(
@@ -586,34 +612,67 @@ def _get_market_data_impl(
         # Select LSUR Z-score source ('lsur' retail global ratio vs 'top_ls' Binance top trader position ratio)
         active_z_aligned = top_ls_z_aligned if (lsur_source == 'top_ls' and top_ls_z_aligned) else lsur_z_aligned
 
-        # 6. Multi-Indicator Confluence Signals v8
-        # Timeframe-adaptive thresholds, trend filter, per-bar rolling OI percentile, causal BTC macro history
-        parsed_allowed_types = [t.strip().lower() for t in signal_types.split(',')] if signal_types else None
-        confluence_markers, market_regime = IndicatorEngine.calculate_confluence_signals(
+        macro_cycle_state = None
+        macro_cycle_zones = []
+        ema_20 = []
+
+        # 6 & 9. Signal Engine Branching + Market Regime Detection History
+        market_regime_history = IndicatorEngine.calculate_market_regime_history(
             price_data=price_data,
-            lsur_z_aligned=active_z_aligned,
-            cvd_aligned=cvd_aligned,
-            oi_percentile=oi_percentile,
-            funding_aligned=funding_aligned,
-            rsi_aligned=rsi_history,
-            ema_fast_aligned=ema_trend['ema_fast'],
-            ema_slow_aligned=ema_trend['ema_slow'],
-            bb_pctb_aligned=bb_pctb,
-            donchian_aligned=donchian,
-            macd_aligned=macd_history,
-            timeframe=timeframe,
-            oi_aligned=open_interest,
-            ranging_threshold=ranging_threshold,
-            trending_threshold=trending_threshold,
-            enable_protection=enable_protection,
-            symbol=formatted_symbol,
-            use_dynamic_profiles=use_dynamic_profiles,
-            higher_tf_regime_history=htf_regime_history,  # Layer 3 MTF (None if disabled)
-            btc_macro_regime=effective_btc_macro,         # Layer 4 single-bar fallback
-            min_score=min_score,
-            allowed_types=parsed_allowed_types,
-            btc_macro_history=effective_btc_history,      # Layer 4 causal per-bar BTC macro history
+            cvd_aligned=cvd_aligned
         )
+
+        if strategy_mode == "macro_cycle":
+            macro_res = analyze_macro_cycle(
+                symbol=formatted_symbol,
+                price_data=price_data,
+                timeframe=timeframe,
+                oi_aligned=open_interest,
+                funding_settlements=data.get("funding_settlements") or [],
+                funding_aligned=funding_aligned,
+                lsur_z_aligned=lsur_z_aligned,
+            )
+            confluence_markers = macro_res["markers"]
+            macro_cycle_state = macro_res["macro_cycle_state"]
+            macro_cycle_zones = macro_res["macro_cycle_zones"]
+            ema_20 = macro_res["ema_20"]
+            last_reg = market_regime_history[-1] if market_regime_history else {}
+            market_regime = {
+                "regime": last_reg.get("regime", "ranging"),
+                "direction": last_reg.get("direction", "neutral"),
+                "adx": float(last_reg.get("adx", 0.0) or 0.0),
+                "bb_width_ratio": float(last_reg.get("bb_width_ratio", 0.0) or 0.0),
+                "cvd_consistency": float(last_reg.get("cvd_consistency", 0.0) or 0.0),
+                "no_short": False,
+                "no_long": False,
+            }
+        else:
+            parsed_allowed_types = [t.strip().lower() for t in signal_types.split(',')] if signal_types else None
+            confluence_markers, market_regime = IndicatorEngine.calculate_confluence_signals(
+                price_data=price_data,
+                lsur_z_aligned=active_z_aligned,
+                cvd_aligned=cvd_aligned,
+                oi_percentile=oi_percentile,
+                funding_aligned=funding_aligned,
+                rsi_aligned=rsi_history,
+                ema_fast_aligned=ema_trend['ema_fast'],
+                ema_slow_aligned=ema_trend['ema_slow'],
+                bb_pctb_aligned=bb_pctb,
+                donchian_aligned=donchian,
+                macd_aligned=macd_history,
+                timeframe=timeframe,
+                oi_aligned=open_interest,
+                ranging_threshold=ranging_threshold,
+                trending_threshold=trending_threshold,
+                enable_protection=enable_protection,
+                symbol=formatted_symbol,
+                use_dynamic_profiles=use_dynamic_profiles,
+                higher_tf_regime_history=htf_regime_history,  # Layer 3 MTF (None if disabled)
+                btc_macro_regime=effective_btc_macro,         # Layer 4 single-bar fallback
+                min_score=min_score,
+                allowed_types=parsed_allowed_types,
+                btc_macro_history=effective_btc_history,      # Layer 4 causal per-bar BTC macro history
+            )
         
         # 7 & 8. Composite Score (Market Pulse) v5 & History
         composite_score_history = IndicatorEngine.calculate_composite_score(
@@ -631,20 +690,14 @@ def _get_market_data_impl(
         )
         composite_score = composite_score_history[-1]['value'] if composite_score_history else 50.0
 
-        # Cache BTC macro regime only for live requests
-        if allow_live_btc_cache and 'BTC' in formatted_symbol.upper() and price_data and len(price_data) >= 250:
+        # Cache BTC macro regime only for live legacy_v8 requests
+        if strategy_mode == "legacy_v8" and allow_live_btc_cache and 'BTC' in formatted_symbol.upper() and price_data and len(price_data) >= 250:
             _btc_macro_cache[timeframe] = {
                 'regime': market_regime.get('regime', 'ranging'),
                 'direction': market_regime.get('direction', 'neutral'),
                 'pulse': composite_score,
                 'time': time.time(),
             }
-
-        # 9. Market Regime Detection History
-        market_regime_history = IndicatorEngine.calculate_market_regime_history(
-            price_data=price_data,
-            cvd_aligned=cvd_aligned
-        )
         
         return {
             "symbol": formatted_symbol,
@@ -654,6 +707,7 @@ def _get_market_data_impl(
                 "funding_settlements": data.get("funding_settlements") or [],
             },
             "indicators": {
+                "strategy_mode": strategy_mode,
                 "lsur_z_score": round(lsur_z_score, 2),
                 "lsur_ratio": lsur_ratio,
                 "lsur_history": ls_aligned_clean,
@@ -666,6 +720,7 @@ def _get_market_data_impl(
                 "cvd_history": cvd_aligned,
                 "open_interest": open_interest,
                 "oi_percentile": oi_percentile,
+                "ema_20": ema_20,
                 "ema_fast": ema_trend['ema_fast'],
                 "ema_slow": ema_trend['ema_slow'],
                 "trend_state": trend_state,
@@ -677,6 +732,8 @@ def _get_market_data_impl(
                 "exchange_breakdown": exchange_breakdown,
                 "mtf_4h_regime": htf_regime_history[-1] if htf_regime_history else None,  # Layer 3 MTF
                 "donchian_channel": donchian,
+                "macro_cycle_state": macro_cycle_state,
+                "macro_cycle_zones": macro_cycle_zones,
             }
         }
     except HTTPException:
@@ -1199,6 +1256,7 @@ def run_backtest(params: BacktestParams):
         pnl_percent = (pnl / initial) * 100
         
         return {
+            "strategy_mode": "legacy_v8",
             "metrics": {
                 "initial_balance": initial,
                 "final_balance": final,
@@ -1221,6 +1279,7 @@ def run_backtest(params: BacktestParams):
 
 # --- Signal-Driven Backtesting API (v2) ---
 from api.quant.signal_backtester import SignalBacktester
+from api.quant.macro_cycle_backtester import run_macro_cycle_backtest
 from api.quant.signal_strategy import SignalStrategyConfig, get_risk_profile
 
 class SignalBacktestParams(BaseModel):
@@ -1228,6 +1287,7 @@ class SignalBacktestParams(BaseModel):
     investment: float = 10000.0
     duration_days: int = 30
     timeframe: str = '1h'
+    strategy_mode: str = 'legacy_v8'
     # Risk & Position Management (None = auto-resolve validated profile for symbol/timeframe)
     risk_per_trade_pct: float = 2.0
     take_profit_pct: Optional[float] = None
@@ -1257,29 +1317,32 @@ class SignalBacktestParams(BaseModel):
 @app.post("/quant/signal-backtest")
 def run_signal_backtest(params: SignalBacktestParams):
     """
-    Run a Signal-driven backtest using confluence signals as entry triggers,
-    with TP/SL/Trailing Stop position management.
-    Supports both Long and Short positions.
+    Run a Signal-driven backtest using confluence signals (legacy_v8)
+    or the Phase 1.6 1D Macro Cycle engine (macro_cycle).
     """
     try:
+        if params.strategy_mode not in ("legacy_v8", "macro_cycle"):
+            raise HTTPException(status_code=400, detail=f"Invalid strategy_mode: {params.strategy_mode}")
+
         formatted_symbol = params.symbol.replace('-', '/')
+        effective_tf = '1d' if params.strategy_mode == 'macro_cycle' else params.timeframe
         
         # 1. Dynamically calculate required K-line count based on timeframe + 250 warmup bars
-        if params.timeframe == '1h':
+        if effective_tf == '1h':
             required_candles = params.duration_days * 24 + 250
-        elif params.timeframe == '4h':
+        elif effective_tf == '4h':
             required_candles = params.duration_days * 6 + 250
-        elif params.timeframe == '1d':
+        elif effective_tf == '1d':
             required_candles = params.duration_days + 250
         else:
             required_candles = params.duration_days * 24 + 250
 
-        fetch_limit = max(1000, required_candles)
+        fetch_limit = max(2000, required_candles) if params.strategy_mode == 'macro_cycle' else max(1000, required_candles)
 
         # 2. Fetch data cleanly without orderbook/breakdown or live BTC cache contamination
         market_res = get_market_data(
             symbol=params.symbol,
-            timeframe=params.timeframe,
+            timeframe=effective_tf,
             limit=fetch_limit,
             ranging_threshold=params.ranging_threshold,
             trending_threshold=params.trending_threshold,
@@ -1292,6 +1355,7 @@ def run_signal_backtest(params: SignalBacktestParams):
             include_breakdown=False,
             allow_live_btc_cache=False,
             lsur_source=params.lsur_source,
+            strategy_mode=params.strategy_mode,
         )
 
         history = market_res["data"]["price"]
@@ -1300,6 +1364,21 @@ def run_signal_backtest(params: SignalBacktestParams):
 
         if not history:
             raise HTTPException(status_code=404, detail="No historical data found")
+
+        if params.strategy_mode == "macro_cycle":
+            return run_macro_cycle_backtest(
+                symbol=formatted_symbol,
+                price_history=history,
+                duration_days=params.duration_days,
+                investment=params.investment,
+                fee_rate=params.fee_rate,
+                slippage_bps=params.slippage_bps,
+                include_funding=params.include_funding,
+                funding_settlements=funding_settlements,
+                oi_aligned=market_res.get("indicators", {}).get("open_interest"),
+                funding_aligned=market_res.get("data", {}).get("funding"),
+                lsur_z_aligned=market_res.get("indicators", {}).get("lsur_z_history"),
+            )
 
         # 3. Compute actual start time for the backtest window
         import time
@@ -1366,6 +1445,7 @@ def run_signal_backtest(params: SignalBacktestParams):
         pnl_percent = (pnl / initial) * 100
 
         return {
+            "strategy_mode": "legacy_v8",
             "metrics": {
                 "initial_balance": initial,
                 "final_balance": round(final, 2),

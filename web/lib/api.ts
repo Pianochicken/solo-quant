@@ -1,4 +1,70 @@
+export type StrategyMode = 'legacy_v8' | 'macro_cycle';
+
+export interface MacroCycleZonePoint {
+    time: number;
+    zone: 'neutral' | 'bear_value' | 'regional_value' | 'euphoria_top' | 'bear_regime';
+    mayer?: number | null;
+    dd_180_pct?: number | null;
+    dd_90_pct?: number | null;
+}
+
+export interface MacroCycleActivePosition {
+    id: string;
+    entry_type: string;
+    entry_time: number;
+    entry_price: number;
+    current_price: number;
+    pnl_pct: number;
+    peak_mfe_pct: number;
+    hold_days: number;
+    base_stop: number;
+    base_stop_disabled: boolean;
+    euphoria_armed: boolean;
+}
+
+export interface MacroCycleState {
+    mode: 'macro_cycle';
+    version: string;
+    timeframe: string;
+    timeframe_warning?: string | null;
+    position_state: 'LONG' | 'FLAT';
+    stage: string;
+    stage_label: string;
+    stage_description: string;
+    mayer_multiple?: number | null;
+    euphoria_mayer_threshold?: number | null;
+    dd_180_pct?: number | null;
+    dd_180_threshold_pct?: number | null;
+    dd_90_pct?: number | null;
+    rsi_14?: number | null;
+    ema20?: number | null;
+    ema50?: number | null;
+    ema200?: number | null;
+    ema50_rising?: boolean;
+    ema200_rising?: boolean;
+    left_zones?: {
+        bear_value_active: boolean;
+        regional_value_active: boolean;
+        euphoria_overheated_active: boolean;
+        bear_regime_active: boolean;
+    };
+    active_position?: MacroCycleActivePosition | null;
+    derivative_context?: {
+        has_deriv: boolean;
+        coin_oi_dd_60d?: number | null;
+        coin_oi_pct_180d?: number | null;
+        fr_7d_mean_pct?: number | null;
+        fr_pct_180d?: number | null;
+        lsur_z_90d?: number | null;
+        washout_60d?: boolean;
+        overheated_30d?: boolean;
+        summary?: string;
+    } | null;
+    latest_event?: any;
+}
+
 export interface IndicatorData {
+    strategy_mode?: StrategyMode;
     lsur_z_score: number;
     lsur_ratio?: number | null;
     lsur_history: { time: number; value: number }[] | null;
@@ -10,13 +76,33 @@ export interface IndicatorData {
     cvd_history: { time: number; value: number }[];
     open_interest: { time: number; value: number }[];
     oi_percentile: number;
+    ema_20?: { time: number; value: number }[];
     ema_fast?: { time: number; value: number }[];
     ema_slow?: { time: number; value: number }[];
     trend_state?: 'uptrend' | 'downtrend' | 'neutral';
     rsi_history?: { time: number; value: number }[];
     composite_score?: number;
     composite_score_history?: { time: number; value: number }[];
-    lsur_markers?: { time: number; position: string; color: string; shape: string; text: string }[];
+    lsur_markers?: {
+        time: number;
+        position: string;
+        color: string;
+        shape: string;
+        text: string;
+        size?: number;
+        direction?: string;
+        strategy_type?: string;
+        archetype?: string;
+        cycle_event?: string;
+        short_label?: string;
+        price?: number | null;
+        base_stop?: number | null;
+        mayer?: number | null;
+        realized_pnl_pct?: number | null;
+        peak_mfe_pct?: number | null;
+        hold_days?: number | null;
+        deriv_context?: any;
+    }[];
     market_regime?: any;
     market_regime_history?: any;
     exchange_breakdown?: {
@@ -36,6 +122,8 @@ export interface IndicatorData {
         lower: number;
         middle: number;
     }[];
+    macro_cycle_state?: MacroCycleState | null;
+    macro_cycle_zones?: MacroCycleZonePoint[];
 }
 
 export interface SignalConfig {
@@ -101,12 +189,15 @@ export async function getMarketData(
     timeframe: string = '1h',
     limit: number = 100,
     config?: SignalConfig,
-    options?: { signal?: AbortSignal }
+    options?: { signal?: AbortSignal; strategyMode?: StrategyMode }
 ): Promise<MarketData> {
     const safeSymbol = symbol.replace('/', '-');
 
     try {
         let url = `${API_BASE}/market/${safeSymbol}?timeframe=${timeframe}&limit=${limit}`;
+        if (options?.strategyMode) {
+            url += `&strategy_mode=${encodeURIComponent(options.strategyMode)}`;
+        }
         if (config) {
             url += `&ranging_threshold=${config.rangingThreshold}&trending_threshold=${config.trendingThreshold}&enable_protection=${config.enableProtection}&use_dynamic_profiles=${config.useDynamicProfiles}&enable_mtf_filter=${config.enableMtfFilter ?? false}`;
             if (config.minScore !== undefined) {
@@ -272,6 +363,7 @@ export interface SignalBacktestParams {
     investment: number;
     duration_days: number;
     timeframe: string;
+    strategy_mode?: StrategyMode;
     risk_per_trade_pct: number;
     take_profit_pct: number;
     stop_loss_pct: number;
@@ -307,8 +399,16 @@ export interface SignalBacktestMetrics {
     max_drawdown_pct: number;
     sharpe_ratio: number;
     total_fees_paid: number;
+    total_funding_pnl?: number;
     avg_mfe_pct?: number;
     avg_mae_pct?: number;
+    cagr_pct?: number;
+    mar_ratio?: number;
+    avg_hold_days?: number;
+    time_in_market_pct?: number;
+    trades_per_yr?: number;
+    buy_and_hold_return_pct?: number;
+    buy_and_hold_max_dd_pct?: number;
 }
 
 export interface SignalTrade {
@@ -319,6 +419,7 @@ export interface SignalTrade {
     fee: number;
     realized_pnl: number;
     exit_reason: string; // 'tp' | 'sl' | 'trailing' | 'signal_reverse' | 'backtest_end' | ''
+    entry_type?: string;
     position_id: string;
     equity: number;
 }
@@ -343,12 +444,14 @@ export interface SignalPosition {
 }
 
 export interface SignalBacktestResult {
+    strategy_mode?: StrategyMode;
     metrics: SignalBacktestMetrics;
     equity_curve: { time: number; value: number }[];
     trades: SignalTrade[];
     signals_used: any[];
     positions: SignalPosition[];
     price_data: { time: number; open: number; high: number; low: number; close: number }[];
+    macro_cycle_zones?: MacroCycleZonePoint[];
 }
 
 export async function runSignalBacktest(params: SignalBacktestParams): Promise<SignalBacktestResult> {
@@ -375,6 +478,12 @@ export async function runSignalBacktest(params: SignalBacktestParams): Promise<S
 export interface NotificationConfig {
     enabled: boolean;
     monitored_symbols: string[];
+    scan_schedule?: string;
+    macro_cycle_schedule?: string;
+    enable_mtf_filter?: boolean;
+    enable_protection?: boolean;
+    allow_intraday_prealert?: boolean;
+    enable_macro_cycle_alerts?: boolean;
 }
 
 export async function getNotificationConfig(): Promise<NotificationConfig> {

@@ -1,15 +1,24 @@
 import { TrendingUp, TrendingDown, Activity, Layers, Shield } from 'lucide-react';
 import { InfoTooltip } from './InfoTooltip';
-import { IndicatorData } from '@/lib/api';
+import { IndicatorData, StrategyMode, getTimezoneOffsetSec } from '@/lib/api';
 import { getThresholds } from '@/lib/thresholds';
 
 interface SentimentPanelProps {
     indicators: IndicatorData | null;
     timeframe?: string;
     enableProtection?: boolean;
+    strategyMode?: StrategyMode;
 }
 
-export default function SentimentPanel({ indicators, timeframe = '1h', enableProtection = false }: SentimentPanelProps) {
+function formatUtcDate(timeSec: number) {
+    const d = new Date(timeSec * 1000);
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    return `${y}/${m}/${day}`;
+}
+
+export default function SentimentPanel({ indicators, timeframe = '1h', enableProtection = false, strategyMode = 'legacy_v8' }: SentimentPanelProps) {
     if (!indicators) return null;
 
     const { lsur_z_score } = indicators;
@@ -153,6 +162,189 @@ export default function SentimentPanel({ indicators, timeframe = '1h', enablePro
             </h3>
 
             <div className="grid grid-cols-2 gap-4 flex-1">
+                {/* Macro Cycle v1.6 State Card (shown in macro_cycle mode) */}
+                {strategyMode === 'macro_cycle' && indicators.macro_cycle_state && (() => {
+                    const mc = indicators.macro_cycle_state;
+                    const activePos = mc.active_position;
+                    const deriv = mc.derivative_context;
+                    const isLong = mc.position_state === 'LONG';
+                    const isEuph = Boolean(mc.left_zones?.euphoria_overheated_active);
+                    const isBearVal = Boolean(mc.left_zones?.bear_value_active);
+                    const isRegVal = Boolean(mc.left_zones?.regional_value_active);
+
+                    let stageColor = 'text-zinc-200';
+                    let cardBorder = 'border-sky-900/40';
+                    if (isEuph) {
+                        stageColor = 'text-amber-300';
+                        cardBorder = 'border-amber-500/40';
+                    } else if (isLong) {
+                        stageColor = 'text-emerald-400';
+                        cardBorder = 'border-emerald-500/40';
+                    } else if (isBearVal || isRegVal) {
+                        stageColor = 'text-emerald-300';
+                        cardBorder = 'border-emerald-800/50';
+                    } else if (mc.stage === 'BEAR_DEFENSE') {
+                        stageColor = 'text-rose-400';
+                        cardBorder = 'border-rose-900/40';
+                    }
+
+                    const entryTimeLocal = activePos
+                        ? activePos.entry_time + getTimezoneOffsetSec()
+                        : null;
+
+                    return (
+                        <div className={`bg-zinc-950/70 rounded-lg p-3.5 border ${cardBorder} flex flex-col gap-3 col-span-2`}>
+                            <div className="flex items-start justify-between gap-2">
+                                <div>
+                                    <div className="text-xs text-sky-400 font-bold mb-1 flex items-center gap-1">
+                                        🌊 宏觀大週期位階 (Macro Cycle {mc.version})
+                                        <InfoTooltip
+                                            width={330}
+                                            text={"【Phase 1.6 大週期模式（純價格右側結構 + Mayer 過熱逃頂）】\n• 只做多 / 空手避險：抱完牛市主升浪，熊市下跌期空手避險。\n• 15 bps 全週期實證：PF 2.00、等權 MAR 0.77 勝過 Buy & Hold（0.70），OOS 熊市回撤砍半。\n• 衍生品（Coin OI / 費率 / LSUR）實證無額外硬過濾增益，故於下方專區作為左側籌碼佐證顯示。"}
+                                        />
+                                    </div>
+                                    <div className={`text-base font-bold leading-snug ${stageColor}`}>
+                                        {mc.stage_label}
+                                    </div>
+                                </div>
+                                <span className={`px-2 py-0.5 rounded text-[11px] font-mono font-bold border shrink-0 ${
+                                    isLong
+                                        ? 'bg-emerald-950/70 text-emerald-300 border-emerald-500/40'
+                                        : 'bg-zinc-900 text-zinc-400 border-zinc-700'
+                                }`}>
+                                    {isLong ? 'LONG 持倉中' : 'FLAT 空手'}
+                                </span>
+                            </div>
+
+                            {mc.timeframe_warning && (
+                                <div className="px-2.5 py-1.5 rounded bg-amber-950/50 border border-amber-500/40 text-amber-300 text-[11px] font-medium">
+                                    ⚠️ {mc.timeframe_warning}
+                                </div>
+                            )}
+
+                            <p className="text-[11px] text-zinc-400 leading-relaxed">
+                                {mc.stage_description}
+                            </p>
+
+                            {activePos && (
+                                <div className="bg-zinc-900/80 border border-emerald-500/25 rounded-lg p-2.5 space-y-1.5 text-[11px] font-mono">
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-emerald-300 font-bold">
+                                            持倉批次: {activePos.entry_type}
+                                        </span>
+                                        <span className={activePos.pnl_pct >= 0 ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
+                                            {activePos.pnl_pct >= 0 ? `+${activePos.pnl_pct.toFixed(2)}%` : `${activePos.pnl_pct.toFixed(2)}%`}
+                                        </span>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-zinc-400">
+                                        <span>進場日: {entryTimeLocal ? formatUtcDate(entryTimeLocal) : '—'}</span>
+                                        <span>持倉: {activePos.hold_days} 天</span>
+                                        <span>進場價: ${activePos.entry_price.toLocaleString()}</span>
+                                        <span>峰值 MFE: +{activePos.peak_mfe_pct.toFixed(2)}%</span>
+                                    </div>
+                                    <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-zinc-800/70">
+                                        {activePos.base_stop_disabled ? (
+                                            <span className="px-1.5 py-0.5 rounded bg-emerald-950/60 text-emerald-300 border border-emerald-500/30 text-[10px]">
+                                                ✓ Base Stop 已解除 (+25% 達標，全程抱單)
+                                            </span>
+                                        ) : (
+                                            <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-amber-300 border border-amber-500/30 text-[10px]">
+                                                🛡️ 初期止損 Base Stop: ${activePos.base_stop.toLocaleString()}
+                                            </span>
+                                        )}
+                                        {activePos.euphoria_armed && (
+                                            <span className="px-1.5 py-0.5 rounded bg-amber-950/60 text-amber-300 border border-amber-500/30 text-[10px]">
+                                                🔥 +45% 逃頂條件已就緒
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Valuation & Structure 3-col */}
+                            <div className="grid grid-cols-3 gap-2 pt-2 border-t border-zinc-800/60">
+                                <div className="bg-zinc-900/50 rounded p-2 text-center">
+                                    <div className="text-[10px] text-zinc-500 mb-0.5">Mayer 倍數</div>
+                                    <div className={`text-sm font-mono font-bold ${
+                                        typeof mc.mayer_multiple === 'number' && typeof mc.euphoria_mayer_threshold === 'number' && mc.mayer_multiple >= mc.euphoria_mayer_threshold
+                                            ? 'text-amber-300'
+                                            : typeof mc.mayer_multiple === 'number' && mc.mayer_multiple <= 0.78
+                                            ? 'text-emerald-400'
+                                            : 'text-zinc-200'
+                                    }`}>
+                                        {typeof mc.mayer_multiple === 'number' ? `${mc.mayer_multiple.toFixed(2)}x` : '—'}
+                                    </div>
+                                    <div className="text-[9px] text-zinc-600 font-mono">
+                                        {typeof mc.euphoria_mayer_threshold === 'number' ? `過熱 >= ${mc.euphoria_mayer_threshold.toFixed(2)}x` : 'Close/EMA200'}
+                                    </div>
+                                </div>
+
+                                <div className="bg-zinc-900/50 rounded p-2 text-center">
+                                    <div className="text-[10px] text-zinc-500 mb-0.5">180D 回撤</div>
+                                    <div className={`text-sm font-mono font-bold ${
+                                        typeof mc.dd_180_pct === 'number' && typeof mc.dd_180_threshold_pct === 'number' && mc.dd_180_pct >= mc.dd_180_threshold_pct
+                                            ? 'text-emerald-400'
+                                            : 'text-zinc-200'
+                                    }`}>
+                                        {typeof mc.dd_180_pct === 'number' ? `-${mc.dd_180_pct.toFixed(1)}%` : '—'}
+                                    </div>
+                                    <div className="text-[9px] text-zinc-600 font-mono">
+                                        {typeof mc.dd_180_threshold_pct === 'number' ? `估值 >= ${mc.dd_180_threshold_pct.toFixed(0)}%` : '180D Peak DD'}
+                                    </div>
+                                </div>
+
+                                <div className="bg-zinc-900/50 rounded p-2 text-center">
+                                    <div className="text-[10px] text-zinc-500 mb-0.5">EMA 結構</div>
+                                    <div className={`text-xs font-mono font-bold mt-0.5 ${
+                                        mc.ema20 && mc.ema50 && mc.ema200 && mc.ema20 > mc.ema50 && mc.ema50 > mc.ema200
+                                            ? 'text-emerald-400'
+                                            : mc.ema20 && mc.ema50 && mc.ema20 < mc.ema50
+                                            ? 'text-rose-400'
+                                            : 'text-amber-300'
+                                    }`}>
+                                        {mc.ema20 && mc.ema50 && mc.ema200
+                                            ? (mc.ema20 > mc.ema50 && mc.ema50 > mc.ema200
+                                                ? '20>50>200'
+                                                : mc.ema20 < mc.ema50 && mc.ema50 < mc.ema200
+                                                ? '20<50<200'
+                                                : mc.ema20 > mc.ema50 ? '20>50 轉強' : '轉折糾結')
+                                            : '—'}
+                                    </div>
+                                    <div className="text-[9px] text-zinc-600 font-mono">
+                                        EMA50 {mc.ema50_rising ? '↗上揚' : '↘走平下彎'}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Left-side Auxiliary Derivative Context */}
+                            {deriv && (
+                                <div className="bg-zinc-900/50 border border-zinc-800/80 rounded-lg p-2.5 space-y-1.5">
+                                    <div className="flex items-center justify-between text-[10px] font-bold text-zinc-400">
+                                        <span className="flex items-center">
+                                            🧭 左側衍生品輔助佐證（不阻斷買賣訊號）
+                                            <InfoTooltip
+                                                width={310}
+                                                text="【Phase 1.6 H4 實證結論】\n當日線右側 EMA 轉折確立時，衍生品去槓桿與過熱通常已同步發生，加入硬門檻並不會產生額外選股增益；因此此區僅作為輔助人工判讀左側擁擠度的參考指標。"
+                                            />
+                                        </span>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-1.5 text-[10px] font-mono text-zinc-300">
+                                        <span>幣本位OI 60D回撤: {typeof deriv.coin_oi_dd_60d === 'number' ? `${deriv.coin_oi_dd_60d.toFixed(1)}%` : 'N/A'}</span>
+                                        <span>OI 180D分位: {typeof deriv.coin_oi_pct_180d === 'number' ? `${deriv.coin_oi_pct_180d.toFixed(0)}%` : 'N/A'}</span>
+                                        <span>7D均費率: {typeof deriv.fr_7d_mean_pct === 'number' ? `${deriv.fr_7d_mean_pct >= 0 ? '+' : ''}${deriv.fr_7d_mean_pct.toFixed(4)}%` : 'N/A'}</span>
+                                        <span>LSUR Z (90D): {typeof deriv.lsur_z_90d === 'number' ? `${deriv.lsur_z_90d >= 0 ? '+' : ''}${deriv.lsur_z_90d.toFixed(2)}` : 'N/A'}</span>
+                                    </div>
+                                    {deriv.summary && (
+                                        <div className="text-[10px] text-zinc-400 pt-0.5">
+                                            • {deriv.summary}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    );
+                })()}
+
                 {/* Market Regime Card — NEW: spans full width */}
                 <div className={`bg-zinc-950/50 rounded-lg p-3 border ${regimeBgClass} flex flex-col col-span-2`}>
                     <div className="flex items-center justify-between">

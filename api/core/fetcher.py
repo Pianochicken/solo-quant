@@ -41,6 +41,8 @@ class DataFetcher:
         self.latest_oi_breakdown = {"binance": 0, "okx": 0, "total": 0}
         self._breakdown_cache: Dict[str, Dict[str, Any]] = {}
         self._latest_valid_oi: Dict[str, Dict[str, float]] = {}
+        self._full_history_exhausted: Dict[Tuple[str, str], float] = {}
+        self._funding_history_exhausted: Dict[str, float] = {}
 
     def _ms_to_dt(self, ms: int) -> datetime:
         return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
@@ -78,6 +80,7 @@ class DataFetcher:
             ]
             
         is_full_fetch = len(db_ohlcv_pts) < limit
+        has_timeline_gap = False
         
         # Calculate missing candles to fill any time gaps
         missed_candles = 10
@@ -100,14 +103,25 @@ class DataFetcher:
             # If there's a gap in the timeline (actual span > expected span), fetch the full limit again to patch it
             if span > expected_span + tf_sec:
                 is_full_fetch = True
+                has_timeline_gap = True
                 missed_candles = limit
             elif diff > 0:
                 calc_missed = int((diff // tf_sec) + 2)
                 missed_candles = max(10, min(calc_missed, limit))
-        
+
+        # Avoid repeated full-history pagination storms when requested limit exceeds asset listing history
+        if is_full_fetch and not has_timeline_gap and len(db_ohlcv_pts) > 0:
+            exhausted_at = self._full_history_exhausted.get((db_symbol, timeframe), 0.0)
+            if (time.time() - exhausted_at) < 21600.0:
+                is_full_fetch = False
+
         # Step 2: Fetch data via CCXT outside any DB session
         target_limit_ohlcv = max(limit, 300) if is_full_fetch else missed_candles
-        target_limit_funding = max(limit * 3, 300) if is_full_fetch else missed_candles * 3
+        funding_exhausted_at = self._funding_history_exhausted.get(funding_symbol, 0.0)
+        if is_full_fetch and (time.time() - funding_exhausted_at) >= 21600.0:
+            target_limit_funding = min(max(limit * 3, 300), 2400)
+        else:
+            target_limit_funding = max(missed_candles * 3, 30)
         def fetch_paginated(fetch_func, target_symbol, target_limit, is_ohlcv=True):
             collected = []
             max_per_req = 100 if not is_ohlcv else 300
@@ -171,6 +185,8 @@ class DataFetcher:
 
         try:
             ohlcv_batch = fetch_paginated(self.exchange.fetch_ohlcv, ccxt_symbol, target_limit_ohlcv, is_ohlcv=True)
+            if is_full_fetch and len(ohlcv_batch) < target_limit_ohlcv:
+                self._full_history_exhausted[(db_symbol, timeframe)] = time.time()
             if ohlcv_batch:
                 records = []
                 for x in ohlcv_batch:
@@ -188,6 +204,8 @@ class DataFetcher:
 
         try:
             funding_batch = fetch_paginated(self.exchange.fetch_funding_rate_history, ccxt_symbol, target_limit_funding, is_ohlcv=False)
+            if is_full_fetch and len(funding_batch) < target_limit_funding:
+                self._funding_history_exhausted[funding_symbol] = time.time()
             if funding_batch:
                 f_records = []
                 for x in funding_batch:

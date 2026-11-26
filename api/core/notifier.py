@@ -320,3 +320,126 @@ def format_signal_message(
         lines.append("\n⚠️ 跨幣種高度共線警示：請控管帳戶總風險敞口（建議總風險 &lt;= 4%～6%）")
 
     return "\n".join(lines)
+
+
+def format_macro_cycle_message(
+    signal: dict,
+    symbol: str,
+    price: float,
+    macro_state: Optional[dict] = None,
+) -> str:
+    """Format a Phase 1.6 1D Macro Cycle inflection alert for Telegram."""
+    cycle_event = str(signal.get("cycle_event", "")).upper()
+    direction = signal.get("direction", "bullish")
+    signal_time = signal.get("time", 0)
+
+    offset = get_timezone_offset()
+    tz = timezone(timedelta(hours=offset))
+    tz_label = get_timezone_label(offset)
+    if signal_time:
+        dt = datetime.fromtimestamp(signal_time, tz=tz)
+        date_str = dt.strftime("%Y/%m/%d (%H:%M)")
+    else:
+        date_str = "----/--/-- (--:--)"
+
+    def fmt_price(p: Optional[float]) -> str:
+        if p is None or p <= 0:
+            return "—"
+        if p >= 100:
+            return f"${p:,.2f}"
+        if p >= 1:
+            return f"${p:,.3f}"
+        return f"${p:,.6f}"
+
+    header_map = {
+        "BEAR_BOTTOM_V16": ("🐻🟢", "熊市反轉大底建倉"),
+        "REGIONAL_BOTTOM_V16": ("💎🟢", "牛市回調底部接回"),
+        "STAGE2_IGNITION_V16": ("🚀🟢", "Stage-2 主升浪啟動"),
+        "EUPHORIA_TOP_V16": ("🔥🟠", "牛市高檔過熱逃頂"),
+        "REGIME_BEAR_EXIT_V16": ("🛡️🔴", "趨勢破位轉熊離場"),
+        "BASE_INVALIDATION_V16": ("⚠️🔴", "建倉初期結構止損"),
+    }
+    emoji, event_title = header_map.get(
+        cycle_event,
+        ("🟢⬆", "大週期多頭進場") if direction == "bullish" else ("🔴⬇", "大週期空手離場"),
+    )
+
+    mayer = signal.get("mayer")
+    if mayer is None and macro_state:
+        mayer = macro_state.get("mayer_multiple")
+    mayer_str = f"{mayer:.2f}x" if isinstance(mayer, (int, float)) else "—"
+
+    dd180_pct = macro_state.get("dd_180_pct") if macro_state else None
+    dd180_str = f"{dd180_pct:.1f}%" if isinstance(dd180_pct, (int, float)) else "—"
+
+    ema_align = "—"
+    if macro_state:
+        e20 = macro_state.get("ema20")
+        e50 = macro_state.get("ema50")
+        e200 = macro_state.get("ema200")
+        if all(isinstance(v, (int, float)) for v in (e20, e50, e200)):
+            if e20 > e50 > e200:
+                ema_align = "EMA20 > EMA50 > EMA200 (多頭全排列)"
+            elif e20 > e50:
+                ema_align = "EMA20 > EMA50 (短中期轉強)"
+            elif e20 < e50 < e200:
+                ema_align = "EMA20 < EMA50 < EMA200 (空頭排列)"
+            else:
+                ema_align = "均線糾結轉折中"
+
+    safe_event_title = html.escape(event_title)
+    safe_event_code = html.escape(cycle_event or "MACRO_CYCLE")
+    lines = [
+        f"{emoji} <b>[{html.escape(symbol)} 1D 大週期] {safe_event_title}</b> @ {fmt_price(price)}",
+        f"📅 1D 收盤K棒: {date_str} {tz_label} | 代碼: <code>{safe_event_code}</code>",
+        f"📐 估值與結構: Mayer <b>{mayer_str}</b> | 180日高點回撤 {dd180_str} | {html.escape(ema_align)}",
+    ]
+
+    if direction == "bullish":
+        base_stop = signal.get("base_stop")
+        if base_stop is None and macro_state and isinstance(macro_state.get("active_position"), dict):
+            base_stop = macro_state["active_position"].get("base_stop")
+        if isinstance(base_stop, (int, float)) and price > 0:
+            stop_dist_pct = abs((price - base_stop) / price) * 100.0
+            stop_line = f"• 初期防禦止損 (Base Stop): {fmt_price(base_stop)} (-{stop_dist_pct:.2f}%)"
+        else:
+            stop_line = "• 初期防禦止損: 依開倉價下方 3×ATR 與 20日低點動態設定"
+
+        lines.append(
+            "\n⚖️ <b>週期配置與抱單規則 (Phase 1.6)</b>:\n"
+            "• 建議現貨 / 低槓桿名目配置: 0.95x（僅做多・無短線窄停利）\n"
+            f"{stop_line}\n"
+            "• 抱單防護: 只要波段浮盈達 <b>+25%</b> 即自動解除 Base Stop，改為全程抱單至「過熱逃頂」或「轉熊防禦」離場。"
+        )
+    else:
+        pnl_pct = signal.get("realized_pnl_pct")
+        mfe_pct = signal.get("peak_mfe_pct")
+        hold_days = signal.get("hold_days")
+        pnl_str = f"{pnl_pct:+.2f}%" if isinstance(pnl_pct, (int, float)) else "—"
+        mfe_str = f"+{mfe_pct:.2f}%" if isinstance(mfe_pct, (int, float)) else "—"
+        hold_str = f"{hold_days:.0f} 天" if isinstance(hold_days, (int, float)) else "—"
+        lines.append(
+            "\n🏁 <b>本輪大週期結算摘要</b>:\n"
+            f"• 實現波段報酬: <b>{pnl_str}</b> | 期間峰值浮盈 (MFE): {mfe_str} | 持倉天數: {hold_str}"
+        )
+
+    deriv = signal.get("deriv_context") or (macro_state.get("derivative_context") if macro_state else None)
+    if isinstance(deriv, dict):
+        oi_dd = deriv.get("coin_oi_dd_60d")
+        oi_pct = deriv.get("coin_oi_pct_180d")
+        fr_7d = deriv.get("fr_7d_mean_pct")
+        lsur_z = deriv.get("lsur_z_90d")
+        summary = html.escape(str(deriv.get("summary") or ""))
+
+        oi_dd_s = f"{oi_dd:+.1f}%" if isinstance(oi_dd, (int, float)) else "N/A"
+        oi_pct_s = f"{oi_pct:.0f}%" if isinstance(oi_pct, (int, float)) else "N/A"
+        fr_s = f"{fr_7d:+.4f}%" if isinstance(fr_7d, (int, float)) else "N/A"
+        z_s = f"{lsur_z:+.2f}" if isinstance(lsur_z, (int, float)) else "N/A"
+
+        lines.append(
+            "\n🧭 <b>左側衍生品輔助佐證</b>（純價格決策・非硬性閘門）:\n"
+            f"• 幣本位 OI 60D回撤: {oi_dd_s} (180D分位 {oi_pct_s}) | 7D均費率: {fr_s} | LSUR Z: {z_s}\n"
+            f"• {summary}"
+        )
+
+    return "\n".join(lines)
